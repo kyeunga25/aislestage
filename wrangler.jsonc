@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "replace-with-worker-name",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-06-22",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "replace-with-d1-database-name",
+      "database_id": "replace-with-d1-database-id",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "replace-with-r2-bucket-name" }],
+  "queues": {
+    "producers": [{ "binding": "GENERATION_QUEUE", "queue": "replace-with-generation-queue-name" }],
+    "consumers": [{ "queue": "replace-with-generation-queue-name", "max_batch_size": 1, "max_retries": 3 }]
+  },
+  "vars": {
+    "APP_ORIGIN": "https://example.invalid"
+  }
+}
