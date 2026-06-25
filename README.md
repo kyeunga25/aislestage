@@ -2,6 +2,17 @@
 
 Cloudflare Workers MVP for generating ecommerce visuals from a brand pack, product data and reference images.
 
+Production Worker:
+
+- https://motive-ecommerce-visuals.kyeunga25.workers.dev
+
+Cloudflare resources:
+
+- Worker: `motive-ecommerce-visuals`
+- D1: `motive-beta` (`replace-with-protected-id`)
+- R2: `motive-beta-assets`
+- Queue: `motive-generation-jobs`
+
 ## Local development
 
 ```bash
@@ -19,6 +30,7 @@ cd marketing_image_ai_web
 npm ci
 npm run check
 npm run build
+npm run cf:whoami
 ```
 
 Use `.env.example` as the local reference only. Production secrets must be set through `wrangler secret put` and should never be committed. To continue work from another Codex workspace, pull the latest branch first:
@@ -29,11 +41,19 @@ git pull --ff-only
 
 ## Cloudflare setup
 
-1. Create a D1 database named `motive-beta`, an R2 bucket named `motive-beta-assets`, and a Queue named `motive-generation-jobs`.
-2. Replace `REPLACE_WITH_D1_DATABASE_ID` in `wrangler.jsonc` with the D1 database ID.
-3. Apply the initial migration: `npx wrangler d1 migrations apply motive-beta --remote`.
-4. Configure secrets: `npx wrangler secret put OPENAI_API_KEY` and `npx wrangler secret put WONDER_WEBHOOK_PUBLIC_KEY`.
-5. Complete Wonder merchant onboarding and implement the account-specific RSA verification key and event mapping before enabling `/api/wonder/webhook`.
-6. Deploy with `npm run deploy`.
+1. Log in with `npx wrangler login`.
+2. Apply database migrations with `npm run cf:migrate`.
+3. Validate deployment config with `npm run cf:dry-run`.
+4. Deploy with `npm run cf:deploy`.
+5. Configure secrets: `npx wrangler secret put OPENAI_API_KEY` and `npx wrangler secret put WONDER_WEBHOOK_PUBLIC_KEY`.
+6. Complete Wonder merchant onboarding and implement the account-specific RSA verification key and event mapping before enabling `/api/wonder/webhook`.
+
+Useful checks:
+
+```bash
+npm run cf:secrets
+npm run cf:queue
+curl -i https://motive-ecommerce-visuals.kyeunga25.workers.dev/api/health
+```
 
 The app deliberately rejects Wonder webhooks until its merchant RSA key and exact event schema are configured. It never treats a success redirect as payment confirmation.
