@@ -2,6 +2,12 @@
 
 Cloudflare Workers MVP for generating ecommerce visuals from a brand pack, product data and reference images.
 
+For future Codex agents, start with:
+
+- [AGENTS.md](AGENTS.md)
+- [docs/CODEX_AGENT_BRIEF.md](docs/CODEX_AGENT_BRIEF.md)
+- [docs/TODO.md](docs/TODO.md)
+
 Production Worker:
 
 - https://motive-ecommerce-visuals.kyeunga25.workers.dev
