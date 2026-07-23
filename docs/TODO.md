@@ -1,280 +1,136 @@
-# Motive implementation TODO
+# Product execution TODO
 
-Use this as the main working checklist. Each phase should end with checks passing and a small handoff note.
+Use `docs/PRODUCT_STRATEGY.md` for the product thesis and validation gates. This checklist intentionally prioritizes evidence and a narrow Campaign Pack over a broad self-serve platform.
 
-## Phase 0 — Repo and environment hygiene
+## Current worktree checkpoint
 
-- [ ] Run `git status -sb` and identify existing uncommitted changes.
-- [ ] Confirm whether auth/workspace changes are intended to keep.
-- [ ] Run `npm ci` if dependencies are missing.
-- [ ] Run `npm run check`.
-- [ ] Run `npm run build`.
-- [ ] Run `npm run cf:whoami`.
-- [ ] Run `npm run cf:dry-run`.
-- [ ] Confirm `.gitignore` excludes local/generated files:
-  - `.env`
-  - `.env.*`
-  - `.dev.vars`
-  - `node_modules/`
-  - `dist/`
-  - `tmp/`
-  - `.wrangler/`
-  - `.wrangler-home/`
-  - `.DS_Store`
-  - `worker-configuration.d.ts`
+- [x] Identify the existing uncommitted auth/workspace changes.
+- [x] Confirm TypeScript check and production build pass.
+- [x] Confirm the Worker can complete a dry-run package.
+- [ ] Review the auth implementation and migrations as one coherent change.
+- [ ] Add tests before applying the local migrations remotely.
+- [ ] Restore Wrangler authentication only when a remote operation is approved.
 
 Acceptance:
 
-- Clean understanding of worktree state.
-- Build and typecheck pass.
-- No local secret or generated artifact is staged.
+- Existing user changes remain intact.
+- No secrets or generated files are committed.
+- Auth changes can be reviewed and tested independently from product experiments.
 
-## Phase 1 — Auth, session, and workspace foundation
+## Milestone 1 — secure closed-beta foundation
 
-- [ ] Finalize `users`, `sessions`, and `workspace_memberships` migration.
-- [ ] Apply migrations locally.
-- [ ] Apply migrations remotely with `npm run cf:migrate`.
-- [ ] Implement/register verify endpoints:
-  - `POST /api/auth/register`
-  - `POST /api/auth/login`
-  - `POST /api/auth/logout`
-  - `GET /api/session`
-  - `GET /api/workspaces`
-- [ ] Use HttpOnly session cookie.
-- [ ] Add password length validation and safe hashing.
-- [ ] Ensure logout deletes current session.
-- [ ] Ensure workspace access is checked server-side for all protected endpoints.
-- [ ] Update frontend to show authenticated and unauthenticated states.
+- [ ] Test registration, login, logout, session expiry, and cookie settings.
+- [ ] Test that unauthenticated protected endpoints return `401`.
+- [ ] Test that one user cannot access another workspace or generation image.
+- [ ] Make credit reservation and release safe under failed requests.
+- [ ] Make queue settlement/release idempotent under duplicate delivery.
+- [ ] Apply migrations locally and run endpoint smoke tests.
+- [ ] Commit auth/security work separately from later generation work.
 
 Acceptance:
 
-- New user can register.
-- User receives a workspace and starter credits.
-- User can log out and log back in.
-- Protected endpoints return `401` without session.
-- User cannot access another workspace by changing `workspaceId`.
+- A closed-beta user can enter and leave a private workspace safely.
+- Authorization and duplicate-delivery behavior have automated coverage.
+- No remote migration or deploy is required to prove the local result.
 
-## Phase 2 — Brand pack and product persistence
+## Milestone 2 — real product asset input
 
-- [ ] Add API endpoints:
-  - `GET /api/brand-packs`
-  - `POST /api/brand-packs`
-  - `PATCH /api/brand-packs/:id`
-  - `GET /api/products`
-  - `POST /api/products`
-  - `PATCH /api/products/:id`
-- [ ] Store brand:
-  - name
-  - logo object key
-  - colors
-  - tone
-  - forbidden words
-  - default locale
-  - common CTA
-- [ ] Store product:
-  - name
-  - category
-  - benefits
-  - specifications
-  - price
-  - promotion
-  - target channels
-  - reference image object keys
-- [ ] Replace demo-only form state with persisted state.
-- [ ] Add basic empty/loading/error states.
+- [ ] Add an authenticated upload endpoint for one product image.
+- [ ] Allow only approved image content types and enforce a size limit.
+- [ ] Store originals under workspace-scoped private R2 keys.
+- [ ] Record asset ownership and metadata in D1.
+- [ ] Create a normalized working asset without overwriting the original.
+- [ ] Serve previews and downloads only through authenticated access.
+- [ ] Add an explicit confirmation that the user has commercial rights to the upload.
 
 Acceptance:
 
-- User can create and reload brand/product data.
-- Data is scoped to the current workspace.
-- Refreshing page does not lose saved brand/product data.
+- A user can upload, preview, and reuse one real product reference.
+- Another workspace cannot enumerate or retrieve that asset.
+- The original is retained unchanged.
 
-## Phase 3 — R2 reference image upload and private asset serving
+## Milestone 3 — Campaign Pack generation
 
-- [ ] Decide initial upload approach:
-  - authenticated Worker upload endpoint for MVP, or
-  - short-lived signed URL flow.
-- [ ] Add file validation:
-  - content type allowlist
-  - max file size
-  - max number of reference images per product
-- [ ] Store original product references under workspace-scoped R2 keys.
-- [ ] Store logo assets under workspace-scoped R2 keys.
-- [ ] Add authenticated image retrieval endpoint or signed download endpoint.
-- [ ] Ensure no public bucket access is required.
-- [ ] Track image ownership in D1.
+- [ ] Replace separate workflow-first generation with one Campaign Pack entry point.
+- [ ] Collect verified product facts, price, promotion, locale, colors, tone, and CTA.
+- [ ] Offer a small set of campaign-intent presets rather than free prompting.
+- [ ] Generate structured scene, layout, caption, and overlay instructions.
+- [ ] Generate or edit backgrounds without redrawing exact product details where possible.
+- [ ] Composite the approved product asset deterministically.
+- [ ] Render product name, price, promotion, CTA, and claims with deterministic text.
+- [ ] Produce coordinated 1:1, 4:5, and 9:16 outputs.
+- [ ] Store provider usage, latency, error category, and estimated cost.
 
 Acceptance:
 
-- User can upload product references.
-- Images are private.
-- Another workspace cannot read the image.
-- Generated outputs and originals use separate object key prefixes.
+- One real product produces a complete three-ratio pack and caption.
+- Product-fidelity failures and text failures can be measured separately.
+- Exact commercial text is not delegated to the image model.
 
-## Phase 4 — Real generation workflow
+## Milestone 4 — real result experience
 
-- [ ] Ensure `OPENAI_API_KEY` is configured with `npx wrangler secret put OPENAI_API_KEY`.
-- [ ] Improve `CopyProvider` structured output:
-  - image prompt
-  - layout guidance
-  - caption Traditional Chinese / English
-  - hashtags
-  - CTA
-  - text overlay slots
-  - safety/claim notes
-- [ ] Improve `ImageProvider` to actually use reference images where supported by the selected image API.
-- [ ] Split model-generated background/product scene from deterministic text overlay where needed.
-- [ ] Add generation status polling on frontend.
-- [ ] Display latest generation history.
-- [ ] Add retry/regenerate/variant actions.
-- [ ] Record provider usage/cost metadata where available.
+- [ ] Poll generation state until completion or failure.
+- [ ] Remove demo-result fallback from authenticated production behavior.
+- [ ] Show all Campaign Pack ratios together.
+- [ ] Allow download of individual assets and the complete pack.
+- [ ] Add retry for failed technical jobs without double charging.
+- [ ] Capture per-output feedback: usable, minor edit, major edit, unusable.
+- [ ] Capture correction reason: product, text, layout, brand, claim, or other.
 
 Acceptance:
 
-- Authenticated user can generate at least one image end-to-end.
-- Queue changes status from `queued` → `processing` → `completed` or `failed`.
-- Output is stored in R2.
-- UI shows result from real API, not demo-only placeholder.
-- Failure releases reserved credits exactly once.
+- A merchant can complete upload to download without manual database work.
+- Every result contributes quality and cost evidence.
 
-## Phase 5 — Credit ledger hardening
+## Milestone 5 — concierge validation
 
-- [ ] Replace fixed `CREDIT_COST = 2` with a configurable pricing table.
-- [ ] Price by:
-  - workflow
-  - ratio
-  - quality
-  - variant count
-  - reference image count
-- [ ] Add ledger event types:
-  - subscription_grant
-  - topup_grant
-  - reservation
-  - settlement
-  - release
-  - refund
-  - manual_adjustment
-- [ ] Add idempotency keys for generation jobs.
-- [ ] Ensure queue retries cannot double-settle or double-release.
-- [ ] Add admin-safe manual adjustment path only if needed.
+- [ ] Recruit 5 relevant design partners.
+- [ ] Observe and document each partner's current creative workflow.
+- [ ] Process at least 2 real products per partner.
+- [ ] Record current time/cost, product type, requested channels, and revision count.
+- [ ] Obtain permission before retaining or sharing any example.
+- [ ] Ask for a concrete acceptable price or paid-pilot decision.
+- [ ] Track whether the partner returns within 14 days.
 
-Acceptance:
+Gate to continue:
 
-- Credit balance remains correct across success, failure, timeout, duplicate queue delivery, and retry.
-- Ledger is append-only.
-- Every balance change can be traced to a ledger row.
+- At least 10 products processed.
+- At least 70% of selected outputs need no more than minor edits.
+- Median time to first usable pack is under 10 minutes.
+- At least 3 partners repeat or bring another campaign within 14 days.
+- At least 3 partners provide a concrete price or paid-pilot commitment.
 
-## Phase 6 — Wonder billing integration
+If these gates fail, narrow the supported product types, improve composition, or change the first customer segment before adding platform features.
 
-- [ ] Complete Wonder merchant onboarding and sandbox access.
-- [ ] Confirm written details:
-  - supported currencies
-  - enabled payment methods
-  - recurring card tokenization
-  - webhook signing format
-  - settlement timing
-  - refund events
-- [ ] Implement Wonder webhook RSA/signature verification.
-- [ ] Add payment event idempotency.
-- [ ] Add subscription state model.
-- [ ] Add one-time credit pack fulfillment.
-- [ ] Add refund/chargeback handling.
-- [ ] Add subscription failed payment / grace period handling.
+## Milestone 6 — repeat-use productization
+
+Start only after the validation gate passes.
+
+- [ ] Persist reusable brand packs.
+- [ ] Add a product library based on observed repeat behavior.
+- [ ] Add generation history, duplicate campaign, and regenerate actions.
+- [ ] Add a transparent cost estimate before generation.
+- [ ] Replace fixed credits with a tested pricing table.
+- [ ] Decide trial, subscription, and top-up structure from usage evidence.
+- [ ] Implement payment only after the provider contract and webhook schema are confirmed.
 
 Acceptance:
 
-- Webhook replay does not duplicate credits.
-- Out-of-order events do not corrupt entitlement state.
-- Success redirect alone never grants credits.
-- Refunds and cancellations are reflected in subscription/ledger state.
+- Repeated creation is materially faster than the first campaign.
+- Pricing is tied to measured cost and willingness to pay.
+- Payment events are verified and idempotent before credits are issued.
 
-## Phase 7 — UI workflow completion
+## Deferred backlog
 
-- [ ] Polish authenticated dashboard navigation.
-- [ ] Add saved projects/generation history page.
-- [ ] Add brand pack page.
-- [ ] Add product library page.
-- [ ] Add output detail page with:
-  - image preview
-  - caption
-  - hashtags
-  - CTA
-  - download button
-  - duplicate project action
-- [ ] Add ratio-specific previews for Meta and ecommerce channels.
-- [ ] Add clear credit balance and estimated cost before generation.
-- [ ] Add mobile responsive QA.
+- Detail-page banner as a separate workflow.
+- Packaging showcase as a separate workflow.
+- Arbitrary canvas editor and pixel-level masking.
+- Background-removal product line.
+- CSV batch generation.
+- Shopify or WooCommerce OAuth import.
+- Direct ad publishing and automatic social posting.
+- Multi-user and agency approval workflows.
+- Public self-serve signup.
+- Additional language and regional deployments.
 
-Acceptance:
-
-- Merchant can complete the core flow in under 10 minutes:
-  - sign in
-  - create product/brand
-  - upload reference
-  - choose workflow
-  - generate
-  - download/copy output
-
-## Phase 8 — Quality evaluation and beta readiness
-
-- [ ] Build 30–50 real product test set.
-- [ ] Include electronics/DIY PC products and other consumer goods.
-- [ ] Evaluate:
-  - product fidelity
-  - text correctness
-  - brand consistency
-  - layout usefulness
-  - cost per successful output
-  - failure rate
-- [ ] Create internal rubric and score each workflow.
-- [ ] Track beta metrics:
-  - first successful output time
-  - template completion rate
-  - download rate
-  - cost per workspace
-  - 30-day retention
-  - refund reasons
-
-Acceptance:
-
-- Five workflows pass Traditional Chinese and English tests.
-- Target ratios pass visual QA.
-
-## Phase 9 — Public launch hardening
-
-- [ ] Add privacy policy.
-- [ ] Add acceptable use policy.
-- [ ] Add refund policy.
-- [ ] Add content complaint process.
-- [ ] Add account deletion flow.
-- [ ] Add asset deletion flow.
-- [ ] Add user confirmation that uploaded assets are commercially usable.
-- [ ] Add abuse/rate limiting.
-- [ ] Add Turnstile or equivalent anti-abuse check where appropriate.
-- [ ] Add structured logging and operational alerts.
-- [ ] Add basic security review.
-
-Acceptance:
-
-- Platform can safely accept beta users.
-- Abuse and billing edge cases have documented handling.
-- Support/debug data exists without exposing user private assets.
-
-## Phase 10 — Post-MVP expansion
-
-Only start after beta data supports it.
-
-- [ ] Shopify product import.
-- [ ] WooCommerce import.
-- [ ] CSV batch generation.
-- [ ] Multi-user workspace collaboration.
-- [ ] Agency workflow.
-- [ ] Approval/brand-locking tools.
-- [ ] Custom domain.
-- [ ] AI Gateway observability if Images API compatibility is confirmed.
-- [ ] Japanese localization validation.
-- [ ] Separate mainland China deployment/payment/compliance plan.
-
-Acceptance:
-
-- Expansion is driven by beta demand, not speculative scope creep.
+Deferred items require evidence from multiple design partners, not only implementation convenience.
