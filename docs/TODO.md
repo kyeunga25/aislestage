@@ -26,7 +26,7 @@ Acceptance:
 - [x] Make queue settlement/release idempotent under duplicate delivery.
 - [x] Apply migrations locally and run endpoint smoke tests.
 - [x] Keep public registration and AI generation disabled in the deployed preview.
-- [ ] Commit auth/security work separately from later generation work.
+- [x] Commit auth/security work separately from later generation work.
 
 Acceptance:
 
