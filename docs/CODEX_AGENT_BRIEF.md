@@ -2,26 +2,28 @@
 
 This document is a compact but complete handoff for future Codex agents. It describes what the app is meant to become, what already exists, and how to continue building without drifting from the original product scope.
 
+The current product strategy and validation gates are defined in `docs/PRODUCT_STRATEGY.md`. When this brief and an older implementation idea disagree, follow the strategy document.
+
 ## 1. Product positioning
 
-Motive is a self-serve SaaS for Hong Kong and overseas SME ecommerce merchants.
+`AislePack` is the current product-facing working name for the ecommerce campaign-asset product, paired with the descriptor `AI 電商素材包`. `Motive` remains only in infrastructure identifiers until a formal naming review and deliberate migration.
 
-The product should not be a generic “free prompt” image generator. Its core workflow is:
+The product is intended for Hong Kong ecommerce merchants and small marketing teams. It should not be a generic “free prompt” image generator. The first outcome to validate is a Campaign Pack:
 
 1. Merchant signs in.
-2. Merchant creates or selects a workspace.
-3. Merchant defines a brand pack.
-4. Merchant enters product data and uploads product reference images.
-5. Merchant chooses a fixed ecommerce visual workflow and channel ratio.
-6. App generates structured copy/prompt with `gpt-5.4-mini`.
-7. App generates/edit images with `gpt-image-2`.
-8. App stores results privately in R2, records status/cost in D1, and lets the merchant download or reuse outputs.
+2. Merchant uploads one approved product image.
+3. Merchant enters verified product facts and a compact brand/campaign brief.
+4. Merchant chooses a campaign intent or preset.
+5. App generates scene/layout directions and structured copy.
+6. App preserves the source product and adds exact commercial text with deterministic compositing.
+7. App returns coordinated 1:1, 4:5, and 9:16 assets plus caption copy.
+8. App privately stores results and records quality, latency, and cost evidence.
 
 Primary target users:
 
 - Hong Kong SME ecommerce merchants.
-- First design partner segment: Sham Shui Po computer / DIY PC / electronics merchants.
-- Beta target: 20–30 merchants with online selling and social ad needs.
+- Candidate design partner segment: Sham Shui Po computer / DIY PC / electronics merchants.
+- First validation cohort: 5 merchants and at least 10 real products.
 
 Initial UI languages:
 
@@ -30,15 +32,17 @@ Initial UI languages:
 
 Japanese and mainland China deployment are future validation items, not MVP scope.
 
-## 2. MVP workflows
+## 2. MVP workflow
 
-All five workflows should stay in the product:
+The repository prototypes five output concepts:
 
 1. Store main image.
 2. Product detail page banner.
 3. Promotional / campaign poster.
 4. Meta image + caption ad.
 5. Product packaging showcase.
+
+They should not be treated as five equal MVP products. The first validation workflow is one Campaign Pack containing 1:1, 4:5, and 9:16 outputs plus bilingual copy. Detail banners and packaging showcases are deferred until the Campaign Pack passes the quality and repeat-use gates in `docs/PRODUCT_STRATEGY.md`.
 
 Supported output ratios:
 
@@ -68,7 +72,7 @@ Do not add these before the core product is stable:
 
 These can be considered only after MVP metrics justify them.
 
-## 4. Business model requirements
+## 4. Business model assumptions
 
 Pricing model:
 
@@ -87,25 +91,20 @@ Pricing model:
 Target launch economics:
 
 
-Payment provider:
+Possible payment provider after validation:
 
 - Wonder is the planned first PSP.
 - Recurring subscription should use tokenized card payment.
 - Local one-time methods such as FPS, PayMe, AlipayHK, WeChat Pay HK, Octopus, etc. are only for top-up credit packs where Wonder merchant settings support them.
 - Entitlements must be driven by verified, idempotent Wonder webhooks. Never trust success redirect pages for credit issuance.
 
-Current code deliberately rejects Wonder webhooks until account-specific RSA key and event schema are implemented.
+Current code deliberately rejects Wonder webhooks until account-specific RSA key and event schema are implemented. Do not prioritize payment integration before repeat-use, willingness-to-pay, and unit-cost evidence exist.
 
-## 5. Current deployed Cloudflare state
+## 5. Current Cloudflare preview state
 
 Production URL:
 
 - `https://motive-ecommerce-visuals.kyeunga25.workers.dev`
-
-Cloudflare account:
-
-- `kyeunga25@gmail.com`
-- Account ID: `replace-with-protected-id`
 
 Resources:
 
@@ -150,6 +149,8 @@ Do not commit secret values.
 - `src/worker.ts` — Cloudflare Worker API, auth/session endpoints if current branch includes them, generation queue producer/consumer, R2 image serving.
 - `migrations/0001_initial.sql` — initial workspace/product/generation/payment ledger schema.
 - `migrations/0002_auth_workspaces.sql` — auth/session/workspace membership schema if present.
+- `migrations/0003_auth_security.sql` — auth-attempt rate-limit history and indexes.
+- `migrations/0004_generation_idempotency.sql` — one credit-ledger event per generation transition.
 - `wrangler.jsonc` — Cloudflare bindings and production config.
 - `design-reference.png` — visual design reference.
 
@@ -226,15 +227,15 @@ Idempotency is required for retries and webhook processing.
 
 The next agent should prioritize in this order:
 
-1. Stabilize auth/session/workspace access.
-2. Apply and verify all migrations locally and remotely.
-3. Build real product and brand pack persistence APIs.
-4. Implement R2 reference image upload and authenticated download/image serving.
-5. Wire frontend to real API state instead of demo-only state.
-6. Complete generation polling/history and result display.
-7. Set up OpenAI secrets and verify real generation with a small test set.
-8. Harden credits and idempotency.
-9. Implement Wonder webhook verification and entitlement ledger.
-10. Add tests and deployment documentation.
+1. Review and stabilize the uncommitted auth/session/workspace work.
+2. Add automated authorization, credit, and duplicate-delivery tests before enabling real generation.
+3. Implement private R2 upload for one real product reference image.
+4. Build the Campaign Pack pipeline with product-preserving composition and exact text overlays.
+5. Replace demo results with real polling, output review, download, and quality feedback.
+6. Record latency, failure reason, provider usage, and cost per successful pack.
+7. Run a concierge beta with 5 design partners and at least 10 real products.
+8. Add reusable brand/product persistence only when repeat usage demonstrates the need.
+9. Harden credits and idempotency before charging users.
+10. Defer Wonder integration and public-launch work until validation gates pass.
 
 Detailed task breakdown is in `docs/TODO.md`.

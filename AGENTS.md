@@ -17,17 +17,18 @@ This file is the first handoff document for any Codex agent working on this repo
 
 ## Read these before implementation
 
-1. `docs/CODEX_AGENT_BRIEF.md` — product vision, architecture, current state, Cloudflare resources, and implementation constraints.
-2. `docs/TODO.md` — phased build plan and acceptance criteria.
-3. `README.md` — local setup, Cloudflare commands, deployment URL, and sync instructions.
-4. `wrangler.jsonc` — Worker, D1, R2, Queue, static assets, and environment bindings.
-5. `migrations/` — D1 schema history.
+1. `docs/PRODUCT_STRATEGY.md` — current product thesis, narrow MVP, evidence gaps, and validation gates.
+2. `docs/CODEX_AGENT_BRIEF.md` — architecture, current state, Cloudflare resources, and implementation constraints.
+3. `docs/TODO.md` — ordered execution plan and acceptance criteria.
+4. `README.md` — local setup, Cloudflare commands, deployment URL, and sync instructions.
+5. `wrangler.jsonc` — Worker, D1, R2, Queue, static assets, and environment bindings.
+6. `migrations/` — D1 schema history.
 
 ## Current product goal
 
-Build a self-serve ecommerce AI visual SaaS for Hong Kong and overseas SME merchants. The product should turn brand packs, product data, reference images, and channel presets into ecommerce-ready visuals and captions for shop product images, detail banners, promotional posters, Meta ads, and packaging mockups.
+Validate a focused Campaign Pack workflow for Hong Kong ecommerce merchants and small marketing teams. The first product outcome should turn one approved product image and verified commercial brief into coordinated 1:1, 4:5, and 9:16 assets plus bilingual copy.
 
-The first version should stay focused. Do not expand into a general prompt-based image generation tool.
+Preserve the real product and render exact commercial text deterministically. The first version should stay focused: do not expand into a general prompt-based image generator, broad design editor, payment platform, or five independent workflows before the validation gates pass.
 
 ## Current stack
 
@@ -39,7 +40,7 @@ The first version should stay focused. Do not expand into a general prompt-based
 - AI providers:
   - Copy/prompt provider: `gpt-5.4-mini`.
   - Image provider: `gpt-image-2`.
-- Payment provider target: Wonder.
+- Deferred payment provider candidate: Wonder.
 
 ## Useful Codex skills, connectors, and tools
 
@@ -155,10 +156,6 @@ Use these when producing `.docx`, PDFs, pitch decks, financial sheets, or fundin
 - Skill: `pdf:pdf`
 - Skill: `presentations:Presentations`
 - Skill: `spreadsheets:Spreadsheets`
-
-Relevant existing document:
-
-- `docs/YBHK_APPLICATION_READINESS.md`
 
 ### Image and visual concept generation
 
