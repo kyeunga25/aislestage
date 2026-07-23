@@ -2,7 +2,7 @@ import { OpenAICopyProvider, OpenAIImageProvider, WonderBillingProvider } from '
 import { workflowById } from './lib/workflows'
 import type { GenerationInput } from './lib/types'
 
-type Env = {
+export type Env = {
   DB: D1Database
   MEDIA_BUCKET: R2Bucket
   GENERATION_QUEUE: Queue<GenerationMessage>
@@ -13,7 +13,7 @@ type Env = {
   GENERATION_MODE?: 'enabled' | 'disabled'
 }
 
-type GenerationMessage = { generationId: string; input: GenerationInput }
+export type GenerationMessage = { generationId: string; input: GenerationInput }
 type AuthUser = { id: string; email: string; name: string }
 type Workspace = { id: string; name: string; role: string; planStatus: string; availableCredits: number; reservedCredits: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
@@ -27,6 +27,7 @@ const LOGIN_EMAIL_IP_LIMIT = 8
 const LOGIN_IP_LIMIT = 30
 const REGISTER_WINDOW_MINUTES = 60
 const REGISTER_IP_LIMIT = 12
+const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const DUMMY_PASSWORD_SALT = 'bW90aXZlLWR1bW15LXNhbHQ='
@@ -112,8 +113,16 @@ function cleanString(value: unknown, max = 120) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
-async function readBody(request: Request) {
-  return request.json().catch(() => null)
+async function readBody(request: Request, maxBytes: number) {
+  const contentLength = Number(request.headers.get('content-length') || '0')
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) return { body: null, tooLarge: true }
+  const raw = await request.text().catch(() => '')
+  if (textEncoder.encode(raw).byteLength > maxBytes) return { body: null, tooLarge: true }
+  try {
+    return { body: JSON.parse(raw) as unknown, tooLarge: false }
+  } catch {
+    return { body: null, tooLarge: false }
+  }
 }
 
 function getClientIp(request: Request) {
@@ -122,6 +131,10 @@ function getClientIp(request: Request) {
 
 function hasJsonContent(request: Request) {
   return request.headers.get('content-type')?.toLowerCase().includes('application/json') ?? false
+}
+
+function validEmail(email: string) {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
 function isAllowedOrigin(request: Request, env: Env) {
@@ -262,7 +275,9 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
 async function register(request: Request, env: Env) {
   if (env.REGISTRATION_MODE !== 'open') return json({ error: 'AislePack 現時只開放獲邀測試帳號。' }, { status: 403 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
-  const body = await readBody(request) as Record<string, unknown> | null
+  const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
+  const body = parsed.body as Record<string, unknown> | null
   const email = normalizeEmail(body?.email)
   const password = cleanString(body?.password, 256)
   const name = cleanString(body?.name) || email.split('@')[0]
@@ -271,7 +286,7 @@ async function register(request: Request, env: Env) {
     await recordAuthAttempt(env, request, 'rate_limited', email)
     return json({ error: '嘗試次數過多，請稍後再試。' }, { status: 429 })
   }
-  if (!email.includes('@')) {
+  if (!validEmail(email)) {
     await recordAuthAttempt(env, request, 'register_failed', email)
     return json({ error: '請輸入有效電郵地址。' }, { status: 400 })
   }
@@ -300,7 +315,9 @@ async function register(request: Request, env: Env) {
 
 async function login(request: Request, env: Env) {
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
-  const body = await readBody(request) as Record<string, unknown> | null
+  const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
+  const body = parsed.body as Record<string, unknown> | null
   const email = normalizeEmail(body?.email)
   const password = cleanString(body?.password, 256)
   if (await isLoginRateLimited(env, request, email)) {
@@ -524,7 +541,12 @@ export default {
     for (const message of batch.messages) {
       const { generationId, input } = message.body as GenerationMessage
       try {
-        const claim = await env.DB.prepare('UPDATE generations SET status = ?, error_message = NULL WHERE id = ? AND workspace_id = ? AND status = ?').bind('processing', generationId, input.workspaceId, 'queued').run()
+        const claim = await env.DB.prepare(`
+          UPDATE generations
+          SET status = 'processing', processing_attempt = ?, error_message = NULL
+          WHERE id = ? AND workspace_id = ?
+            AND (status = 'queued' OR (status = 'processing' AND processing_attempt < ?))
+        `).bind(message.attempts, generationId, input.workspaceId, message.attempts).run()
         if (!claim.meta.changes) {
           message.ack()
           continue

@@ -30,6 +30,16 @@ npm run dev
 
 The Vite UI runs in demo mode locally. The deployed Worker defaults to a safe preview mode: new registration is closed and AI generation is disabled until the real private image-input and three-ratio Campaign Pack pipeline passes validation.
 
+Milestone 1 security and reliability checks run fully locally with isolated D1, R2 and Queue bindings:
+
+```bash
+npm run check
+npm test
+npm run build
+```
+
+The test configuration opens registration and generation only inside the local Workers test runtime. `wrangler.jsonc` remains the deployment source of truth and keeps both capabilities closed.
+
 ## Sync on another machine
 
 ```bash
@@ -62,6 +72,7 @@ git pull --ff-only
 Useful checks:
 
 ```bash
+npm test
 npm run cf:secrets
 npm run cf:queue
 curl -i https://motive-ecommerce-visuals.kyeunga25.workers.dev/api/health

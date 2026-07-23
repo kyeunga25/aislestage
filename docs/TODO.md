@@ -8,7 +8,7 @@ Use `docs/PRODUCT_STRATEGY.md` for the product thesis and validation gates. This
 - [x] Confirm TypeScript check and production build pass.
 - [x] Confirm the Worker can complete a dry-run package.
 - [x] Review the auth implementation and migrations as one coherent change.
-- [ ] Add automated tests before enabling real generation.
+- [x] Add automated tests before enabling real generation.
 - [x] Verify Wrangler authentication for the approved preview deployment.
 
 Acceptance:
@@ -19,9 +19,9 @@ Acceptance:
 
 ## Milestone 1 — secure closed-beta foundation
 
-- [ ] Test registration, login, logout, session expiry, and cookie settings.
-- [ ] Test that unauthenticated protected endpoints return `401`.
-- [ ] Test that one user cannot access another workspace or generation image.
+- [x] Test registration, login, logout, session expiry, and cookie settings.
+- [x] Test that unauthenticated protected endpoints return `401`.
+- [x] Test that one user cannot access another workspace or generation image.
 - [x] Make credit reservation and release safe under failed requests.
 - [x] Make queue settlement/release idempotent under duplicate delivery.
 - [x] Apply migrations locally and run endpoint smoke tests.

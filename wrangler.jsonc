@@ -26,7 +26,13 @@
   "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "replace-with-r2-bucket-name" }],
   "queues": {
     "producers": [{ "binding": "GENERATION_QUEUE", "queue": "replace-with-generation-queue-name" }],
-    "consumers": [{ "queue": "replace-with-generation-queue-name", "max_batch_size": 1, "max_retries": 3, "retry_delay": 60 }]
+    "consumers": [{
+      "queue": "replace-with-generation-queue-name",
+      "max_batch_size": 1,
+      "max_retries": 3,
+      "retry_delay": 60,
+      "dead_letter_queue": "replace-with-dead-letter-queue-name"
+    }]
   },
   "vars": {
     "APP_ORIGIN": "https://example.invalid",

@@ -151,6 +151,7 @@ Do not commit secret values.
 - `migrations/0002_auth_workspaces.sql` — auth/session/workspace membership schema if present.
 - `migrations/0003_auth_security.sql` — auth-attempt rate-limit history and indexes.
 - `migrations/0004_generation_idempotency.sql` — one credit-ledger event per generation transition.
+- `migrations/0005_generation_processing_attempt.sql` — queue-attempt claim state for hard-failure recovery.
 - `wrangler.jsonc` — Cloudflare bindings and production config.
 - `design-reference.png` — visual design reference.
 

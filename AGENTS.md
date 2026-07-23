@@ -182,6 +182,7 @@ If a requested connector or skill is not available in the current conversation:
 ```bash
 npm ci
 npm run check
+npm test
 npm run build
 npm run cf:whoami
 npm run cf:migrate
