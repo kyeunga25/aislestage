@@ -17,17 +17,17 @@
     "cf:queue": "wrangler queues consumer list motive-generation-jobs"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
     "lucide-react": "latest",
     "react": "latest",
-    "react-dom": "latest",
-    "vite": "latest",
-    "wrangler": "latest"
+    "react-dom": "latest"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "latest",
+    "@cloudflare/workers-types": "^5.20260723.1",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "typescript": "latest"
+    "@vitejs/plugin-react": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "wrangler": "^4.114.0"
   }
 }

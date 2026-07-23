@@ -1,6 +1,8 @@
-# Motive — 電商 AI 視覺 SaaS
+# AislePack — AI 電商素材包
 
-Cloudflare Workers MVP for generating ecommerce visuals from a brand pack, product data and reference images.
+Working product brand for a Cloudflare Workers MVP that is validating how one approved product image and verified brief can become a coordinated ecommerce Campaign Pack.
+
+Public repository: https://github.com/kyeunga25/marketing_image_ai_web
 
 For future Codex agents, start with:
 
@@ -8,7 +10,7 @@ For future Codex agents, start with:
 - [docs/CODEX_AGENT_BRIEF.md](docs/CODEX_AGENT_BRIEF.md)
 - [docs/TODO.md](docs/TODO.md)
 
-Production Worker:
+Closed-beta preview:
 
 - https://motive-ecommerce-visuals.kyeunga25.workers.dev
 
@@ -26,7 +28,7 @@ npm install
 npm run dev
 ```
 
-The Vite UI runs in demo mode until Cloudflare resources are configured. The generation button remains usable locally, but production generation requires D1, R2, Queues and OpenAI credentials.
+The Vite UI runs in demo mode locally. The deployed Worker defaults to a safe preview mode: new registration is closed and AI generation is disabled until the real private image-input and three-ratio Campaign Pack pipeline passes validation.
 
 ## Sync on another machine
 
@@ -48,11 +50,14 @@ git pull --ff-only
 ## Cloudflare setup
 
 1. Log in with `npx wrangler login`.
-2. Apply database migrations with `npm run cf:migrate`.
+2. Apply database migrations locally and complete endpoint smoke tests.
 3. Validate deployment config with `npm run cf:dry-run`.
-4. Deploy with `npm run cf:deploy`.
-5. Configure secrets: `npx wrangler secret put OPENAI_API_KEY` and `npx wrangler secret put WONDER_WEBHOOK_PUBLIC_KEY`.
-6. Complete Wonder merchant onboarding and implement the account-specific RSA verification key and event mapping before enabling `/api/wonder/webhook`.
+4. Apply reviewed remote migrations with `npm run cf:migrate`.
+5. Deploy the safe closed-beta preview with `npm run cf:deploy`.
+6. Configure `OPENAI_API_KEY` with `npx wrangler secret put OPENAI_API_KEY` only when real generation is ready.
+7. Change `GENERATION_MODE` to `enabled` only after private product-image input, coordinated three-ratio output, deterministic text, duplicate-delivery tests, and cost controls pass.
+
+`REGISTRATION_MODE` and `GENERATION_MODE` are deliberately committed as `closed` and `disabled`. Do not enable public self-service by changing only the frontend. The Worker enforces both gates server-side.
 
 Useful checks:
 
@@ -62,4 +67,4 @@ npm run cf:queue
 curl -i https://motive-ecommerce-visuals.kyeunga25.workers.dev/api/health
 ```
 
-The app deliberately rejects Wonder webhooks until its merchant RSA key and exact event schema are configured. It never treats a success redirect as payment confirmation.
+The health endpoint returns boolean capability flags without exposing secret values. The app deliberately rejects Wonder webhooks until its merchant RSA key and exact event schema are configured. It never treats a success redirect as payment confirmation.
