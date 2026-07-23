@@ -11,7 +11,7 @@ export function ResultsPanel({ results, activeWorkflow, isGenerating, onGenerate
     <div className="results-grid">
       <div className="result-collection">
         {rows.map((result, index) => <article className="result-card" key={result.id}>
-          <div className="result-image"><img src={result.imageUrl} alt={result.title} /><span className="selection-mark">{index === 0 ? '✓' : ''}</span></div>
+          <div className="result-image">{result.imageUrl ? <img src={result.imageUrl} alt={result.title} /> : <div className="result-placeholder"><Sparkles size={24} /><strong>{result.status === 'failed' ? '生成失敗' : '等待生成'}</strong><span>{result.errorMessage || result.status}</span></div>}<span className="selection-mark">{index === 0 && result.status === 'completed' ? '✓' : ''}</span></div>
           <div className="result-meta"><span>{result.title}</span><div><button title="下載" type="button"><ArrowDownToLine size={16} /></button><button title="更多" type="button"><MoreHorizontal size={16} /></button></div></div>
         </article>)}
       </div>
