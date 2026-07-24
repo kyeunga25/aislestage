@@ -205,8 +205,8 @@ body { color: var(--ink); background: #fff; }
 .auth-brand { padding: 0; }
 .auth-card { box-shadow: 0 14px 38px rgba(25, 44, 72, .08); }
 .auth-tabs.closed { grid-template-columns: 1fr; }
-.beta-access-note { display: grid; gap: 3px; margin: 0; border: 1px solid #dbe6f7; border-radius: 7px; background: #f7faff; color: #4e617f; padding: 10px 11px; font-size: 11px; line-height: 1.45; }
-.beta-access-note strong { color: #284f8d; }
+.registration-note { display: grid; gap: 3px; margin: 0; border: 1px solid #dbe6f7; border-radius: 7px; background: #f7faff; color: #4e617f; padding: 10px 11px; font-size: 11px; line-height: 1.45; }
+.registration-note strong { color: #284f8d; }
 
 @media (max-width: 900px) {
   .main-content { padding: 28px 20px 50px; }

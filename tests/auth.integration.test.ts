@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { cookieFrom, dispatch, registerAccount } from './helpers'
 
-describe('closed-beta authentication', () => {
+describe('restricted registration authentication', () => {
   it('keeps public registration closed when the server-side gate is closed', async () => {
     const response = await dispatch('/api/auth/register', {
       method: 'POST',
@@ -36,7 +36,7 @@ describe('closed-beta authentication', () => {
     expect(setCookie).toContain('Secure')
 
     const payload = await response.json() as { user: { id: string }; currentWorkspace: { id: string; role: string; availableCredits: number; reservedCredits: number } }
-    expect(payload.currentWorkspace).toMatchObject({ role: 'owner', availableCredits: 20, reservedCredits: 0 })
+    expect(payload.currentWorkspace).toMatchObject({ role: 'owner', availableCredits: 3, reservedCredits: 0 })
 
     const membership = await env.DB.prepare('SELECT role FROM workspace_memberships WHERE user_id = ? AND workspace_id = ?')
       .bind(payload.user.id, payload.currentWorkspace.id)

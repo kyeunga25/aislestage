@@ -58,10 +58,9 @@ export interface BillingProvider {
   verifyWebhook(request: Request): Promise<{ eventId: string; type: string; data: unknown }>
 }
 
-export class WonderBillingProvider implements BillingProvider {
+export class UnavailableBillingProvider implements BillingProvider {
   async verifyWebhook(_request: Request): Promise<{ eventId: string; type: string; data: unknown }> {
-    // Wonder production webhooks must be verified with the merchant's configured RSA public key.
-    // This implementation deliberately rejects requests until the merchant key and event schema are configured.
-    throw new Error('Wonder webhook verification is not configured. Set WONDER_WEBHOOK_PUBLIC_KEY before enabling this endpoint.')
+    // A concrete integration must verify signatures and validate the event schema.
+    throw new Error('Payment webhook verification is not configured.')
   }
 }

@@ -15,13 +15,13 @@ type AuthedSession = {
 }
 
 const demoSession: AuthedSession = {
-  user: { id: 'demo-user', email: 'demo@aislepack.app', name: 'Ken Chan' },
-  currentWorkspace: { id: 'demo-workspace', name: 'HK Tech Gear', role: 'owner', planStatus: 'trial', availableCredits: 20, reservedCredits: 0 }
+  user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User' },
+  currentWorkspace: { id: 'demo-workspace', name: 'Example Store', role: 'owner', planStatus: 'trial', availableCredits: 3, reservedCredits: 0 }
 }
 
 const localDemoResults = demoResults.map((result) => ({ ...result, imageUrl: demoSpeaker }))
-const closedPlatformStatus: PlatformStatus = { status: 'ok', service: 'aislepack-worker', releaseMode: 'closed-beta-preview', registrationOpen: false, generationEnabled: false }
-const localPlatformStatus: PlatformStatus = { ...closedPlatformStatus, registrationOpen: true, generationEnabled: true }
+const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', registrationOpen: false, generationEnabled: false }
+const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, registrationOpen: true, generationEnabled: true }
 
 async function loadSession() {
   const response = await fetch('/api/session')
@@ -49,7 +49,7 @@ async function loadGenerations(workspaceId: string) {
 export default function App() {
   const [session, setSession] = useState<AuthedSession | null>(null)
   const [isLoadingSession, setIsLoadingSession] = useState(true)
-  const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(import.meta.env.DEV ? localPlatformStatus : closedPlatformStatus)
+  const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
   const [brand, setBrand] = useState<BrandPack>(starterBrand)
   const [product, setProduct] = useState<Product>(starterProduct)
   const [step, setStep] = useState<WizardStep>(1)
@@ -67,14 +67,14 @@ export default function App() {
       if (nextSession) void loadGenerations(nextSession.currentWorkspace.id).then(setServerResults)
     }).catch(() => {
       setSession(import.meta.env.DEV ? demoSession : null)
-      setPlatformStatus(import.meta.env.DEV ? localPlatformStatus : closedPlatformStatus)
+      setPlatformStatus(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
     }).finally(() => setIsLoadingSession(false))
   }, [])
 
   async function generate() {
     if (!session) return
     if (!platformStatus.generationEnabled) {
-      setNotice('目前是封閉測試預覽；AI Campaign Pack 生成會在商品保真與三尺寸流程完成驗證後開放。')
+      setNotice('AI Campaign Pack 生成目前未開放。')
       return
     }
     setIsGenerating(true)
@@ -131,7 +131,7 @@ export default function App() {
         <h1>一張商品圖，完成整套推廣素材</h1>
         <p>上傳商品、確認推廣內容，再生成 1:1、4:5、9:16 素材與中英文字文案。</p>
       </section>
-      {!platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>封閉測試預覽</strong><span>登入、工作區及部署已啟用；AI 生成仍保持關閉，避免未完成的商品保真流程誤用真實圖片或額度。</span></p> : null}
+      {!platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>功能未開放</strong><span>此部署目前不接受 AI 生成請求。</span></p> : null}
       <CampaignWizard brand={brand} product={product} step={step} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} availableCredits={session.currentWorkspace.availableCredits} onBrandChange={setBrand} onProductChange={setProduct} onStepChange={setStep} onGenerate={generate} />
       {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
       {hasRequestedPack || serverResults.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} onGenerate={generate} onStartNew={() => { setStep(1); setHasRequestedPack(false); setServerResults([]); window.scrollTo({ top: 0, behavior: 'smooth' }) }} /> : null}

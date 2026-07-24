@@ -1,242 +1,121 @@
-# Codex agent brief — ecommerce AI visual SaaS
+# Engineering brief — ecommerce campaign assets
 
-This document is a compact but complete handoff for future Codex agents. It describes what the app is meant to become, what already exists, and how to continue building without drifting from the original product scope.
+This public-safe brief introduces the repository to contributors. It intentionally excludes private deployment mappings, internal planning, customer details, financial assumptions, and provider-selection decisions.
 
-The current product strategy and validation gates are defined in `docs/PRODUCT_STRATEGY.md`. When this brief and an older implementation idea disagree, follow the strategy document.
+## Product purpose
 
-## 1. Product positioning
+The application turns an approved product image and a verified commercial brief into a coordinated set of ecommerce assets. The primary workflow produces 1:1, 4:5, and 9:16 visuals plus Traditional Chinese and/or English copy.
 
-`AislePack` is the current product-facing working name for the ecommerce campaign-asset product, paired with the descriptor `AI 電商素材包`. `Motive` remains only in infrastructure identifiers until a formal naming review and deliberate migration.
+Generative services may assist with scenes, backgrounds, layout suggestions, and copy. Exact product facts, prices, promotions, CTAs, and required claims should be rendered through deterministic, reviewable code.
 
-The product is intended for Hong Kong ecommerce merchants and small marketing teams. It should not be a generic “free prompt” image generator. The first outcome to validate is a Campaign Pack:
+## Technology overview
 
-1. Merchant signs in.
-2. Merchant uploads one approved product image.
-3. Merchant enters verified product facts and a compact brand/campaign brief.
-4. Merchant chooses a campaign intent or preset.
-5. App generates scene/layout directions and structured copy.
-6. App preserves the source product and adds exact commercial text with deterministic compositing.
-7. App returns coordinated 1:1, 4:5, and 9:16 assets plus caption copy.
-8. App privately stores results and records quality, latency, and cost evidence.
-
-Primary target users:
-
-- Hong Kong SME ecommerce merchants.
-- Candidate design partner segment: Sham Shui Po computer / DIY PC / electronics merchants.
-- First validation cohort: 5 merchants and at least 10 real products.
-
-Initial UI languages:
-
-- Traditional Chinese.
-- English.
-
-Japanese and mainland China deployment are future validation items, not MVP scope.
-
-## 2. MVP workflow
-
-The repository prototypes five output concepts:
-
-1. Store main image.
-2. Product detail page banner.
-3. Promotional / campaign poster.
-4. Meta image + caption ad.
-5. Product packaging showcase.
-
-They should not be treated as five equal MVP products. The first validation workflow is one Campaign Pack containing 1:1, 4:5, and 9:16 outputs plus bilingual copy. Detail banners and packaging showcases are deferred until the Campaign Pack passes the quality and repeat-use gates in `docs/PRODUCT_STRATEGY.md`.
-
-Supported output ratios:
-
-- 1:1
-- 4:5
-- 9:16
-- 16:5 where appropriate for detail banners.
-
-Important rendering rule:
-
-Accurate text such as brand name, price, promotion, CTA, and legal claim should be handled by fixed layout / overlay logic wherever possible. Do not rely only on the image model to render exact Traditional Chinese, English, prices, or small product specs inside the generated image.
-
-## 3. Explicit non-goals for MVP
-
-Do not add these before the core product is stable:
-
-- Generic prompt-only image generation UI.
-- Arbitrary canvas editor.
-- Pixel-level mask editing.
-- Background removal.
-- CSV bulk generation.
-- Direct ad publishing.
-- Automatic social posting.
-- Shopify or WooCommerce OAuth import.
-- Enterprise approval workflows.
-- Multi-region China deployment.
-
-These can be considered only after MVP metrics justify them.
-
-## 4. Business model assumptions
-
-Pricing model:
-
-- Monthly subscription with included credits.
-- Extra credit packs.
-- No unlimited generation plan.
-
-
-- Workflow.
-- Output ratio.
-- Quality tier.
-- Variant count.
-- Reference image count.
-- Actual provider cost metadata when available.
-
-Target launch economics:
-
-
-Possible payment provider after validation:
-
-- Wonder is the planned first PSP.
-- Recurring subscription should use tokenized card payment.
-- Local one-time methods such as FPS, PayMe, AlipayHK, WeChat Pay HK, Octopus, etc. are only for top-up credit packs where Wonder merchant settings support them.
-- Entitlements must be driven by verified, idempotent Wonder webhooks. Never trust success redirect pages for credit issuance.
-
-Current code deliberately rejects Wonder webhooks until account-specific RSA key and event schema are implemented. Do not prioritize payment integration before repeat-use, willingness-to-pay, and unit-cost evidence exist.
-
-## 5. Current Cloudflare preview state
-
-Production URL:
-
-- `https://motive-ecommerce-visuals.kyeunga25.workers.dev`
-
-Resources:
-
-- Worker: `motive-ecommerce-visuals`
-- D1: `motive-beta`
-- D1 ID: `replace-with-protected-id`
-- R2: `motive-beta-assets`
-- Queue: `motive-generation-jobs`
-
-Useful commands:
-
-```bash
-npm run cf:whoami
-npm run cf:migrate
-npm run cf:dry-run
-npm run cf:deploy
-npm run cf:secrets
-npm run cf:queue
-curl -i https://motive-ecommerce-visuals.kyeunga25.workers.dev/api/health
-```
-
-Required secrets before real generation:
-
-```bash
-npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put WONDER_WEBHOOK_PUBLIC_KEY
-```
-
-Do not commit secret values.
-
-## 6. Current codebase map
-
-- `src/App.tsx` — main app shell.
-- `src/components/` — UI components.
-- `src/components/AuthPage.tsx` — auth UI if present in current worktree.
-- `src/lib/types.ts` — shared product/workflow/session types.
-- `src/lib/workflows.ts` — five fixed workflow definitions.
-- `src/lib/providers.ts` — provider adapters:
-  - `CopyProvider`
-  - `ImageProvider`
-  - `BillingProvider`
-- `src/worker.ts` — Cloudflare Worker API, auth/session endpoints if current branch includes them, generation queue producer/consumer, R2 image serving.
-- `migrations/0001_initial.sql` — initial workspace/product/generation/payment ledger schema.
-- `migrations/0002_auth_workspaces.sql` — auth/session/workspace membership schema if present.
-- `migrations/0003_auth_security.sql` — auth-attempt rate-limit history and indexes.
-- `migrations/0004_generation_idempotency.sql` — one credit-ledger event per generation transition.
-- `migrations/0005_generation_processing_attempt.sql` — queue-attempt claim state for hard-failure recovery.
-- `wrangler.jsonc` — Cloudflare bindings and production config.
-- `design-reference.png` — visual design reference.
-
-## 7. Current implementation status to verify at start
-
-Always inspect `git status -sb` first. At the time this handoff was written, there may be uncommitted local changes related to:
-
-- Auth UI.
-- Session handling.
-- Workspace memberships.
-- `migrations/0002_auth_workspaces.sql`.
-- Generation list/image endpoints.
-
-Do not assume these are committed. Verify before continuing:
-
-```bash
-git status -sb
-npm run check
-npm run build
-```
-
-If Cloudflare resources changed:
-
-```bash
-npm run cf:dry-run
-```
-
-## 8. Architecture invariants
-
-Keep these boundaries:
+- React, Vite, and TypeScript for the web interface.
+- Cloudflare Workers for the API and static-asset runtime.
+- D1 for users, sessions, workspaces, jobs, and application records.
+- R2 for private source and generated assets.
+- Cloudflare Queues for asynchronous generation.
+- Provider interfaces for copy, image, and optional external-service integrations.
 
 ```text
 React UI
   -> Worker API
-    -> D1 for users/workspaces/products/credits/jobs/payments
-    -> R2 for private original/reference/output images
-    -> Queues for async generation
-      -> CopyProvider using gpt-5.4-mini
-      -> ImageProvider using gpt-image-2
-      -> R2 output write
-      -> D1 credit settlement
+    -> D1 via DB
+    -> private R2 via MEDIA_BUCKET
+    -> Queue via GENERATION_QUEUE
+      -> CopyProvider
+      -> ImageProvider
+      -> private output storage
+      -> idempotent state update
 ```
 
-Provider interfaces should remain swappable:
+## Repository map
 
-- `ImageProvider` for `gpt-image-2`.
-- `CopyProvider` for `gpt-5.4-mini`.
-- `BillingProvider` for Wonder.
+- `src/App.tsx` — application shell and authenticated workspace UI.
+- `src/components/` — interface components.
+- `src/lib/types.ts` — shared application types.
+- `src/lib/workflows.ts` — bounded workflow definitions.
+- `src/lib/providers.ts` — swappable provider interfaces and implementations.
+- `src/worker.ts` — Worker routes, authentication, authorization, queue processing, and private asset delivery.
+- `migrations/` — D1 schema history.
+- `tests/` — Workers integration tests.
+- `wrangler.jsonc` — Wrangler bindings and deployment structure.
 
-Generation must stay asynchronous:
+## Local development
 
-1. Validate session and workspace access.
-2. Reserve credits in D1.
-3. Insert `generations` row with `queued`.
-4. Send queue message.
-5. Queue consumer calls AI providers.
-6. Store output in R2.
-7. Update generation status.
-8. Settle or release credits exactly once.
+Requirements:
 
-Idempotency is required for retries and webhook processing.
+- Node.js 22 or later;
+- npm;
+- Wrangler 4.x through the project dependency.
 
-## 9. Security and privacy requirements
+```bash
+npm ci
+npm run dev
+```
 
-- Workspace isolation is mandatory.
-- R2 objects must remain private.
-- Never expose provider API keys to frontend.
-- Use short-lived signed upload/download URLs or authenticated Worker endpoints.
-- Every generation, image read, product read, and payment event must be scoped to the authenticated workspace.
-- Store user-uploaded assets only when user confirms they have commercial usage rights.
-- Add privacy policy, acceptable use policy, refund policy, content complaint process, account deletion, and asset deletion flows before public launch.
+Run the complete local verification set with:
 
-## 10. Implementation priorities
+```bash
+npm run check
+npm test
+npm run build
+npm run cf:dry-run
+```
 
-The next agent should prioritize in this order:
+Local tests use isolated Workers, D1, R2, and Queue bindings. They must not contact production resources.
 
-1. Review and stabilize the uncommitted auth/session/workspace work.
-2. Add automated authorization, credit, and duplicate-delivery tests before enabling real generation.
-3. Implement private R2 upload for one real product reference image.
-4. Build the Campaign Pack pipeline with product-preserving composition and exact text overlays.
-5. Replace demo results with real polling, output review, download, and quality feedback.
-6. Record latency, failure reason, provider usage, and cost per successful pack.
-7. Run a concierge beta with 5 design partners and at least 10 real products.
-8. Add reusable brand/product persistence only when repeat usage demonstrates the need.
-9. Harden credits and idempotency before charging users.
-10. Defer Wonder integration and public-launch work until validation gates pass.
+## Public configuration contract
 
-Detailed task breakdown is in `docs/TODO.md`.
+Public examples must use explicit placeholders rather than realistic-looking identifiers:
+
+```text
+Worker                 <WORKER_NAME>
+D1 database            <D1_DATABASE_NAME>
+D1 database ID         <D1_DATABASE_ID>
+R2 bucket              <R2_BUCKET_NAME>
+Queue                   <QUEUE_NAME>
+Dead-letter queue       <DEAD_LETTER_QUEUE_NAME>
+Public application URL <PUBLIC_APP_URL>
+```
+
+The application code relies on generic binding names:
+
+- `DB` for D1;
+- `MEDIA_BUCKET` for R2;
+- `GENERATION_QUEUE` for Queues;
+- `ASSETS` when supplied by the Workers static-assets runtime.
+
+Do not rename these bindings during documentation cleanup. Account IDs, resource names, database IDs, deployment URLs, and secret values belong in ignored local configuration or protected CI/Cloudflare settings.
+
+## Provider and mock behavior
+
+`CopyProvider` and `ImageProvider` isolate external APIs from application logic. Tests should stub provider calls or use deterministic fixtures. The Vite development experience may use local demo data, but production code must never receive mock credentials or test-only access gates.
+
+When adding a provider:
+
+1. implement the existing interface;
+2. validate and bound request and response data;
+3. keep credentials in Worker secrets;
+4. add deterministic failure and retry tests;
+5. avoid logging user assets, prompts, credentials, or full provider payloads.
+
+## Security and privacy principles
+
+- Authenticate every protected API request.
+- Authorize the authenticated user against the requested workspace.
+- Keep R2 buckets private and retrieve objects through authorized Worker routes or short-lived signed access.
+- Store only hashed session tokens server-side and use secure, HTTP-only cookies.
+- Validate upload content type, size, ownership, and workspace path.
+- Bind SQL values rather than constructing SQL from user input.
+- Verify webhook signatures and process external events idempotently before enabling an integration.
+- Apply abuse controls to anonymous authentication and upload surfaces.
+- Avoid exposing internal deployment state through public documentation or logs.
+
+## Contribution workflow
+
+1. Run `git status -sb` and preserve unrelated work.
+2. Make the smallest coherent change.
+3. Add or update tests for behavior changes.
+4. Run `git diff --check`, type checking, tests, build, and Wrangler dry-run when configuration or Worker behavior changes.
+5. Keep account-specific configuration and generated files out of Git.

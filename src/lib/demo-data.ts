@@ -1,7 +1,7 @@
 import type { BrandPack, Product, GenerationResult } from './types'
 
 export const starterBrand: BrandPack = {
-  name: 'HK Tech Gear',
+  name: 'Example Brand',
   tone: '簡潔、有活力、可信',
   colors: ['#0b1933', '#155eef', '#1fb981'],
   forbiddenWords: '最平、無敵、保證升值',

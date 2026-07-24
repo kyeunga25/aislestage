@@ -1,4 +1,4 @@
-import { OpenAICopyProvider, OpenAIImageProvider, WonderBillingProvider } from './lib/providers'
+import { OpenAICopyProvider, OpenAIImageProvider, UnavailableBillingProvider } from './lib/providers'
 import { workflowById } from './lib/workflows'
 import type { GenerationInput } from './lib/types'
 
@@ -7,18 +7,18 @@ export type Env = {
   MEDIA_BUCKET: R2Bucket
   GENERATION_QUEUE: Queue<GenerationMessage>
   OPENAI_API_KEY?: string
-  WONDER_WEBHOOK_PUBLIC_KEY?: string
   APP_ORIGIN?: string
   REGISTRATION_MODE?: 'open' | 'closed'
   GENERATION_MODE?: 'enabled' | 'disabled'
+  INITIAL_CREDIT_BALANCE?: string
 }
 
 export type GenerationMessage = { generationId: string; input: GenerationInput }
 type AuthUser = { id: string; email: string; name: string }
 type Workspace = { id: string; name: string; role: string; planStatus: string; availableCredits: number; reservedCredits: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
-const CREDIT_COST = 2
-const STARTER_CREDITS = 20
+// One generation consumes one technical usage unit. Commercial pricing is not encoded here.
+const CREDIT_COST = 1
 const SESSION_COOKIE = 'aislepack_session'
 const SESSION_DAYS = 60
 const PASSWORD_ITERATIONS = 100_000
@@ -187,6 +187,11 @@ function boundedStringArray(value: unknown, maxItems: number, maxLength: number)
   return Array.isArray(value) && value.length <= maxItems && value.every((item) => boundedString(item, maxLength, false))
 }
 
+function initialCreditBalance(env: Env) {
+  const value = Number(env.INITIAL_CREDIT_BALANCE)
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
 function validInput(value: unknown): value is GenerationInput {
   if (!value || typeof value !== 'object') return false
   const input = value as Partial<GenerationInput>
@@ -303,7 +308,7 @@ async function register(request: Request, env: Env) {
       env.DB.prepare('INSERT INTO users (id, email, name, password_hash, password_salt) VALUES (?, ?, ?, ?, ?)').bind(userId, email, name, passwordHash.hash, passwordHash.salt),
       env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status) VALUES (?, ?, ?, ?)').bind(workspaceId, userId, workspaceName, 'trial'),
       env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
-      env.DB.prepare('INSERT INTO credit_balances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, STARTER_CREDITS)
+      env.DB.prepare('INSERT INTO credit_balances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialCreditBalance(env))
     ])
   } catch {
     await recordAuthAttempt(env, request, 'register_failed', email)
@@ -418,7 +423,7 @@ async function completeGenerationAndSettle(env: Env, workspaceId: string, genera
 }
 
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
-  if (env.GENERATION_MODE !== 'enabled' || !env.OPENAI_API_KEY) return json({ error: 'AI 生成服務仍在封閉測試，暫未開放。' }, { status: 503 })
+  if (env.GENERATION_MODE !== 'enabled' || !env.OPENAI_API_KEY) return json({ error: 'AI 生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
   const contentLength = Number(request.headers.get('content-length') || '0')
   if (contentLength > MAX_GENERATION_BODY_BYTES) return json({ error: 'Generation payload is too large.' }, { status: 413 })
@@ -480,14 +485,14 @@ async function generationImage(request: Request, env: Env, session: SessionConte
 export default {
   async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url)
-    if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && url.pathname !== '/api/wonder/webhook' && !isAllowedOrigin(request, env)) {
+    if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && url.pathname !== '/api/payment/webhook' && !isAllowedOrigin(request, env)) {
       return json({ error: 'Request origin is not allowed.' }, { status: 403 })
     }
     if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/')) return new Response(null, { status: 204 })
     if (url.pathname === '/api/health') return json({
       status: 'ok',
-      service: 'aislepack-worker',
-      releaseMode: 'closed-beta-preview',
+      service: 'campaign-asset-worker',
+      releaseMode: 'restricted',
       registrationOpen: env.REGISTRATION_MODE === 'open',
       generationEnabled: env.GENERATION_MODE === 'enabled' && Boolean(env.OPENAI_API_KEY)
     })
@@ -521,10 +526,10 @@ export default {
       if (session instanceof Response) return session
       return createGeneration(request, env, session)
     }
-    if (url.pathname === '/api/wonder/webhook' && request.method === 'POST') {
+    if (url.pathname === '/api/payment/webhook' && request.method === 'POST') {
       try {
-        const event = await new WonderBillingProvider().verifyWebhook(request)
-        await env.DB.prepare('INSERT INTO payment_events (provider_event_id, provider, event_type, payload_json) VALUES (?, ?, ?, ?)').bind(event.eventId, 'wonder', event.type, JSON.stringify(event.data)).run()
+        const event = await new UnavailableBillingProvider().verifyWebhook(request)
+        await env.DB.prepare('INSERT INTO payment_events (provider_event_id, provider, event_type, payload_json) VALUES (?, ?, ?, ?)').bind(event.eventId, 'external', event.type, JSON.stringify(event.data)).run()
         return json({ received: true })
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : 'Webhook rejected.' }, { status: 401 })

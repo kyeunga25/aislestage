@@ -1,5 +1,5 @@
 {
-  "name": "motive-ecommerce-visuals",
+  "name": "marketing-image-ai-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -12,11 +12,11 @@
     "test:watch": "vitest",
     "deploy": "npm run build && wrangler deploy --config wrangler.jsonc",
     "cf:whoami": "wrangler whoami",
-    "cf:migrate": "wrangler d1 migrations apply motive-beta --remote --config wrangler.jsonc",
+    "cf:migrate": "wrangler d1 migrations apply \"$CLOUDFLARE_D1_DATABASE_NAME\" --remote --config wrangler.jsonc",
     "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
     "cf:deploy": "npm run build && wrangler deploy --config wrangler.jsonc",
     "cf:secrets": "wrangler secret list --config wrangler.jsonc",
-    "cf:queue": "wrangler queues consumer list motive-generation-jobs"
+    "cf:queue": "wrangler queues consumer list \"$CLOUDFLARE_QUEUE_NAME\""
   },
   "dependencies": {
     "lucide-react": "latest",

@@ -52,7 +52,7 @@ function PackSummary({ availableCredits, generationAvailable }: { availableCredi
       <li><CheckCircle2 size={18} /><span><strong>促銷文字準確呈現</strong><small>價格、優惠與 CTA 由程式排版</small></span></li>
       <li><CheckCircle2 size={18} /><span><strong>繁中及英文文案</strong><small>同一套資料，不用重複輸入</small></span></li>
     </ul>
-    <div className="summary-meta"><span><Clock3 size={17} />{generationAvailable ? '約 2–4 分鐘' : '封閉測試中'}</span><span>可用額度 <strong>{availableCredits}</strong></span></div>
+    <div className="summary-meta"><span><Clock3 size={17} />{generationAvailable ? '非同步處理' : '目前未開放'}</span><span>可用額度 <strong>{availableCredits}</strong></span></div>
   </aside>
 }
 

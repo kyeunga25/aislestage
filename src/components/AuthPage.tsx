@@ -66,8 +66,8 @@ export function AuthPage({ registrationOpen, onAuthenticated }: Props) {
       </div>
       <form className="auth-form" onSubmit={handleSubmit}>
         <div className="section-heading"><h2 id="auth-title">{isRegister ? '建立帳號' : '登入 AislePack'}</h2><p>{isRegister ? '建立你的私人工作區，開始第一套 Campaign Pack。' : '回到工作區，繼續建立推廣素材包。'}</p></div>
-        {!registrationOpen ? <p className="beta-access-note"><strong>目前為獲邀封閉測試</strong><span>新帳號註冊已關閉；現有測試帳號可以正常登入。</span></p> : null}
-        {isRegister && <div className="form-row"><label>你的姓名<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>工作區名稱<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="例如 HK Tech Gear" required /></label></div>}
+        {!registrationOpen ? <p className="registration-note"><strong>註冊目前未開放</strong><span>已有帳號仍可登入。</span></p> : null}
+        {isRegister && <div className="form-row"><label>你的姓名<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>工作區名稱<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="例如 Example Store" required /></label></div>}
         <label>電郵地址<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
         <label>密碼<input type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         {error && <p className="form-error" role="alert">{error}</p>}

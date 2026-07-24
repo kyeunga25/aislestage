@@ -1,81 +1,83 @@
 # AislePack — AI 電商素材包
 
-Working product brand for a Cloudflare Workers MVP that is validating how one approved product image and verified brief can become a coordinated ecommerce Campaign Pack.
+A React and Cloudflare Workers project for turning an approved product image and verified brief into coordinated ecommerce campaign assets.
 
-Public repository: https://github.com/kyeunga25/marketing_image_ai_web
+The core workflow targets 1:1, 4:5, and 9:16 visuals with bilingual copy. Product-preserving composition and deterministic commercial text are preferred over asking an image model to reproduce exact packaging, prices, or claims.
 
-For future Codex agents, start with:
+## Architecture
 
-- [AGENTS.md](AGENTS.md)
-- [docs/CODEX_AGENT_BRIEF.md](docs/CODEX_AGENT_BRIEF.md)
-- [docs/TODO.md](docs/TODO.md)
+- React, Vite, and TypeScript frontend.
+- Cloudflare Worker API and static assets.
+- D1 through the `DB` binding.
+- Private R2 assets through the `MEDIA_BUCKET` binding.
+- Asynchronous jobs through the `GENERATION_QUEUE` binding.
+- Swappable copy and image provider interfaces.
 
-Closed-beta preview:
-
-- https://motive-ecommerce-visuals.kyeunga25.workers.dev
-
-Cloudflare resources:
-
-- Worker: `motive-ecommerce-visuals`
-- D1: `motive-beta` (`replace-with-protected-id`)
-- R2: `motive-beta-assets`
-- Queue: `motive-generation-jobs`
+See [the engineering brief](docs/CODEX_AGENT_BRIEF.md) for the public architecture contract and [the technical backlog](docs/TODO.md) for contribution-ready work.
 
 ## Local development
 
 ```bash
-npm install
+git clone <REPOSITORY_URL>
+cd marketing_image_ai_web
+npm ci
 npm run dev
 ```
 
-The Vite UI runs in demo mode locally. The deployed Worker defaults to a safe preview mode: new registration is closed and AI generation is disabled until the real private image-input and three-ratio Campaign Pack pipeline passes validation.
+The development UI can use local demo data. Workers integration tests use isolated D1, R2, and Queue bindings and must not contact production resources.
 
-Milestone 1 security and reliability checks run fully locally with isolated D1, R2 and Queue bindings:
+## Verification
 
 ```bash
+git diff --check
 npm run check
 npm test
 npm run build
+npm run cf:dry-run
 ```
 
-The test configuration opens registration and generation only inside the local Workers test runtime. `wrangler.jsonc` remains the deployment source of truth and keeps both capabilities closed.
+## Cloudflare configuration
 
-## Sync on another machine
+Keep these binding names stable because application code depends on them:
 
-```bash
-git clone git@github.com:kyeunga25/marketing_image_ai_web.git
-cd marketing_image_ai_web
-npm ci
-npm run check
-npm run build
-npm run cf:whoami
+```text
+DB
+MEDIA_BUCKET
+GENERATION_QUEUE
+ASSETS
 ```
 
-Use `.env.example` as the local reference only. Production secrets must be set through `wrangler secret put` and should never be committed. To continue work from another Codex workspace, pull the latest branch first:
+Public examples must use explicit placeholders:
 
-```bash
-git pull --ff-only
+```text
+<WORKER_NAME>
+<D1_DATABASE_NAME>
+<D1_DATABASE_ID>
+<R2_BUCKET_NAME>
+<QUEUE_NAME>
+<DEAD_LETTER_QUEUE_NAME>
+<PUBLIC_APP_URL>
 ```
 
-## Cloudflare setup
+Store account-specific identifiers in ignored local configuration or protected CI/Cloudflare settings. Do not replace placeholders with realistic-looking sample identifiers.
 
-1. Log in with `npx wrangler login`.
-2. Apply database migrations locally and complete endpoint smoke tests.
-3. Validate deployment config with `npm run cf:dry-run`.
-4. Apply reviewed remote migrations with `npm run cf:migrate`.
-5. Deploy the safe closed-beta preview with `npm run cf:deploy`.
-6. Configure `OPENAI_API_KEY` with `npx wrangler secret put OPENAI_API_KEY` only when real generation is ready.
-7. Change `GENERATION_MODE` to `enabled` only after private product-image input, coordinated three-ratio output, deterministic text, duplicate-delivery tests, and cost controls pass.
+Set provider credentials with Wrangler secrets or the equivalent protected deployment setting. `.env.example` lists names only and must never contain real values.
 
-`REGISTRATION_MODE` and `GENERATION_MODE` are deliberately committed as `closed` and `disabled`. Do not enable public self-service by changing only the frontend. The Worker enforces both gates server-side.
+Before deploying:
 
-Useful checks:
+1. validate the selected private deployment configuration;
+2. apply reviewed migrations to the intended environment;
+3. run the Wrangler dry-run command;
+4. confirm that registration, generation, and other high-cost capabilities use deliberate server-side gates;
+5. deploy only after the target account and resource mappings have been independently verified.
 
-```bash
-npm test
-npm run cf:secrets
-npm run cf:queue
-curl -i https://motive-ecommerce-visuals.kyeunga25.workers.dev/api/health
-```
+## Security and privacy
 
-The health endpoint returns boolean capability flags without exposing secret values. The app deliberately rejects Wonder webhooks until its merchant RSA key and exact event schema are configured. It never treats a success redirect as payment confirmation.
+- Protected APIs require an authenticated session.
+- Workspace access is checked server-side.
+- Uploaded and generated assets remain private by default.
+- Provider keys are Worker-side secrets and are never exposed to the browser.
+- SQL values are bound parameters.
+- Uploads, provider responses, asynchronous retries, and external events require validation and bounded processing.
+
+Security-sensitive changes should include regression tests without publishing customer data, deployment identifiers, or internal operational details.

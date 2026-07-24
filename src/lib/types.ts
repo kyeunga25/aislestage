@@ -82,7 +82,7 @@ export type SessionPayload = {
 export type PlatformStatus = {
   status: 'ok'
   service: string
-  releaseMode: 'closed-beta-preview'
+  releaseMode: 'restricted'
   registrationOpen: boolean
   generationEnabled: boolean
 }

@@ -13,7 +13,7 @@ async function createGeneration(cookie: string, input: ReturnType<typeof generat
 }
 
 async function deliver(message: GenerationMessage, attempts = 1, messageId = crypto.randomUUID()) {
-  const batch = createMessageBatch<GenerationMessage>('motive-generation-jobs', [{
+  const batch = createMessageBatch<GenerationMessage>('test-generation-queue', [{
     id: messageId,
     timestamp: new Date(),
     attempts,
@@ -71,11 +71,11 @@ describe('workspace authorization and credit integrity', () => {
 
   it('does not reserve credits when the balance is insufficient', async () => {
     const account = await registerAccount('Low Credit')
-    await env.DB.prepare('UPDATE credit_balances SET available = 1 WHERE workspace_id = ?').bind(account.currentWorkspace.id).run()
+    await env.DB.prepare('UPDATE credit_balances SET available = 0 WHERE workspace_id = ?').bind(account.currentWorkspace.id).run()
 
     const response = await createGeneration(account.cookie, generationInput(account.currentWorkspace.id))
     expect(response.status).toBe(402)
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 1, reserved: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM credit_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first<{ count: number }>()).toEqual({ count: 0 })
   })
 
@@ -88,7 +88,7 @@ describe('workspace authorization and credit integrity', () => {
 
     const response = await createGeneration(account.cookie, generationInput(account.currentWorkspace.id), { ...env, GENERATION_QUEUE: failingQueue })
     expect(response.status).toBe(503)
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 20, reserved: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
 
     const generation = await env.DB.prepare('SELECT id, status FROM generations WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1')
       .bind(account.currentWorkspace.id)
@@ -125,7 +125,7 @@ describe('workspace authorization and credit integrity', () => {
     const duplicate = await deliver(message, 2, messageId)
     expect(duplicate.explicitAcks).toContain(messageId)
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 18, reserved: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
     expect(await ledgerCount(id, 'reservation')).toBe(1)
     expect(await ledgerCount(id, 'settlement')).toBe(1)
     expect(await ledgerCount(id, 'release')).toBe(0)
@@ -163,7 +163,7 @@ describe('workspace authorization and credit integrity', () => {
     const result = await deliver({ generationId: id, input }, 2)
     expect(result.explicitAcks).toHaveLength(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 18, reserved: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
     expect(await ledgerCount(id, 'settlement')).toBe(1)
     expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
       .bind(id)
@@ -188,7 +188,7 @@ describe('workspace authorization and credit integrity', () => {
     const duplicate = await deliver(message, 5, messageId)
     expect(duplicate.explicitAcks).toContain(messageId)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 20, reserved: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
     expect(await ledgerCount(id, 'reservation')).toBe(1)
     expect(await ledgerCount(id, 'release')).toBe(1)
     expect(await ledgerCount(id, 'settlement')).toBe(0)
