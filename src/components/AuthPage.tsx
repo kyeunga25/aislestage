@@ -48,11 +48,11 @@ export function AuthPage({ registrationOpen, onAuthenticated }: Props) {
   return <main className="auth-shell">
     <section className="auth-copy" aria-label="AislePack 產品介紹">
       <a className="app-brand auth-brand" href="/" aria-label="AislePack">
-        <BrandMark /><span><strong>AislePack</strong><small>AI 電商素材包</small></span>
+        <BrandMark /><span><strong>AislePack</strong><small>AI 電商素材工作台</small></span>
       </a>
       <div>
         <h1>一張商品圖，完成整套推廣素材</h1>
-        <p>用固定三步建立 1:1、4:5、9:16 電商素材與繁中、英文文案。商品外觀保持一致，商業文字準確呈現。</p>
+        <p>以商品資料、來源圖片、Agent 規劃及人工批准建立 1:1、4:5、9:16 電商素材與雙語文案。</p>
       </div>
       <div className="auth-points">
         <span><Sparkles size={17} /> 一次完成三種尺寸</span>
