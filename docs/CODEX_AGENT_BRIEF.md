@@ -44,6 +44,7 @@ React UI
 - `src/agents/CampaignAgent.ts` — persistent plan, revision, and approval state.
 - `src/worker.ts` — Worker routes, authentication, authorization, queue processing, and private asset delivery.
 - `migrations/` — D1 schema history.
+- `docs/BETA_ACCESS.md` — public-safe account, role, invitation, and beta testing contract.
 - `tests/` — Workers integration tests.
 - `wrangler.jsonc` — public-safe Wrangler binding structure.
 
@@ -117,6 +118,8 @@ When adding a provider:
 - Authorize the authenticated user against the requested workspace.
 - Keep R2 buckets private and retrieve objects through authorized Worker routes or short-lived signed access.
 - Store only hashed session tokens server-side and use secure, HTTP-only cookies.
+- Keep beta invitation tokens and bound invite emails hashed at rest, and enforce account status on login and session loading.
+- Use one-way abuse keys rather than raw email or IP values in authentication-attempt records.
 - Validate upload content type, size, ownership, and workspace path.
 - Check both the upload MIME allowlist and file signature before writing a private product asset.
 - Derive the Campaign Agent instance from the authenticated workspace; never accept an arbitrary instance name from the browser.

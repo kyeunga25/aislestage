@@ -63,6 +63,8 @@ export type AuthUser = {
   id: string
   email: string
   name: string
+  accountStatus: 'active' | 'suspended' | 'deactivated'
+  accountType: 'standard' | 'beta' | 'test'
 }
 
 export type WorkspaceSummary = {
@@ -84,6 +86,7 @@ export type PlatformStatus = {
   status: 'ok'
   service: string
   releaseMode: 'restricted'
+  registrationMode: 'open' | 'invite' | 'closed'
   registrationOpen: boolean
   generationEnabled: boolean
   agentMode: 'deterministic' | 'assisted'

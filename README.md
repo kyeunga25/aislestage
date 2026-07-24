@@ -16,7 +16,7 @@ Campaign Agent 會檢查資料、建立固定三比例計劃並等待使用者�
 - Workspace-scoped planning and approval state through the `CAMPAIGN_AGENT` binding.
 - Swappable copy and image provider interfaces.
 
-Start with [the unified product specification](docs/PRODUCT_SPEC.md), then use [the engineering brief](docs/CODEX_AGENT_BRIEF.md) and [the public release status](docs/TODO.md) for implementation details.
+Start with [the unified product specification](docs/PRODUCT_SPEC.md), then use [the beta access contract](docs/BETA_ACCESS.md), [the engineering brief](docs/CODEX_AGENT_BRIEF.md), and [the public release status](docs/TODO.md) for implementation details.
 
 ## Local development
 
@@ -81,6 +81,8 @@ Before deploying:
 
 - Protected APIs require an authenticated session.
 - Workspace access is checked server-side.
+- Closed, invite-only, and open registration are separate server-side modes; production defaults to closed.
+- Suspended or deactivated accounts cannot create or continue sessions.
 - Uploaded and generated assets remain private by default.
 - Provider keys are Worker-side secrets and are never exposed to the browser.
 - SQL values are bound parameters.

@@ -13,14 +13,16 @@ export type Env = {
   CAMPAIGN_AGENT: DurableObjectNamespace<CampaignAgent>
   OPENAI_API_KEY?: string
   APP_ORIGIN?: string
-  REGISTRATION_MODE?: 'open' | 'closed'
+  REGISTRATION_MODE?: 'open' | 'invite' | 'closed'
   GENERATION_MODE?: 'enabled' | 'disabled'
   INITIAL_CREDIT_BALANCE?: string
   AGENT_MODE?: 'deterministic' | 'assisted'
 }
 
 export type GenerationMessage = { generationId: string; input: GenerationInput }
-type AuthUser = { id: string; email: string; name: string }
+type AccountStatus = 'active' | 'suspended' | 'deactivated'
+type AccountType = 'standard' | 'beta' | 'test'
+type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
 type Workspace = { id: string; name: string; role: string; planStatus: string; availableCredits: number; reservedCredits: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 // One generation consumes one technical usage unit for idempotent accounting.
@@ -159,13 +161,15 @@ function isAllowedOrigin(request: Request, env: Env) {
 }
 
 async function recordAuthAttempt(env: Env, request: Request, eventType: 'login_failed' | 'login_success' | 'register_failed' | 'register_success' | 'rate_limited', email = '') {
-  await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), email, getClientIp(request), eventType).run()
+  const [emailKey, ipKey] = await Promise.all([email ? sha256(email) : '', sha256(getClientIp(request))])
+  await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), emailKey, ipKey, eventType).run()
 }
 
 async function authAttemptCount(env: Env, request: Request, options: { email?: string; eventTypes: string[]; minutes: number }) {
-  const ip = getClientIp(request)
+  const ip = await sha256(getClientIp(request))
+  const email = options.email ? await sha256(options.email) : ''
   const placeholders = options.eventTypes.map(() => '?').join(',')
-  const bindings: unknown[] = options.email ? [options.email, ip, ...options.eventTypes, `-${options.minutes} minutes`] : [ip, ...options.eventTypes, `-${options.minutes} minutes`]
+  const bindings: unknown[] = options.email ? [email, ip, ...options.eventTypes, `-${options.minutes} minutes`] : [ip, ...options.eventTypes, `-${options.minutes} minutes`]
   const result = await env.DB.prepare(`
     SELECT COUNT(*) AS count
     FROM auth_attempts
@@ -199,6 +203,10 @@ function boundedStringArray(value: unknown, maxItems: number, maxLength: number)
 function initialCreditBalance(env: Env) {
   const value = Number(env.INITIAL_CREDIT_BALANCE)
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+function registrationMode(env: Env) {
+  return env.REGISTRATION_MODE === 'open' || env.REGISTRATION_MODE === 'invite' ? env.REGISTRATION_MODE : 'closed'
 }
 
 function validInput(value: unknown): value is GenerationInput {
@@ -267,10 +275,10 @@ async function workspacesForUser(env: Env, userId: string) {
 
 async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionContext | null> {
   const user = await env.DB.prepare(`
-    SELECT u.id, u.email, u.name
+    SELECT u.id, u.email, u.name, u.account_status AS accountStatus, u.account_type AS accountType
     FROM sessions s
     JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
+    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.account_status = 'active'
   `).bind(tokenHash).first<AuthUser>()
   if (!user) return null
   const workspaces = await workspacesForUser(env, user.id)
@@ -396,13 +404,15 @@ async function referenceAssetsBelongToWorkspace(env: Env, workspaceId: string, a
 }
 
 async function register(request: Request, env: Env) {
-  if (env.REGISTRATION_MODE !== 'open') return json({ error: 'AislePack 現時只開放獲邀測試帳號。' }, { status: 403 })
+  const mode = registrationMode(env)
+  if (mode === 'closed') return json({ error: 'AislePack 現時只開放已有帳號登入。' }, { status: 403 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
   const body = parsed.body as Record<string, unknown> | null
   const email = normalizeEmail(body?.email)
   const password = cleanString(body?.password, 256)
+  const inviteCode = cleanString(body?.inviteCode, 256)
   const name = cleanString(body?.name) || email.split('@')[0]
   const workspaceName = cleanString(body?.workspaceName) || `${name} 的工作區`
   if (await isRegisterRateLimited(env, request)) {
@@ -418,19 +428,52 @@ async function register(request: Request, env: Env) {
     return json({ error: '密碼至少需要 8 個字元。' }, { status: 400 })
   }
 
+  let invite: { id: string; accountType: 'beta' | 'test' } | null = null
+  if (mode === 'invite') {
+    if (inviteCode.length < 12) {
+      await recordAuthAttempt(env, request, 'register_failed', email)
+      return json({ error: '請輸入有效的 Beta 邀請碼。' }, { status: 400 })
+    }
+    invite = await env.DB.prepare(`
+      SELECT id, account_type AS accountType
+      FROM beta_invites
+      WHERE token_hash = ? AND recipient_hash = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP
+    `).bind(await sha256(inviteCode), await sha256(`${email}\n${inviteCode}`)).first<{ id: string; accountType: 'beta' | 'test' }>()
+    if (!invite) {
+      await recordAuthAttempt(env, request, 'register_failed', email)
+      return json({ error: '邀請碼無效、已使用或與電郵不符。' }, { status: 403 })
+    }
+  }
+
   const userId = crypto.randomUUID()
   const workspaceId = crypto.randomUUID()
   const passwordHash = await hashPassword(password)
   try {
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO users (id, email, name, password_hash, password_salt) VALUES (?, ?, ?, ?, ?)').bind(userId, email, name, passwordHash.hash, passwordHash.salt),
+    const createUser = invite
+      ? env.DB.prepare(`
+        INSERT INTO users (id, email, name, password_hash, password_salt, account_type)
+        SELECT ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM beta_invites
+          WHERE id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP
+        )
+      `).bind(userId, email, name, passwordHash.hash, passwordHash.salt, invite.accountType, invite.id)
+      : env.DB.prepare('INSERT INTO users (id, email, name, password_hash, password_salt, account_type) VALUES (?, ?, ?, ?, ?, ?)').bind(userId, email, name, passwordHash.hash, passwordHash.salt, 'standard')
+    const statements = [
+      createUser,
       env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status) VALUES (?, ?, ?, ?)').bind(workspaceId, userId, workspaceName, 'trial'),
       env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
       env.DB.prepare('INSERT INTO credit_balances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialCreditBalance(env))
-    ])
+    ]
+    if (invite) statements.push(env.DB.prepare(`
+      UPDATE beta_invites
+      SET status = 'used', used_by_user_id = ?, used_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'pending'
+    `).bind(userId, invite.id))
+    await env.DB.batch(statements)
   } catch {
     await recordAuthAttempt(env, request, 'register_failed', email)
-    return json({ error: '這個電郵已經註冊。' }, { status: 409 })
+    return json({ error: invite ? '邀請註冊未能完成，請重新取得邀請。' : '這個電郵已經註冊。' }, { status: 409 })
   }
   await recordAuthAttempt(env, request, 'register_success', email)
   return sessionResponse(env, request, userId, 201)
@@ -447,11 +490,19 @@ async function login(request: Request, env: Env) {
     await recordAuthAttempt(env, request, 'rate_limited', email)
     return json({ error: '登入嘗試次數過多，請稍後再試。' }, { status: 429 })
   }
-  const user = await env.DB.prepare('SELECT id, email, name, password_hash AS passwordHash, password_salt AS passwordSalt FROM users WHERE email = ?').bind(email).first<AuthUser & { passwordHash: string; passwordSalt: string }>()
+  const user = await env.DB.prepare(`
+    SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
+      password_hash AS passwordHash, password_salt AS passwordSalt
+    FROM users WHERE email = ?
+  `).bind(email).first<AuthUser & { passwordHash: string; passwordSalt: string }>()
   const passwordMatches = user ? await verifyPassword(password, user.passwordHash, user.passwordSalt) : await verifyPassword(password, DUMMY_PASSWORD_HASH, DUMMY_PASSWORD_SALT)
   if (!user || !passwordMatches) {
     await recordAuthAttempt(env, request, 'login_failed', email)
     return json({ error: '電郵或密碼不正確。' }, { status: 401 })
+  }
+  if (user.accountStatus !== 'active') {
+    await recordAuthAttempt(env, request, 'login_failed', email)
+    return json({ error: '帳號目前不可使用。' }, { status: 403 })
   }
   await recordAuthAttempt(env, request, 'login_success', email)
   return sessionResponse(env, request, user.id)
@@ -612,7 +663,8 @@ export default {
       status: 'ok',
       service: 'campaign-asset-worker',
       releaseMode: 'restricted',
-      registrationOpen: env.REGISTRATION_MODE === 'open',
+      registrationMode: registrationMode(env),
+      registrationOpen: registrationMode(env) !== 'closed',
       generationEnabled: env.GENERATION_MODE === 'enabled' && Boolean(env.OPENAI_API_KEY),
       agentMode: env.AGENT_MODE === 'assisted' && Boolean(env.OPENAI_API_KEY) ? 'assisted' : 'deterministic'
     })

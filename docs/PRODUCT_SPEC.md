@@ -38,6 +38,14 @@
 7. 只有目前 revision 被批准後，介面才可以進入受控生成步驟。
 8. 輸出以私人路徑顯示；精確商業文字保持為可審核、可編輯的確定性圖層。
 
+### 帳號與 Beta access
+
+- 正式環境預設關閉新註冊，已有 active 帳號仍可登入；
+- Beta 可切換為電郵綁定的一次性邀請註冊，不開放匿名自助註冊；
+- 帳號用途 `standard`／`beta`／`test` 與生命週期 `active`／`suspended`／`deactivated` 分開保存；
+- workspace 保留 `owner`／`admin`／`member` 角色，任何角色差異必須由 Worker policy 明確執行；
+- 完整公開合約及隔離測試流程見 [`BETA_ACCESS.md`](BETA_ACCESS.md)。
+
 ## 4. Dashboard 資訊架構 / Information architecture
 
 主介面沿用最初 Motive dashboard 的可辨識骨架，並套用 AislePack 視覺系統：
@@ -124,7 +132,7 @@ idle
 ```text
 React dashboard
   -> authenticated Worker API
-    -> D1: users, sessions, workspaces, jobs, asset metadata
+    -> D1: users, beta invites, sessions, workspaces, jobs, asset metadata
     -> R2: private source and output images
     -> CampaignAgent Durable Object: workspace plan + approval state
     -> Queue: idempotent generation jobs
@@ -141,7 +149,7 @@ React dashboard
 - Motive dashboard 骨架與 AislePack 視覺整合；
 - 五個可切換 workspace view；
 - Auth、session 與 workspace authorization；
-- 封閉註冊與生成 gate；
+- 封閉／獲邀註冊、帳號生命週期與生成 gate；
 - workspace-scoped Campaign Agent；
 - plan revision、修訂與人工批准；
 - 私有商品圖片上傳、metadata 及授權預覽；

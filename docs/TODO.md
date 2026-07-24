@@ -6,6 +6,7 @@ The current product, interface, Agent, and architecture contract is maintained i
 
 - [x] Authenticated sessions and workspace authorization for protected operations.
 - [x] Closed-registration and generation gates enforced by the Worker.
+- [x] Email-bound beta invitations and active/suspended/deactivated account lifecycle.
 - [x] Workspace-scoped private product-image upload and authorized preview routes.
 - [x] MIME allowlisting, file-size limits, and PNG/JPEG/WebP signature checks.
 - [x] One persistent Campaign Agent instance per authenticated workspace.
@@ -21,6 +22,7 @@ The current product, interface, Agent, and architecture contract is maintained i
 - [x] Type checking, Workers integration tests, and production builds are available through npm scripts.
 - [x] Wrangler dry-run validates the public-safe binding structure.
 - [x] Protected route, cross-workspace, stale approval, upload, and generation-gate tests are included.
+- [x] Invite-only registration, invite mismatch, and suspended-session tests are included.
 - [x] Account-specific identifiers and resource mappings are excluded from the tracked configuration.
 - [x] Public examples use explicit placeholders instead of realistic infrastructure values.
 - [x] Logs and error responses are designed not to expose credentials or full user assets.

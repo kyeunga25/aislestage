@@ -20,12 +20,12 @@ type AuthedSession = {
 }
 
 const demoSession: AuthedSession = {
-  user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User' },
+  user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User', accountStatus: 'active', accountType: 'test' },
   currentWorkspace: { id: 'demo-workspace', name: 'Example Store', role: 'owner', planStatus: 'trial', availableCredits: 6, reservedCredits: 0 }
 }
 
-const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', registrationOpen: false, generationEnabled: false, agentMode: 'deterministic' }
-const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, registrationOpen: true, generationEnabled: true }
+const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, agentMode: 'deterministic' }
+const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, registrationMode: 'open', registrationOpen: true, generationEnabled: true }
 
 async function loadSession() {
   const response = await fetch('/api/session')
@@ -230,7 +230,7 @@ export default function App() {
   }
 
   if (isLoadingSession) return <div className="loading-screen"><Sparkles size={24} /><span>正在載入工作區…</span></div>
-  if (!session) return <AuthPage registrationOpen={platformStatus.registrationOpen} onAuthenticated={(nextSession) => {
+  if (!session) return <AuthPage registrationMode={platformStatus.registrationMode} onAuthenticated={(nextSession) => {
     setSession(nextSession)
     void Promise.all([loadGenerations(nextSession.currentWorkspace.id), agentAction('').catch(() => initialCampaignAgentState())]).then(([results, campaignAgent]) => { setServerResults(results); setAgentState(campaignAgent) })
   }} />

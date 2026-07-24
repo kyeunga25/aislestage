@@ -4,7 +4,7 @@ import { BrandMark } from './BrandMark'
 import type { AuthUser, WorkspaceSummary } from '../lib/types'
 
 type Props = {
-  registrationOpen: boolean
+  registrationMode: 'open' | 'invite' | 'closed'
   onAuthenticated: (session: { user: AuthUser; currentWorkspace: WorkspaceSummary }) => void
 }
 
@@ -21,22 +21,25 @@ async function submitAuth(mode: Mode, payload: Record<string, string>) {
   return data as { user: AuthUser; currentWorkspace: WorkspaceSummary }
 }
 
-export function AuthPage({ registrationOpen, onAuthenticated }: Props) {
+export function AuthPage({ registrationMode, onAuthenticated }: Props) {
   const [mode, setMode] = useState<Mode>('login')
   const [name, setName] = useState('')
   const [workspaceName, setWorkspaceName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const isRegister = mode === 'register'
+  const registrationAvailable = registrationMode !== 'closed'
+  const inviteOnly = registrationMode === 'invite'
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
     setIsSubmitting(true)
     try {
-      const session = await submitAuth(mode, { name, workspaceName, email, password })
+      const session = await submitAuth(mode, { name, workspaceName, email, password, inviteCode })
       onAuthenticated(session)
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : '登入服務暫時未能使用。')
@@ -60,16 +63,17 @@ export function AuthPage({ registrationOpen, onAuthenticated }: Props) {
       </div>
     </section>
     <section className="auth-card" aria-labelledby="auth-title">
-      <div className={`auth-tabs${registrationOpen ? '' : ' closed'}`} role="tablist" aria-label="帳號操作">
+      <div className={`auth-tabs${registrationAvailable ? '' : ' closed'}`} role="tablist" aria-label="帳號操作">
         <button className={mode === 'login' ? 'active' : ''} type="button" onClick={() => setMode('login')}>登入</button>
-        {registrationOpen ? <button className={mode === 'register' ? 'active' : ''} type="button" onClick={() => setMode('register')}>註冊</button> : null}
+        {registrationAvailable ? <button className={mode === 'register' ? 'active' : ''} type="button" onClick={() => setMode('register')}>{inviteOnly ? '獲邀註冊' : '註冊'}</button> : null}
       </div>
       <form className="auth-form" onSubmit={handleSubmit}>
-        <div className="section-heading"><h2 id="auth-title">{isRegister ? '建立帳號' : '登入 AislePack'}</h2><p>{isRegister ? '建立你的私人工作區，開始第一套 Campaign Pack。' : '回到工作區，繼續建立推廣素材包。'}</p></div>
-        {!registrationOpen ? <p className="registration-note"><strong>註冊目前未開放</strong><span>已有帳號仍可登入。</span></p> : null}
+        <div className="section-heading"><h2 id="auth-title">{isRegister ? '建立帳號' : '登入 AislePack'}</h2><p>{isRegister ? inviteOnly ? '使用受邀電郵及一次性邀請碼建立私人工作區。' : '建立你的私人工作區，開始第一套 Campaign Pack。' : '回到工作區，繼續建立推廣素材包。'}</p></div>
+        {!registrationAvailable ? <p className="registration-note"><strong>註冊目前未開放</strong><span>已有帳號仍可登入。</span></p> : null}
         {isRegister && <div className="form-row"><label>你的姓名<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>工作區名稱<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="例如 Example Store" required /></label></div>}
         <label>電郵地址<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
         <label>密碼<input type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+        {isRegister && inviteOnly ? <label>Beta 邀請碼<input type="password" autoComplete="one-time-code" minLength={12} value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} spellCheck={false} required /></label> : null}
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="primary-button auth-submit" type="submit" disabled={isSubmitting}>{isSubmitting ? '處理中…' : isRegister ? '建立帳號與工作區' : '登入工作區'}<ArrowRight size={16} /></button>
       </form>
