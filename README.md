@@ -1,8 +1,10 @@
-# AislePack — AI 電商素材包
+# AislePack — AI 電商素材工作台
 
-A React and Cloudflare Workers project for turning an approved product image and verified brief into coordinated ecommerce campaign assets.
+一個以 React、Cloudflare Workers 與 Agents SDK 建立的電商 Campaign Pack 工作台。它把有權使用的商品圖片、已核實的商業資料及人工批准結合成協調一致的 1:1、4:5、9:16 素材流程。
 
-The core workflow targets 1:1, 4:5, and 9:16 visuals with bilingual copy. Product-preserving composition and deterministic commercial text are preferred over asking an image model to reproduce exact packaging, prices, or claims.
+An ecommerce Campaign Pack workspace built with React, Cloudflare Workers, and the Agents SDK. It combines an approved product image, verified commercial facts, and explicit human approval before generation.
+
+Campaign Agent 會檢查資料、建立固定三比例計劃並等待使用者批准。商品外觀及精確商業文字仍以 product-preserving、deterministic 的方式處理，不交由圖片模型自由重畫。
 
 ## Architecture
 
@@ -11,9 +13,10 @@ The core workflow targets 1:1, 4:5, and 9:16 visuals with bilingual copy. Produc
 - D1 through the `DB` binding.
 - Private R2 assets through the `MEDIA_BUCKET` binding.
 - Asynchronous jobs through the `GENERATION_QUEUE` binding.
+- Workspace-scoped planning and approval state through the `CAMPAIGN_AGENT` binding.
 - Swappable copy and image provider interfaces.
 
-See [the engineering brief](docs/CODEX_AGENT_BRIEF.md) for the public architecture contract and [the technical backlog](docs/TODO.md) for contribution-ready work.
+Start with [the unified product specification](docs/PRODUCT_SPEC.md), then use [the engineering brief](docs/CODEX_AGENT_BRIEF.md) and [the public release status](docs/TODO.md) for implementation details.
 
 ## Local development
 
@@ -44,6 +47,7 @@ Keep these binding names stable because application code depends on them:
 DB
 MEDIA_BUCKET
 GENERATION_QUEUE
+CAMPAIGN_AGENT
 ASSETS
 ```
 
@@ -60,6 +64,8 @@ Public examples must use explicit placeholders:
 ```
 
 Store account-specific identifiers in ignored local configuration or protected CI/Cloudflare settings. Do not replace placeholders with realistic-looking sample identifiers.
+
+For an authorized deployment, copy the public structure to the ignored `wrangler.local.jsonc` file and populate it from protected deployment records. `npm run cf:deploy`, `npm run cf:migrate`, and `npm run cf:secrets` deliberately use that ignored file; `npm run cf:dry-run` validates only the public-safe template.
 
 Set provider credentials with Wrangler secrets or the equivalent protected deployment setting. `.env.example` lists names only and must never contain real values.
 
@@ -80,4 +86,4 @@ Before deploying:
 - SQL values are bound parameters.
 - Uploads, provider responses, asynchronous retries, and external events require validation and bounded processing.
 
-Security-sensitive changes should include regression tests without publishing customer data, deployment identifiers, or internal operational details.
+Security-sensitive changes should include regression tests without publishing customer data, deployment identifiers, or non-public operational details.
