@@ -82,7 +82,7 @@ describe('restricted registration authentication', () => {
   })
 
   it('returns 401 for every protected resource without a session', async () => {
-    for (const path of ['/api/workspaces', '/api/generations', '/api/generations/missing/image']) {
+    for (const path of ['/api/workspaces', '/api/generations', '/api/generations/missing/image', '/api/assets/missing', '/api/campaign-agent']) {
       const response = await dispatch(path)
       expect(response.status, path).toBe(401)
       expect(await response.json()).toEqual({ error: 'Authentication required.' })

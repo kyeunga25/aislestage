@@ -1,18 +1,31 @@
-import { ArrowDownToLine, CheckCircle2, Copy, PackageCheck, Plus, RotateCcw, Sparkles } from 'lucide-react'
+import { ArrowDownToLine, CheckCircle2, Copy, PackageCheck, RotateCcw } from 'lucide-react'
 import { useState } from 'react'
-import type { GenerationResult, Product } from '../lib/types'
+import campaignScene from '../assets/campaign-speaker-scene.png'
+import type { CampaignAgentState, GenerationResult, Product } from '../lib/types'
 
-type Props = { results: GenerationResult[]; product: Product; cta: string; isGenerating: boolean; generationAvailable: boolean; onGenerate: () => void; onStartNew: () => void }
+type Props = {
+  results: GenerationResult[]
+  product: Product
+  cta: string
+  agentState: CampaignAgentState
+  isGenerating: boolean
+  generationAvailable: boolean
+  demoMode: boolean
+  onGenerate: () => void
+}
 
 const outputs = [
-  { ratio: '1:1', label: '商品主圖', className: 'square' },
-  { ratio: '4:5', label: '社交廣告', className: 'portrait' },
-  { ratio: '9:16', label: '限時動態', className: 'story' }
-]
+  { ratio: '1:1', label: '商品主圖', className: 'square', kicker: '隨身好聲音', title: '細機身，大聲勢' },
+  { ratio: '4:5', label: '社交廣告', className: 'portrait', kicker: '戶外陪伴每一刻', title: '音樂不設限' },
+  { ratio: '9:16', label: '限時動態', className: 'story', kicker: '輕巧・清晰・耐用', title: '帶著音樂出發' }
+] as const
 
-export function ResultsPanel({ results, product, cta, isGenerating, generationAvailable, onGenerate, onStartNew }: Props) {
+export function ResultsPanel({ results, product, cta, agentState, isGenerating, generationAvailable, demoMode, onGenerate }: Props) {
+  const [language, setLanguage] = useState<'zh-Hant' | 'en'>('zh-Hant')
   const [copied, setCopied] = useState(false)
-  const caption = `細機身，大聲勢。${product.name} ${product.promotion} 現正開始。\n\n${product.benefits.filter(Boolean).join('、')}，無論在家還是出門都能自在享受。${product.price}，${cta}。`
+  const zhCaption = `細機身，大聲勢。${product.name} ${product.promotion} 現正開始。\n\n${product.benefits.filter(Boolean).join('、')}。${product.price}，${cta}。`
+  const enCaption = `Big sound, compact form. ${product.name} is ready for every day. ${product.benefits.filter(Boolean).join(', ')}. ${product.price}. Shop now.`
+  const caption = language === 'zh-Hant' ? zhCaption : enCaption
 
   async function copyCaption() {
     await navigator.clipboard.writeText(caption)
@@ -21,21 +34,41 @@ export function ResultsPanel({ results, product, cta, isGenerating, generationAv
   }
 
   return <section className="results-panel" id="campaign-results" aria-labelledby="result-title">
-    <div className="results-head"><div><span className="result-icon"><PackageCheck size={20} /></span><div><span>Campaign Pack</span><h2 id="result-title">你的推廣素材包</h2></div></div><button className="outline-button" type="button" onClick={onStartNew}><Plus size={17} />建立另一套</button></div>
-    <div className="result-collection">
-      {outputs.map((output) => {
-        const result = results.find((item) => item.aspectRatio === output.ratio)
-        return <article className="result-card" key={output.ratio}>
-          <div className={`result-image ${output.className}`}>{result?.imageUrl ? <img src={result.imageUrl} alt={`${output.ratio} ${output.label}`} /> : <div className="result-placeholder"><Sparkles size={24} /><strong>{result?.status === 'failed' ? '生成失敗' : isGenerating ? '正在生成' : '等待生成'}</strong><span>{result?.errorMessage || (isGenerating ? '正在準備版面與文案…' : '素材完成後會顯示在這裡')}</span></div>}</div>
-          <div className="result-meta"><span><strong>{output.ratio}</strong>{output.label}</span>{result?.imageUrl ? <a title={`下載 ${output.ratio}`} href={result.imageUrl} download={`aislepack-${output.ratio.replace(':', 'x')}.png`}><ArrowDownToLine size={17} />下載</a> : <button title={`下載 ${output.ratio}`} type="button" disabled><ArrowDownToLine size={17} />下載</button>}</div>
-        </article>
-      })}
+    <div className="results-head">
+      <div><span className="result-icon"><PackageCheck size={20} /></span><div><h2 id="result-title">素材包預覽</h2><p>{demoMode ? '本機互動示範，不會當作正式生成素材' : results.some((item) => item.imageUrl) ? '已生成的私人素材' : 'Agent 規劃的版面方向，商業文字保持可編輯'}</p></div></div>
+      <span className={`plan-state ${agentState.stage}`}>{agentState.stage === 'approved' ? <><CheckCircle2 size={15} />計劃已批准</> : `計劃版本 ${agentState.revision || 1}`}</span>
     </div>
-    <div className="result-copy-grid">
-      <div className="copy-language"><span className="active">繁體中文</span><span>English</span></div>
-      <div className="copy-content"><div><span>推廣文案</span><h3>細機身，大聲勢。{product.name} {product.promotion} 現正開始。</h3><p>{product.benefits.filter(Boolean).join('、')}，無論在家還是出門都能自在享受。{product.price}，{cta}。</p></div><button className="outline-button" type="button" onClick={() => void copyCaption()}><Copy size={16} />{copied ? '已複製' : '複製文案'}</button></div>
-      <div className="result-quality"><CheckCircle2 size={19} /><span><strong>文字已按確認資料排版</strong><small>商品名稱、價格、優惠與 CTA 沒有交由圖片模型生成。</small></span></div>
+
+    <div className="result-workspace">
+      <div className="result-collection">
+        {outputs.map((output) => {
+          const result = results.find((item) => item.aspectRatio === output.ratio)
+          const hasGeneratedImage = Boolean(result?.imageUrl) && !demoMode
+          return <article className="result-card" key={output.ratio}>
+            <div className={`result-image ${output.className}`}>
+              <img src={result?.imageUrl || campaignScene} alt={`${output.ratio} ${output.label}${hasGeneratedImage ? '' : '版面預覽'}`} />
+              {!hasGeneratedImage ? <div className="deterministic-overlay"><span>{output.kicker}</span><strong>{output.title}</strong><small>{product.name}</small><b>{product.price}</b><em>{product.promotion}</em></div> : null}
+              <span className="preview-label">{hasGeneratedImage ? '已生成' : isGenerating ? '正在生成' : demoMode && result ? '互動示範' : '版面預覽'}</span>
+            </div>
+            <div className="result-meta">
+              <span><strong>{output.ratio}</strong>{output.label}</span>
+              {hasGeneratedImage
+                ? <a href={result!.imageUrl!} download={`aislepack-${output.ratio.replace(':', 'x')}.png`}><ArrowDownToLine size={16} />下載</a>
+                : <span className="result-status">{demoMode && result ? '示範預覽' : isGenerating ? '處理中' : '待生成'}</span>}
+            </div>
+          </article>
+        })}
+      </div>
+
+      <aside className="copy-panel" aria-label="雙語推廣文案">
+        <div className="copy-tabs"><button className={language === 'zh-Hant' ? 'active' : ''} type="button" onClick={() => setLanguage('zh-Hant')}>繁體中文</button><button className={language === 'en' ? 'active' : ''} type="button" onClick={() => setLanguage('en')}>English</button></div>
+        <div className="copy-block"><span>{language === 'zh-Hant' ? '主標題' : 'Headline'}</span><strong>{language === 'zh-Hant' ? `細機身，大聲勢。${product.name}` : `Big sound, compact form. ${product.name}`}</strong></div>
+        <div className="copy-block"><span>{language === 'zh-Hant' ? '賣點文案' : 'Product copy'}</span><p>{language === 'zh-Hant' ? product.benefits.filter(Boolean).map((item) => `✓ ${item}`).join('\n') : product.benefits.filter(Boolean).map((item) => `✓ ${item}`).join('\n')}</p></div>
+        <div className="copy-block"><span>{language === 'zh-Hant' ? '行動呼籲（CTA）' : 'Call to action'}</span><p>{language === 'zh-Hant' ? `${product.promotion}，${cta}！` : `${product.promotion}. Shop now.`}</p></div>
+        <button className="outline-button copy-all" type="button" onClick={() => void copyCaption()}><Copy size={16} />{copied ? '已複製' : '複製全部文案'}</button>
+      </aside>
     </div>
-    <div className="result-actions"><button className="text-button" type="button" onClick={onGenerate} disabled={isGenerating || !generationAvailable}><RotateCcw size={17} />重新生成這套素材</button><button className="primary-button" type="button" disabled={!outputs.every((output) => results.some((result) => result.aspectRatio === output.ratio && result.imageUrl))}><ArrowDownToLine size={18} />下載完整素材包</button></div>
+
+    <div className="result-footer"><span><CheckCircle2 size={17} />商品名稱、價格、優惠與 CTA 由程式準確排版</span><button className="text-button" type="button" onClick={onGenerate} disabled={isGenerating || !generationAvailable || agentState.stage !== 'approved'}><RotateCcw size={16} />{isGenerating ? '正在建立素材包…' : '按已批准計劃重新生成'}</button></div>
   </section>
 }

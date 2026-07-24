@@ -1,4 +1,5 @@
 {
+  "extends": "agents/tsconfig",
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
     "target": "ES2022",
@@ -14,5 +15,5 @@
     "moduleResolution": "Bundler",
     "noEmit": true
   },
-  "include": ["tests/**/*.ts", "src/worker.ts", "src/lib/**/*.ts"]
+  "include": ["tests/**/*.ts", "src/worker.ts", "src/agents/**/*.ts", "src/lib/**/*.ts"]
 }

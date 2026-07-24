@@ -1,0 +1,121 @@
+import { describe, expect, it } from 'vitest'
+import { dispatch, registerAccount } from './helpers'
+
+function validBrief(assetId: string) {
+  return {
+    assetId,
+    intent: '限時優惠',
+    brand: {
+      name: 'Test Brand',
+      tone: '簡潔、可信',
+      colors: ['#155eef'],
+      forbiddenWords: '最平、保證',
+      locale: 'zh-Hant',
+      cta: '立即選購'
+    },
+    product: {
+      name: 'Test Speaker',
+      category: '消費電子',
+      benefits: ['12 小時播放', 'IPX5 防水', 'USB-C 充電'],
+      specifications: 'Bluetooth 5.3',
+      price: 'HK$399',
+      promotion: '限時免運費',
+      channels: ['Shopify', 'Instagram']
+    }
+  }
+}
+
+async function uploadPng(cookie: string, name = 'speaker.png') {
+  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])
+  const form = new FormData()
+  form.set('file', new File([bytes], name, { type: 'image/png' }))
+  return dispatch('/api/assets/product', {
+    method: 'POST',
+    headers: { cookie, origin: 'https://app.test' },
+    body: form
+  })
+}
+
+describe('private product assets', () => {
+  it('validates, stores and privately serves a workspace product image', async () => {
+    const owner = await registerAccount('Asset Owner')
+    const uploaded = await uploadPng(owner.cookie)
+    expect(uploaded.status).toBe(201)
+    const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number } }
+    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: 12 })
+
+    const preview = await dispatch(payload.asset.previewUrl, { headers: { cookie: owner.cookie } })
+    expect(preview.status).toBe(200)
+    expect(preview.headers.get('cache-control')).toBe('private, max-age=300')
+    expect(new Uint8Array(await preview.arrayBuffer()).slice(0, 8)).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))
+
+    const otherOwner = await registerAccount('Other Asset Owner')
+    const forbidden = await dispatch(payload.asset.previewUrl, { headers: { cookie: otherOwner.cookie } })
+    expect(forbidden.status).toBe(404)
+  })
+
+  it('rejects an allowlisted MIME type when the file signature does not match', async () => {
+    const owner = await registerAccount('Invalid Asset')
+    const form = new FormData()
+    form.set('file', new File(['not-a-png'], 'fake.png', { type: 'image/png' }))
+    const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
+    expect(response.status).toBe(415)
+  })
+})
+
+describe('workspace Campaign Agent', () => {
+  it('keeps the plan workspace-scoped and requires the current revision for approval', async () => {
+    const owner = await registerAccount('Agent Owner')
+    const uploaded = await uploadPng(owner.cookie, 'agent-speaker.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    expect(planned.status).toBe(200)
+    const planPayload = await planned.json() as { state: { stage: string; revision: number; mode: string; plan: Array<{ ratio: string }> } }
+    expect(planPayload.state).toMatchObject({ stage: 'awaiting-approval', revision: 1, mode: 'deterministic' })
+    expect(planPayload.state.plan.map((item) => item.ratio)).toEqual(['1:1', '4:5', '9:16'])
+
+    const staleApproval = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: 0 })
+    })
+    expect(staleApproval.status).toBe(409)
+
+    const approved = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: 1 })
+    })
+    expect(approved.status).toBe(200)
+    expect(await approved.json()).toMatchObject({ state: { stage: 'approved', revision: 1 } })
+
+    const otherOwner = await registerAccount('Other Agent Owner')
+    const otherState = await dispatch('/api/campaign-agent', { headers: { cookie: otherOwner.cookie } })
+    expect(otherState.status).toBe(200)
+    expect(await otherState.json()).toMatchObject({ state: { stage: 'idle', revision: 0 } })
+  })
+
+  it('refuses approval until missing commercial facts and the product asset are supplied', async () => {
+    const owner = await registerAccount('Incomplete Agent Brief')
+    const incompleteBrief = validBrief('')
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: { ...incompleteBrief, assetId: null, product: { ...incompleteBrief.product, price: '', benefits: [] } } })
+    })
+    expect(planned.status).toBe(200)
+    expect(await planned.json()).toMatchObject({ state: { stage: 'needs-input' } })
+
+    const approval = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: 1 })
+    })
+    expect(approval.status).toBe(409)
+  })
+})

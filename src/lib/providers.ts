@@ -1,4 +1,4 @@
-import type { BrandPack, Product } from './types'
+import type { BrandPack, CampaignBrief, CampaignPlanItem, Product } from './types'
 
 export type GeneratedCopy = {
   imagePrompt: string
@@ -14,6 +14,45 @@ export interface CopyProvider {
 
 export interface ImageProvider {
   generate(input: { prompt: string; aspectRatio: string; referenceImageUrls: string[] }): Promise<{ imageBase64: string; revisedPrompt?: string }>
+}
+
+export type AssistedCampaignPlan = {
+  summary: string
+  recommendations: Array<Pick<CampaignPlanItem, 'id' | 'rationale'>>
+}
+
+export interface CampaignPlanningProvider {
+  createPlan(input: CampaignBrief): Promise<AssistedCampaignPlan>
+}
+
+export class OpenAICampaignPlanningProvider implements CampaignPlanningProvider {
+  constructor(private readonly apiKey: string) {}
+
+  async createPlan(input: CampaignBrief): Promise<AssistedCampaignPlan> {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4-mini',
+        input: [
+          { role: 'system', content: [{ type: 'input_text', text: 'You plan bounded ecommerce campaign assets. Use only verified facts. Never add claims. Recommend exactly store-main, social-ad, and story, and stop for human approval.' }] },
+          { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(input) }] }
+        ],
+        text: { format: { type: 'json_schema', name: 'campaign_plan', strict: true, schema: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            summary: { type: 'string' },
+            recommendations: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', enum: ['store-main', 'social-ad', 'story'] }, rationale: { type: 'string' } }, required: ['id', 'rationale'] } }
+          },
+          required: ['summary', 'recommendations']
+        } } }
+      })
+    })
+    if (!response.ok) throw new Error(`OpenAI campaign planning request failed: ${response.status}`)
+    const payload = await response.json() as { output_text?: string }
+    if (!payload.output_text) throw new Error('OpenAI campaign planning response did not include output_text')
+    return JSON.parse(payload.output_text) as AssistedCampaignPlan
+  }
 }
 
 export class OpenAICopyProvider implements CopyProvider {

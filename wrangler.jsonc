@@ -1,8 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // Public-safe template. Use an ignored private config or protected CI mappings for deployment.
   "name": "replace-with-worker-name",
   "main": "src/worker.ts",
   "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
@@ -15,11 +17,14 @@
   "triggers": {
     "crons": ["17 3 * * *"]
   },
+  "durable_objects": {
+    "bindings": [{ "name": "CAMPAIGN_AGENT", "class_name": "CampaignAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CampaignAgent"] }],
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "replace-with-d1-database-name",
-      "database_id": "replace-with-protected-id",
       "migrations_dir": "migrations"
     }
   ],
@@ -37,6 +42,7 @@
   "vars": {
     "APP_ORIGIN": "https://example.invalid",
     "REGISTRATION_MODE": "closed",
-    "GENERATION_MODE": "disabled"
+    "GENERATION_MODE": "disabled",
+    "AGENT_MODE": "deterministic"
   }
 }
