@@ -99,6 +99,8 @@ Do not rename these bindings during documentation cleanup. Account IDs, resource
 
 Authorized deployments use an ignored `wrangler.local.jsonc` file or an equivalent protected CI configuration. The tracked `wrangler.jsonc` is a validation template and must not contain a live infrastructure mapping.
 
+For Cloudflare Workers Builds, use `npm run check && npm test && npm run build` as the build command, `npm run cf:deploy:build` as the production deploy command, and `npm run cf:preview:build` when non-production versions are enabled. The deployment scripts accept only protected Cloudflare build variables, generate an ignored Wrangler file, and keep registration closed with deterministic Agent and generation modes. Repository selection, branch control, identifiers, resource names, tokens, URLs, and build history are external deployment state and must not be copied into public documentation.
+
 ## Provider and mock behavior
 
 `CopyProvider` and `ImageProvider` isolate external APIs from application logic. Tests should stub provider calls or use deterministic fixtures. The Vite development experience may use local demo data, but production code must never receive mock credentials or test-only access gates.

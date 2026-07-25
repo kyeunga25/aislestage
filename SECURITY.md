@@ -21,6 +21,8 @@ Tracked Wrangler configuration contains placeholders and generic binding names o
 
 Local and automated tests must use synthetic records and isolated bindings. Do not connect tests to production resources or paid provider calls.
 
+Cloudflare Workers Builds must generate its deploy configuration from protected build variables. The generated Wrangler file is ignored, restricted to the build user, and must never be uploaded as an artifact or copied into logs, pull requests, issues, or public documentation.
+
 ## Reporting
 
 Report a vulnerability privately through the repository Security tab. Include the affected route or file and a minimal synthetic reproduction. Redact tokens, cookies, emails, private object keys, infrastructure identifiers, and real user data.

@@ -72,6 +72,20 @@ Store account-specific identifiers in ignored local configuration or protected C
 
 For an authorized deployment, copy the public structure to the ignored `wrangler.local.jsonc` file and populate it from protected deployment records. `npm run cf:deploy`, `npm run cf:migrate`, and `npm run cf:secrets` deliberately use that ignored file; `npm run cf:dry-run` validates only the public-safe template.
 
+Cloudflare Workers Builds can use `npm run cf:deploy:build` for the production deploy command and `npm run cf:preview:build` for non-production versions. The preparation step runs only inside Workers Builds and creates an ignored, permission-restricted Wrangler file from protected build variables. Keep the following values in Cloudflare rather than GitHub or tracked files:
+
+```text
+CLOUDFLARE_WORKER_NAME
+CLOUDFLARE_D1_DATABASE_NAME
+CLOUDFLARE_D1_DATABASE_ID
+CLOUDFLARE_R2_BUCKET_NAME
+CLOUDFLARE_QUEUE_NAME
+CLOUDFLARE_DEAD_LETTER_QUEUE_NAME
+CLOUDFLARE_APP_ORIGIN
+```
+
+The recommended Workers Builds build command is `npm run check && npm test && npm run build`. Repository and production-branch selection, resource values, build-token details, deployment URLs, and build history remain protected Cloudflare settings.
+
 Set provider credentials with Wrangler secrets or the equivalent protected deployment setting. `.env.example` lists names only and must never contain real values.
 
 Before deploying:

@@ -15,6 +15,9 @@
     "cf:migrate": "wrangler d1 migrations apply \"$CLOUDFLARE_D1_DATABASE_NAME\" --remote --config wrangler.local.jsonc",
     "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
     "cf:deploy": "npm run build && wrangler deploy --config wrangler.local.jsonc",
+    "cf:prepare:build": "node scripts/prepare-cloudflare-build.mjs",
+    "cf:deploy:build": "npm run cf:prepare:build && wrangler deploy --keep-vars --config wrangler.ci.generated.jsonc",
+    "cf:preview:build": "npm run cf:prepare:build && wrangler versions upload --keep-vars --config wrangler.ci.generated.jsonc",
     "cf:secrets": "wrangler secret list --config wrangler.local.jsonc",
     "cf:queue": "wrangler queues consumer list \"$CLOUDFLARE_QUEUE_NAME\""
   },

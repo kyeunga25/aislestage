@@ -31,5 +31,6 @@ The current product, interface, Agent, and architecture contract is maintained i
 - [x] Account-specific identifiers and resource mappings are excluded from the tracked configuration.
 - [x] Public examples use explicit placeholders instead of realistic infrastructure values.
 - [x] Logs and error responses are designed not to expose credentials or full user assets.
+- [x] Cloudflare Workers Builds can generate an ignored deployment configuration from protected build variables.
 
 Deployment state, private infrastructure mappings, customer information, and non-public business or operational material are intentionally not recorded in this repository.

@@ -1,6 +1,6 @@
 # AislePack 統一產品規格 / Unified Product Specification
 
-版本：Agent Workspace
+版本：Deterministic Campaign Pack
 
 這份文件是產品定位、介面、Agent 行為與目前交付範圍的單一依據。`PRODUCT_STRATEGY.md`、`CODEX_AGENT_BRIEF.md` 與 `TODO.md` 分別保留策略、工程與公開驗證狀態，不另行建立互相矛盾的產品版本。
 
@@ -163,6 +163,7 @@ React dashboard
 - 私人輸出保存、授權預覽及格式正確的下載；
 - Queue 與 usage accounting idempotency；
 - Agent 與 asset isolation integration tests。
+- 由受保護 Cloudflare build variables 產生忽略式 Wrangler 設定的 Workers Builds 部署路徑。
 
 ## 10. 驗證標準 / Validation gates
 
