@@ -41,3 +41,18 @@
 - 最終 local `main`、`origin/main`、merge commit 與 deployment version 一致。
 
 部署結果只能在上述證據完成後標示為正式可用；preview 或單一命令成功不足以代表發佈完成。
+
+## v0.4.0 verified release
+
+2026-07-26 已完成以下發佈驗收；記錄只保留公開可披露的結果，不包含正式網址、帳戶識別碼、D1 identifier、實際資源名稱或測試憑證：
+
+- [x] `git diff --check`、TypeScript／binding type check、36 個 Workers tests、production build、Wrangler dry-run 及 production dependency audit 全部通過；
+- [x] GitHub pull request CI 對應已審核提交並通過，私隱字串檢查沒有發現受保護設定、對話內容或內部商業規劃；
+- [x] D1 migration 已套用，active Cloudflare deployment 對應已合併的同一版本；
+- [x] live root、SPA deep route、health、security headers、匿名 session、受保護 API 及 invite registration gate 通過；
+- [x] 正式邀請流程建立隔離測試 workspace，Campaign Agent 建立及保存三輸出計劃，人工批准後 Queue 完成 1:1、4:5、9:16 素材；
+- [x] 三個私人 SVG 經授權讀取並核對準確價格、優惠及 CTA，英文文案亦在正式 UI 逐欄核對；
+- [x] 輸出額度由 6 正確結算至 3，reserved 數量回復 0；
+- [x] desktop 及 mobile 正式 UI 沒有水平溢出、破圖或 console error；
+- [x] 驗收後逐項刪除三個輸出與來源圖，再清除隔離帳戶、workspace 及邀請；遠端相關帳戶、workspace、媒體及生成記錄均核對為 0；
+- [x] Cloudflare Git integration 已中斷；公開 CI 不會取得或顯示正式資源映射，正式發佈只由受保護本機設定執行。
