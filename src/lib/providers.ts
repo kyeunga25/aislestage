@@ -29,6 +29,7 @@ export class OpenAICampaignPlanningProvider implements CampaignPlanningProvider 
   constructor(private readonly apiKey: string) {}
 
   async createPlan(input: CampaignBrief): Promise<AssistedCampaignPlan> {
+    const providerInput = { intent: input.intent, brand: input.brand, product: input.product }
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
@@ -36,7 +37,7 @@ export class OpenAICampaignPlanningProvider implements CampaignPlanningProvider 
         model: 'gpt-5.4-mini',
         input: [
           { role: 'system', content: [{ type: 'input_text', text: 'You plan bounded ecommerce campaign assets. Use only verified facts. Never add claims. Recommend exactly store-main, social-ad, and story, and stop for human approval.' }] },
-          { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(input) }] }
+          { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(providerInput) }] }
         ],
         text: { format: { type: 'json_schema', name: 'campaign_plan', strict: true, schema: {
           type: 'object', additionalProperties: false,
@@ -90,16 +91,5 @@ export class OpenAIImageProvider implements ImageProvider {
     const image = payload.data?.[0]
     if (!image?.b64_json) throw new Error('OpenAI image response did not include image data')
     return { imageBase64: image.b64_json, revisedPrompt: image.revised_prompt }
-  }
-}
-
-export interface BillingProvider {
-  verifyWebhook(request: Request): Promise<{ eventId: string; type: string; data: unknown }>
-}
-
-export class UnavailableBillingProvider implements BillingProvider {
-  async verifyWebhook(_request: Request): Promise<{ eventId: string; type: string; data: unknown }> {
-    // A concrete integration must verify signatures and validate the event schema.
-    throw new Error('Payment webhook verification is not configured.')
   }
 }

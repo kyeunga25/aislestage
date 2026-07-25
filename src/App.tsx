@@ -24,8 +24,8 @@ const demoSession: AuthedSession = {
   currentWorkspace: { id: 'demo-workspace', name: 'Example Store', role: 'owner', planStatus: 'trial', availableCredits: 6, reservedCredits: 0 }
 }
 
-const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, agentMode: 'deterministic' }
-const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, registrationMode: 'open', registrationOpen: true, generationEnabled: true }
+const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
+const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, registrationMode: 'open', registrationOpen: true, generationEnabled: true, generationMode: 'deterministic' }
 
 async function loadSession() {
   const response = await fetch('/api/session')
@@ -203,6 +203,8 @@ export default function App() {
             workspaceId: session.currentWorkspace.id,
             workflowId: item.workflowId,
             aspectRatio: item.ratio,
+            approvedRevision: agentState.revision,
+            intent,
             brand,
             product,
             referenceImageUrls: [],
@@ -214,7 +216,20 @@ export default function App() {
         created.push({ id: data.id, workflowId: item.workflowId, aspectRatio: item.ratio, imageUrl: null, title: `${item.ratio} · ${item.label}`, status: data.status || 'queued' })
       }
       setServerResults((current) => [...created, ...current])
-      window.setTimeout(() => void loadGenerations(session.currentWorkspace.id).then(setServerResults), 1600)
+      const generationIds = new Set(created.map((item) => item.id))
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_250))
+        const latest = await loadGenerations(session.currentWorkspace.id)
+        setServerResults(latest)
+        const pack = latest.filter((item) => generationIds.has(item.id))
+        if (pack.length === generationIds.size && pack.every((item) => item.status === 'completed' || item.status === 'failed')) {
+          const failed = pack.find((item) => item.status === 'failed')
+          if (failed) setNotice(failed.errorMessage || '部分素材未能完成，額度已自動退回。')
+          window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+          return
+        }
+      }
+      setNotice('素材仍在背景處理，可稍後在 Campaign Packs 查看最新狀態。')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能建立 Campaign Pack。')
     } finally {

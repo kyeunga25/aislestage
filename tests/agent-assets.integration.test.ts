@@ -118,4 +118,54 @@ describe('workspace Campaign Agent', () => {
     })
     expect(approval.status).toBe(409)
   })
+
+  it('only queues output that matches the currently approved brief and revision', async () => {
+    const owner = await registerAccount('Approved Output')
+    const uploaded = await uploadPng(owner.cookie, 'approved-speaker.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const brief = validBrief(asset.id)
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief })
+    })
+    const { state } = await planned.json() as { state: { revision: number } }
+    await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: state.revision })
+    })
+    const input = {
+      workspaceId: owner.currentWorkspace.id,
+      workflowId: 'store-main',
+      aspectRatio: '1:1',
+      approvedRevision: state.revision,
+      intent: brief.intent,
+      brand: brief.brand,
+      product: brief.product,
+      referenceImageUrls: [],
+      referenceAssetIds: [asset.id]
+    }
+
+    const stale = await dispatch('/api/generations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ ...input, approvedRevision: state.revision + 1 })
+    })
+    expect(stale.status).toBe(409)
+
+    const changed = await dispatch('/api/generations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ ...input, product: { ...input.product, price: 'HK$1' } })
+    })
+    expect(changed.status).toBe(409)
+
+    const accepted = await dispatch('/api/generations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify(input)
+    })
+    expect(accepted.status).toBe(202)
+  })
 })

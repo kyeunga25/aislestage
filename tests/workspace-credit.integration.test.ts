@@ -12,7 +12,28 @@ async function createGeneration(cookie: string, input: ReturnType<typeof generat
   }, envOverride)
 }
 
-async function deliver(message: GenerationMessage, attempts = 1, messageId = crypto.randomUUID()) {
+async function approvedInput(cookie: string, workspaceId: string) {
+  const form = new FormData()
+  form.set('file', new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'product.png', { type: 'image/png' }))
+  const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test' }, body: form })
+  const { asset } = await upload.json() as { asset: { id: string } }
+  const seed = generationInput(workspaceId, asset.id)
+  const planned = await dispatch('/api/campaign-agent/plan', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie, origin: 'https://app.test' },
+    body: JSON.stringify({ brief: { assetId: asset.id, intent: seed.intent, brand: seed.brand, product: seed.product } })
+  })
+  const plan = await planned.json() as { state: { revision: number } }
+  const approved = await dispatch('/api/campaign-agent/approve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie, origin: 'https://app.test' },
+    body: JSON.stringify({ revision: plan.state.revision })
+  })
+  expect(approved.status).toBe(200)
+  return generationInput(workspaceId, asset.id, plan.state.revision)
+}
+
+async function deliver(message: GenerationMessage, attempts = 1, messageId = crypto.randomUUID(), envOverride: Env = env) {
   const batch = createMessageBatch<GenerationMessage>('test-generation-queue', [{
     id: messageId,
     timestamp: new Date(),
@@ -20,7 +41,7 @@ async function deliver(message: GenerationMessage, attempts = 1, messageId = cry
     body: message
   }])
   const context = createExecutionContext()
-  await worker.queue(batch, env)
+  await worker.queue(batch, envOverride)
   return getQueueResult(batch, context)
 }
 
@@ -71,9 +92,10 @@ describe('workspace authorization and credit integrity', () => {
 
   it('does not reserve credits when the balance is insufficient', async () => {
     const account = await registerAccount('Low Credit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
     await env.DB.prepare('UPDATE credit_balances SET available = 0 WHERE workspace_id = ?').bind(account.currentWorkspace.id).run()
 
-    const response = await createGeneration(account.cookie, generationInput(account.currentWorkspace.id))
+    const response = await createGeneration(account.cookie, input)
     expect(response.status).toBe(402)
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM credit_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first<{ count: number }>()).toEqual({ count: 0 })
@@ -81,12 +103,13 @@ describe('workspace authorization and credit integrity', () => {
 
   it('releases a reservation exactly once when enqueueing fails', async () => {
     const account = await registerAccount('Queue Failure')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
     const failingQueue = {
       send: async () => { throw new Error('queue unavailable') },
       sendBatch: async () => { throw new Error('queue unavailable') }
     } as unknown as Queue<GenerationMessage>
 
-    const response = await createGeneration(account.cookie, generationInput(account.currentWorkspace.id), { ...env, GENERATION_QUEUE: failingQueue })
+    const response = await createGeneration(account.cookie, input, { ...env, GENERATION_QUEUE: failingQueue })
     expect(response.status).toBe(503)
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
 
@@ -100,7 +123,7 @@ describe('workspace authorization and credit integrity', () => {
 
   it('settles one successful generation once under duplicate queue delivery', async () => {
     const account = await registerAccount('Successful Queue')
-    const input = generationInput(account.currentWorkspace.id)
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
     const queued = await createGeneration(account.cookie, input)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
@@ -134,12 +157,40 @@ describe('workspace authorization and credit integrity', () => {
       .bind(id)
       .first<{ status: string; outputKey: string }>()
     expect(generation?.status).toBe('completed')
-    expect(await env.MEDIA_BUCKET.get(generation!.outputKey).then((object) => object?.text())).toBe('fake-png')
+    expect(generation?.outputKey).toMatch(/\.svg$/)
+    const output = await env.MEDIA_BUCKET.get(generation!.outputKey)
+    expect(output?.httpMetadata?.contentType).toBe('image/svg+xml')
+    expect(await output?.text()).toContain('<svg')
+  })
+
+  it('builds a private deterministic SVG without contacting an external provider', async () => {
+    const account = await registerAccount('Deterministic Output')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const deterministicEnv = { ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined }
+    const queued = await createGeneration(account.cookie, input, deterministicEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async () => { throw new Error('External provider must not be called.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const delivered = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), deterministicEnv)
+    expect(delivered.explicitAcks).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const image = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } }, deterministicEnv)
+    expect(image.status).toBe(200)
+    expect(image.headers.get('content-type')).toBe('image/svg+xml')
+    expect(image.headers.get('content-security-policy')).toContain("default-src 'none'")
+    const svg = await image.text()
+    expect(svg).toContain('Test Product')
+    expect(svg).toContain('HK$100')
+    expect(svg).toContain('立即選購')
+    expect(svg).toContain('data:image/png;base64,')
   })
 
   it('lets a later delivery attempt recover a generation left processing by a hard failure', async () => {
     const account = await registerAccount('Crash Recovery')
-    const input = generationInput(account.currentWorkspace.id)
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
     const queued = await createGeneration(account.cookie, input)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
@@ -172,7 +223,7 @@ describe('workspace authorization and credit integrity', () => {
 
   it('releases one failed generation once under duplicate queue delivery', async () => {
     const account = await registerAccount('Failed Queue')
-    const input = generationInput(account.currentWorkspace.id)
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
     const queued = await createGeneration(account.cookie, input)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
@@ -193,7 +244,13 @@ describe('workspace authorization and credit integrity', () => {
     expect(await ledgerCount(id, 'release')).toBe(1)
     expect(await ledgerCount(id, 'settlement')).toBe(0)
 
-    const generation = await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first<{ status: string }>()
-    expect(generation?.status).toBe('failed')
+    const generation = await env.DB.prepare('SELECT status, error_message AS errorMessage FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ status: string; errorMessage: string }>()
+    expect(generation).toEqual({ status: 'failed', errorMessage: '素材未能完成，技術額度已自動退回。' })
+
+    const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, { headers: { cookie: account.cookie } })
+    const payload = await listed.json() as { generations: Array<{ id: string; errorMessage: string }> }
+    expect(payload.generations.find((item) => item.id === id)?.errorMessage).not.toContain('provider')
   })
 })

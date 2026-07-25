@@ -52,11 +52,13 @@ export async function registerAccount(label: string): Promise<RegisteredAccount>
   return { ...data, cookie: cookieFrom(response) }
 }
 
-export function generationInput(workspaceId: string) {
+export function generationInput(workspaceId: string, assetId = 'test-product-source', approvedRevision = 1) {
   return {
     workspaceId,
     workflowId: 'store-main' as const,
     aspectRatio: '1:1' as const,
+    approvedRevision,
+    intent: '限時優惠',
     brand: {
       name: 'Test Brand',
       tone: 'clean',
@@ -68,12 +70,13 @@ export function generationInput(workspaceId: string) {
     product: {
       name: 'Test Product',
       category: 'electronics',
-      benefits: ['Verified benefit'],
+      benefits: ['Verified benefit', 'Second verified benefit'],
       specifications: 'Verified specification',
       price: 'HK$100',
       promotion: '測試優惠',
       channels: ['web']
     },
-    referenceImageUrls: []
+    referenceImageUrls: [],
+    referenceAssetIds: [assetId]
   }
 }

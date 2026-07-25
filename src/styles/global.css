@@ -1,7 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap');
-
 :root {
-  font-family: 'DM Sans','Noto Sans TC',system-ui,sans-serif;
+  font-family: -apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif;
   color: #172033;
   background: #fff;
   font-synthesis: none;
@@ -202,6 +200,7 @@ a { color: inherit; }
 .result-meta > span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 8px; }
 .result-meta strong { color: var(--ink); font-size: 9px; }
 .result-meta .result-status { color: var(--blue); font-weight: 700; }
+.result-meta .result-status.failed { color: #b54747; }
 .result-meta a,.result-meta button { display: flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--blue); text-decoration: none; padding: 5px; font-size: 8px; font-weight: 700; }
 .copy-panel { border-left: 1px solid var(--line); padding-left: 20px; }
 .copy-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); }
