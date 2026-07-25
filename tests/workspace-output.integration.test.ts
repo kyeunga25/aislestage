@@ -12,6 +12,27 @@ async function createGeneration(cookie: string, input: ReturnType<typeof generat
   }, envOverride)
 }
 
+async function createCampaignPack(cookie: string, input: Awaited<ReturnType<typeof approvedInput>>, idempotencyKey = crypto.randomUUID(), envOverride: Env = env) {
+  return dispatch('/api/campaign-packs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie, origin: 'https://app.test' },
+    body: JSON.stringify({
+      idempotencyKey,
+      workspaceId: input.workspaceId,
+      approvedRevision: input.approvedRevision,
+      intent: input.intent,
+      brand: input.brand,
+      product: input.product,
+      referenceAssetIds: input.referenceAssetIds,
+      outputs: [
+        { workflowId: 'store-main', aspectRatio: '1:1' },
+        { workflowId: 'meta-ad', aspectRatio: '4:5' },
+        { workflowId: 'promo-poster', aspectRatio: '9:16' }
+      ]
+    })
+  }, envOverride)
+}
+
 async function approvedInput(cookie: string, workspaceId: string) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'product.png', { type: 'image/png' }))
@@ -46,13 +67,13 @@ async function deliver(message: GenerationMessage, attempts = 1, messageId = cry
 }
 
 async function balance(workspaceId: string) {
-  return env.DB.prepare('SELECT available, reserved FROM credit_balances WHERE workspace_id = ?')
+  return env.DB.prepare('SELECT available, reserved FROM output_allowances WHERE workspace_id = ?')
     .bind(workspaceId)
     .first<{ available: number; reserved: number }>()
 }
 
 async function ledgerCount(generationId: string, eventType: string) {
-  const row = await env.DB.prepare('SELECT COUNT(*) AS count FROM credit_ledger WHERE generation_id = ? AND event_type = ?')
+  const row = await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE generation_id = ? AND event_type = ?')
     .bind(generationId, eventType)
     .first<{ count: number }>()
   return row?.count ?? 0
@@ -62,7 +83,73 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('workspace authorization and credit integrity', () => {
+describe('workspace authorization and output allowance integrity', () => {
+  it('creates one atomic idempotent Campaign Pack with three reserved outputs', async () => {
+    const account = await registerAccount('Atomic Pack')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const idempotencyKey = crypto.randomUUID()
+
+    const created = await createCampaignPack(account.cookie, input, idempotencyKey)
+    expect(created.status).toBe(202)
+    const payload = await created.json() as { campaignPackId: string; generations: Array<{ id: string; campaignPackId: string; status: string }> }
+    expect(payload.generations).toHaveLength(3)
+    expect(new Set(payload.generations.map((item) => item.campaignPackId))).toEqual(new Set([payload.campaignPackId]))
+    expect(payload.generations.every((item) => item.status === 'queued')).toBe(true)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+
+    const replayed = await createCampaignPack(account.cookie, input, idempotencyKey)
+    expect(replayed.status).toBe(200)
+    const replayPayload = await replayed.json() as { campaignPackId: string; generations: Array<{ id: string }>; replayed: boolean }
+    expect(replayPayload).toMatchObject({ campaignPackId: payload.campaignPackId, replayed: true })
+    expect(replayPayload.generations.map((item) => item.id)).toEqual(payload.generations.map((item) => item.id))
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = ?')
+      .bind(account.currentWorkspace.id, 'reservation')
+      .first<{ count: number }>()).toEqual({ count: 3 })
+  })
+
+  it('creates no partial pack when the output allowance is too low', async () => {
+    const account = await registerAccount('Pack Allowance')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    await env.DB.prepare('UPDATE output_allowances SET available = 2 WHERE workspace_id = ?').bind(account.currentWorkspace.id).run()
+
+    const response = await createCampaignPack(account.cookie, input)
+    expect(response.status).toBe(409)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('creates only one pack when the same idempotency key arrives concurrently', async () => {
+    const account = await registerAccount('Concurrent Pack')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const idempotencyKey = crypto.randomUUID()
+
+    const responses = await Promise.all([
+      createCampaignPack(account.cookie, input, idempotencyKey),
+      createCampaignPack(account.cookie, input, idempotencyKey)
+    ])
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 202])
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 3 })
+  })
+
+  it('releases all three outputs when Campaign Pack enqueueing fails', async () => {
+    const account = await registerAccount('Pack Queue Failure')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const failingQueue = {
+      send: async () => { throw new Error('queue unavailable') },
+      sendBatch: async () => { throw new Error('queue unavailable') }
+    } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(account.cookie, input, crypto.randomUUID(), { ...env, GENERATION_QUEUE: failingQueue })
+    expect(response.status).toBe(503)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ? AND status = 'failed'").bind(account.currentWorkspace.id).first()).toEqual({ count: 3 })
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = 'release'").bind(account.currentWorkspace.id).first()).toEqual({ count: 3 })
+  })
+
   it('prevents one workspace from listing, generating with, or reading another workspace assets', async () => {
     const ownerA = await registerAccount('Owner A')
     const ownerB = await registerAccount('Owner B')
@@ -77,8 +164,8 @@ describe('workspace authorization and credit integrity', () => {
     const outputKey = `workspaces/${ownerB.currentWorkspace.id}/generations/${generationId}.png`
     await env.MEDIA_BUCKET.put(outputKey, 'private-image', { httpMetadata: { contentType: 'image/png' } })
     await env.DB.prepare(`
-      INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, credit_cost, input_json, output_key, completed_at)
-      VALUES (?, ?, 'store-main', '1:1', 'completed', 2, '{}', ?, CURRENT_TIMESTAMP)
+      INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, output_key, completed_at)
+      VALUES (?, ?, 'store-main', '1:1', 'completed', 2, 2, '{}', ?, CURRENT_TIMESTAMP)
     `).bind(generationId, ownerB.currentWorkspace.id, outputKey).run()
 
     const forbiddenImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerA.cookie } })
@@ -88,17 +175,19 @@ describe('workspace authorization and credit integrity', () => {
     expect(ownerImage.status).toBe(200)
     expect(new TextDecoder().decode(await ownerImage.arrayBuffer())).toBe('private-image')
     expect(ownerImage.headers.get('cache-control')).toBe('private, max-age=300')
+    const forbiddenDelete = await dispatch(`/api/generations/${generationId}`, { method: 'DELETE', headers: { cookie: ownerA.cookie, origin: 'https://app.test' } })
+    expect(forbiddenDelete.status).toBe(404)
   })
 
-  it('does not reserve credits when the balance is insufficient', async () => {
-    const account = await registerAccount('Low Credit')
+  it('does not reserve outputs when the allowance is insufficient', async () => {
+    const account = await registerAccount('Low Allowance')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    await env.DB.prepare('UPDATE credit_balances SET available = 0 WHERE workspace_id = ?').bind(account.currentWorkspace.id).run()
+    await env.DB.prepare('UPDATE output_allowances SET available = 0 WHERE workspace_id = ?').bind(account.currentWorkspace.id).run()
 
     const response = await createGeneration(account.cookie, input)
-    expect(response.status).toBe(402)
+    expect(response.status).toBe(409)
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
-    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM credit_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first<{ count: number }>()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first<{ count: number }>()).toEqual({ count: 0 })
   })
 
   it('releases a reservation exactly once when enqueueing fails', async () => {
@@ -186,6 +275,13 @@ describe('workspace authorization and credit integrity', () => {
     expect(svg).toContain('HK$100')
     expect(svg).toContain('立即選購')
     expect(svg).toContain('data:image/png;base64,')
+
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?').bind(id).first<{ outputKey: string }>()
+    const deleted = await dispatch(`/api/generations/${id}`, { method: 'DELETE', headers: { cookie: account.cookie, origin: 'https://app.test' } }, deterministicEnv)
+    expect(deleted.status).toBe(204)
+    expect(await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } }, deterministicEnv).then((response) => response.status)).toBe(404)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 0 })
+    expect(await env.MEDIA_BUCKET.get(stored!.outputKey)).toBeNull()
   })
 
   it('lets a later delivery attempt recover a generation left processing by a hard failure', async () => {
@@ -247,7 +343,7 @@ describe('workspace authorization and credit integrity', () => {
     const generation = await env.DB.prepare('SELECT status, error_message AS errorMessage FROM generations WHERE id = ?')
       .bind(id)
       .first<{ status: string; errorMessage: string }>()
-    expect(generation).toEqual({ status: 'failed', errorMessage: '素材未能完成，技術額度已自動退回。' })
+    expect(generation).toEqual({ status: 'failed', errorMessage: '素材未能完成，可用輸出數已自動退回。' })
 
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, { headers: { cookie: account.cookie } })
     const payload = await listed.json() as { generations: Array<{ id: string; errorMessage: string }> }

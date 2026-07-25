@@ -15,7 +15,7 @@ export default defineConfig({
           REGISTRATION_MODE: 'open',
           GENERATION_MODE: 'enabled',
           AGENT_MODE: 'deterministic',
-          INITIAL_CREDIT_BALANCE: '3',
+          INITIAL_OUTPUT_ALLOWANCE: '3',
           OPENAI_API_KEY: 'test-openai-key',
           TEST_MIGRATIONS: migrations
         }

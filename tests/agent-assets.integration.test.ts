@@ -1,3 +1,4 @@
+import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { dispatch, registerAccount } from './helpers'
 
@@ -11,15 +12,19 @@ function validBrief(assetId: string) {
       colors: ['#155eef'],
       forbiddenWords: '最平、保證',
       locale: 'zh-Hant',
-      cta: '立即選購'
+      cta: '立即選購',
+      ctaEn: 'Shop now'
     },
     product: {
       name: 'Test Speaker',
+      nameEn: 'Test Speaker',
       category: '消費電子',
       benefits: ['12 小時播放', 'IPX5 防水', 'USB-C 充電'],
+      benefitsEn: ['12-hour playback', 'IPX5 water resistance', 'USB-C charging'],
       specifications: 'Bluetooth 5.3',
       price: 'HK$399',
       promotion: '限時免運費',
+      promotionEn: 'Free delivery for a limited time',
       channels: ['Shopify', 'Instagram']
     }
   }
@@ -52,6 +57,8 @@ describe('private product assets', () => {
     const otherOwner = await registerAccount('Other Asset Owner')
     const forbidden = await dispatch(payload.asset.previewUrl, { headers: { cookie: otherOwner.cookie } })
     expect(forbidden.status).toBe(404)
+    const forbiddenDelete = await dispatch(payload.asset.previewUrl, { method: 'DELETE', headers: { cookie: otherOwner.cookie, origin: 'https://app.test' } })
+    expect(forbiddenDelete.status).toBe(404)
   })
 
   it('rejects an allowlisted MIME type when the file signature does not match', async () => {
@@ -60,6 +67,38 @@ describe('private product assets', () => {
     form.set('file', new File(['not-a-png'], 'fake.png', { type: 'image/png' }))
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
     expect(response.status).toBe(415)
+  })
+
+  it('rejects image metadata that could leak hidden location or author details', async () => {
+    const owner = await registerAccount('Metadata Asset')
+    const bytes = new Uint8Array([
+      137, 80, 78, 71, 13, 10, 26, 10,
+      0, 0, 0, 0, 101, 88, 73, 102, 0, 0, 0, 0
+    ])
+    const form = new FormData()
+    form.set('file', new File([bytes], 'private-details.png', { type: 'image/png' }))
+
+    const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('metadata') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('deletes one explicit private product asset and resets its Agent plan', async () => {
+    const owner = await registerAccount('Delete Asset')
+    const uploaded = await uploadPng(owner.cookie, 'delete-me.png')
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+
+    const deleted = await dispatch(asset.previewUrl, { method: 'DELETE', headers: { cookie: owner.cookie, origin: 'https://app.test' } })
+    expect(deleted.status).toBe(204)
+    expect(await dispatch(asset.previewUrl, { headers: { cookie: owner.cookie } }).then((response) => response.status)).toBe(404)
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json())).toMatchObject({ state: { stage: 'idle', revision: 0 } })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
   })
 })
 

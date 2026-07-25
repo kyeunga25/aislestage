@@ -21,15 +21,19 @@ export type BrandPack = {
   forbiddenWords: string
   locale: Locale
   cta: string
+  ctaEn: string
 }
 
 export type Product = {
   name: string
+  nameEn: string
   category: string
   benefits: string[]
+  benefitsEn: string[]
   specifications: string
   price: string
   promotion: string
+  promotionEn: string
   channels: string[]
 }
 
@@ -47,6 +51,7 @@ export type GenerationInput = {
 
 export type GenerationResult = {
   id: string
+  campaignPackId?: string | null
   workflowId: WorkflowId
   aspectRatio: AspectRatio
   imageUrl: string | null
@@ -58,7 +63,7 @@ export type GenerationResult = {
   createdAt?: string
 }
 
-export type CreditBalance = {
+export type OutputAllowance = {
   available: number
   reserved: number
 }
@@ -75,9 +80,9 @@ export type WorkspaceSummary = {
   id: string
   name: string
   role: 'owner' | 'admin' | 'member'
-  planStatus: string
-  availableCredits: number
-  reservedCredits: number
+  accessStatus: 'active' | 'paused'
+  availableOutputs: number
+  reservedOutputs: number
 }
 
 export type SessionPayload = {

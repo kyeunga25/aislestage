@@ -17,11 +17,11 @@
 
 `REGISTRATION_MODE` 有三個 server-side 模式：
 
-- `closed`：不建立新帳號；已有 active 帳號仍可登入。正式環境預設使用此模式。
-- `invite`：顯示「獲邀註冊」，電郵及一次性邀請碼必須同時符合未過期邀請。
+- `closed`：不建立新帳號；已有 active 帳號仍可登入。公開 template 使用此模式。
+- `invite`：顯示「獲邀註冊」，電郵及一次性邀請碼必須同時符合未過期邀請。正式 release 使用此模式。
 - `open`：供受控本機或指定環境測試公開註冊；不應因前端顯示狀態而自行啟用。
 
-邀請資料只保存邀請碼 hash，以及「標準化電郵＋高熵邀請碼」的組合 hash，不保存明文邀請碼或邀請電郵，也不留下可單獨枚舉電郵的 hash。成功註冊會在同一個 D1 batch 建立 user、workspace、owner membership、初始技術額度並消耗邀請。
+邀請資料只保存邀請碼 hash，以及「標準化電郵＋高熵邀請碼」的組合 hash，不保存明文邀請碼或邀請電郵，也不留下可單獨枚舉電郵的 hash。成功註冊會在同一個 D1 batch 建立 user、active workspace、owner membership、六個初始可用輸出並消耗邀請。
 
 登入及註冊的短期濫用控制只保存電郵與來源 IP 的單向 hash；登入所需的實際電郵只存在於受保護的 user record，不寫入公開文件或應用程式 log。
 
@@ -32,8 +32,9 @@
 - `account_type`：`standard`、`beta`、`test`；只作環境及測試分類，不授予額外權限。
 - `account_status`：`active`、`suspended`、`deactivated`；只有 `active` 可以建立或繼續 session。
 - workspace role：`owner`、`admin`、`member`；目前只表示 active membership，所有內容操作仍由 server-side workspace scope 驗證。
+- workspace access：只有 `active` workspace 可建立 session context 或執行受保護操作。
 
-公開介面不提供帳號清單或邀請管理。邀請建立、撤銷、帳號狀態變更及成員指派只可經受保護的營運流程完成。
+公開介面不提供帳號清單或邀請管理。邀請可由 `npm run cf:invite` 在受保護本機環境建立；收件電郵及 D1 名稱只由環境變數提供，不寫入 repository 或 script output。撤銷、帳號狀態變更及成員指派只可經受保護的操作流程完成。
 
 ## 隔離測試流程
 

@@ -1,29 +1,28 @@
 {
-  "name": "marketing-image-ai-web",
+  "name": "aislepack",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "check": "tsc -b --pretty false",
+    "check": "npm run cf:types:check && tsc -b --pretty false",
+    "cf:types": "wrangler types worker-env.d.ts --include-runtime false --env-interface WorkerEnv --strict-vars false --config wrangler.jsonc",
+    "cf:types:check": "wrangler types worker-env.d.ts --include-runtime false --env-interface WorkerEnv --strict-vars false --check --config wrangler.jsonc",
     "test": "vitest run",
     "test:watch": "vitest",
     "deploy": "npm run cf:deploy",
     "cf:whoami": "wrangler whoami",
-    "cf:migrate": "wrangler d1 migrations apply \"$CLOUDFLARE_D1_DATABASE_NAME\" --remote --config wrangler.local.jsonc",
+    "cf:migrate": "wrangler d1 migrations apply DB --remote --config wrangler.local.jsonc",
+    "cf:invite": "node scripts/create-beta-invite.mjs",
     "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
-    "cf:deploy": "npm run build && wrangler deploy --config wrangler.local.jsonc",
-    "cf:prepare:build": "node scripts/prepare-cloudflare-build.mjs",
-    "cf:deploy:build": "npm run cf:prepare:build && wrangler deploy --keep-vars --config wrangler.ci.generated.jsonc",
-    "cf:preview:build": "npm run cf:prepare:build && wrangler versions upload --keep-vars --config wrangler.ci.generated.jsonc",
-    "cf:secrets": "wrangler secret list --config wrangler.local.jsonc",
-    "cf:queue": "wrangler queues consumer list \"$CLOUDFLARE_QUEUE_NAME\""
+    "cf:deploy": "npm run build && wrangler deploy --keep-vars --config wrangler.local.jsonc",
+    "cf:secrets": "wrangler secret list --config wrangler.local.jsonc"
   },
   "dependencies": {
     "agents": "^0.19.0",
-    "lucide-react": "^1.26.0",
+    "lucide-react": "^1.27.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -34,9 +33,12 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "^6.0.4",
-    "typescript": "latest",
+    "typescript": "^7.0.2",
     "vite": "^8.1.5",
     "vitest": "^4.1.10",
     "wrangler": "^4.114.0"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.11"
   }
 }

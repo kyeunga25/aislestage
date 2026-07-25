@@ -24,15 +24,19 @@ export function sanitizeCampaignBrief(value: unknown): CampaignBrief {
       colors: cleanList(brand.colors, 8, 24),
       forbiddenWords: clean(brand.forbiddenWords, 500),
       locale: brand.locale === 'en' ? 'en' : 'zh-Hant',
-      cta: clean(brand.cta, 120)
+      cta: clean(brand.cta, 120),
+      ctaEn: clean(brand.ctaEn, 120)
     },
     product: {
       name: clean(product.name, 160),
+      nameEn: clean(product.nameEn, 160),
       category: clean(product.category, 120),
       benefits: cleanList(product.benefits, 8, 240),
+      benefitsEn: cleanList(product.benefitsEn, 8, 240),
       specifications: clean(product.specifications, 1_000),
       price: clean(product.price, 120),
       promotion: clean(product.promotion, 240),
+      promotionEn: clean(product.promotionEn, 240),
       channels: cleanList(product.channels, 12, 80)
     }
   }
@@ -59,7 +63,11 @@ export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: Campa
     !brief.product.name && '商品名稱',
     !brief.product.price && '價格',
     !brief.product.promotion && '推廣內容',
-    brief.product.benefits.filter(Boolean).length < 2 && '至少兩個賣點'
+    brief.product.benefits.filter(Boolean).length < 2 && '至少兩個賣點',
+    !brief.product.nameEn && '英文商品名稱',
+    !brief.product.promotionEn && '英文推廣內容',
+    brief.product.benefitsEn.filter(Boolean).length < 2 && '至少兩個英文賣點',
+    !brief.brand.ctaEn && '英文 CTA'
   ].filter(Boolean) as string[]
 
   const checks: CampaignAgentCheck[] = [

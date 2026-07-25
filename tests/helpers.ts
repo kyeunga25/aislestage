@@ -11,9 +11,9 @@ export type RegisteredAccount = {
     id: string
     name: string
     role: 'owner' | 'admin' | 'member'
-    planStatus: string
-    availableCredits: number
-    reservedCredits: number
+    accessStatus: 'active' | 'paused'
+    availableOutputs: number
+    reservedOutputs: number
   }
 }
 
@@ -65,15 +65,19 @@ export function generationInput(workspaceId: string, assetId = 'test-product-sou
       colors: ['#155eef'],
       forbiddenWords: '',
       locale: 'zh-Hant' as const,
-      cta: '立即選購'
+      cta: '立即選購',
+      ctaEn: 'Shop now'
     },
     product: {
       name: 'Test Product',
+      nameEn: 'Test Product',
       category: 'electronics',
       benefits: ['Verified benefit', 'Second verified benefit'],
+      benefitsEn: ['Verified benefit', 'Second verified benefit'],
       specifications: 'Verified specification',
       price: 'HK$100',
       promotion: '測試優惠',
+      promotionEn: 'Test offer',
       channels: ['web']
     },
     referenceImageUrls: [],

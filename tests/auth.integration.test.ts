@@ -33,7 +33,7 @@ describe('restricted registration authentication', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users').first<{ count: number }>()).toEqual({ count: 0 })
   })
 
-  it('registers one owner workspace with starter credits and a hardened cookie', async () => {
+  it('registers one owner workspace with a starter output allowance and a hardened cookie', async () => {
     const email = `owner-${crypto.randomUUID()}@example.test`
     const response = await dispatch('/api/auth/register', {
       method: 'POST',
@@ -54,9 +54,9 @@ describe('restricted registration authentication', () => {
     expect(setCookie).toContain('Max-Age=5184000')
     expect(setCookie).toContain('Secure')
 
-    const payload = await response.json() as { user: { id: string; accountStatus: string; accountType: string }; currentWorkspace: { id: string; role: string; availableCredits: number; reservedCredits: number } }
+    const payload = await response.json() as { user: { id: string; accountStatus: string; accountType: string }; currentWorkspace: { id: string; role: string; accessStatus: string; availableOutputs: number; reservedOutputs: number } }
     expect(payload.user).toMatchObject({ accountStatus: 'active', accountType: 'standard' })
-    expect(payload.currentWorkspace).toMatchObject({ role: 'owner', availableCredits: 3, reservedCredits: 0 })
+    expect(payload.currentWorkspace).toMatchObject({ role: 'owner', accessStatus: 'active', availableOutputs: 3, reservedOutputs: 0 })
 
     const membership = await env.DB.prepare('SELECT role FROM workspace_memberships WHERE user_id = ? AND workspace_id = ?')
       .bind(payload.user.id, payload.currentWorkspace.id)
@@ -164,6 +164,8 @@ describe('restricted registration authentication', () => {
       expect(response.status, path).toBe(401)
       expect(await response.json()).toEqual({ error: 'Authentication required.' })
     }
+    const campaignPack = await dispatch('/api/campaign-packs', { method: 'POST' })
+    expect(campaignPack.status).toBe(401)
   })
 
   it('blocks cross-site state-changing requests', async () => {
