@@ -14,9 +14,12 @@ Campaign Agent 會檢查資料、建立固定三比例計劃並等待使用者�
 - Private R2 assets through the `MEDIA_BUCKET` binding.
 - Asynchronous jobs through the `GENERATION_QUEUE` binding.
 - Workspace-scoped planning and approval state through the `CAMPAIGN_AGENT` binding.
+- Deterministic SVG composition that embeds the approved private product image and exact commercial text.
 - Swappable copy and image provider interfaces.
 
-Start with [the unified product specification](docs/PRODUCT_SPEC.md), then use [the beta access contract](docs/BETA_ACCESS.md), [the engineering brief](docs/CODEX_AGENT_BRIEF.md), and [the public release status](docs/TODO.md) for implementation details.
+Start with [the unified product specification](docs/PRODUCT_SPEC.md), then use [the beta access contract](docs/BETA_ACCESS.md), [the engineering brief](docs/CODEX_AGENT_BRIEF.md), [the security policy](SECURITY.md), and [the public release status](docs/TODO.md) for implementation details.
+
+The runtime keeps the bounded workflow friendly to Cloudflare's included usage: [Static Assets](https://developers.cloudflare.com/workers/static-assets/) serve the SPA without invoking the Worker except for `/api/*`; [D1](https://developers.cloudflare.com/d1/) stores relational metadata; private [R2](https://developers.cloudflare.com/r2/) holds source and output objects; [Queues](https://developers.cloudflare.com/queues/) isolate generation retries; a SQLite-backed Durable Object keeps one approved Campaign Agent state per workspace; and a Cron Trigger removes expired authentication records. Deterministic generation uses these bindings without a paid model call. Actual usage still depends on traffic and should be monitored in Cloudflare.
 
 ## Local development
 
@@ -65,6 +68,8 @@ Public examples must use explicit placeholders:
 
 Store account-specific identifiers in ignored local configuration or protected CI/Cloudflare settings. Do not replace placeholders with realistic-looking sample identifiers.
 
+`GENERATION_MODE` accepts `disabled`, `deterministic`, or `assisted`. The tracked template stays `disabled`. Deterministic mode does not require a provider secret; assisted mode requires a server-side provider secret and still uses deterministic product/text composition. The current downloadable exact-layout format is SVG; PNG and JPEG are not advertised as supported output formats.
+
 For an authorized deployment, copy the public structure to the ignored `wrangler.local.jsonc` file and populate it from protected deployment records. `npm run cf:deploy`, `npm run cf:migrate`, and `npm run cf:secrets` deliberately use that ignored file; `npm run cf:dry-run` validates only the public-safe template.
 
 Set provider credentials with Wrangler secrets or the equivalent protected deployment setting. `.env.example` lists names only and must never contain real values.
@@ -85,7 +90,9 @@ Before deploying:
 - Suspended or deactivated accounts cannot create or continue sessions.
 - Uploaded and generated assets remain private by default.
 - Provider keys are Worker-side secrets and are never exposed to the browser.
+- The browser loads application assets from the same origin and does not contact third-party font or analytics services.
 - SQL values are bound parameters.
-- Uploads, provider responses, asynchronous retries, and external events require validation and bounded processing.
+- Uploads, provider responses, and asynchronous retries require validation and bounded processing.
+- Queue and provider failures return controlled messages instead of exposing infrastructure or provider details.
 
 Security-sensitive changes should include regression tests without publishing customer data, deployment identifiers, or non-public operational details.

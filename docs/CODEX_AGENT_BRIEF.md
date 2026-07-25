@@ -45,6 +45,7 @@ React UI
 - `src/worker.ts` — Worker routes, authentication, authorization, queue processing, and private asset delivery.
 - `migrations/` — D1 schema history.
 - `docs/BETA_ACCESS.md` — public-safe account, role, invitation, and beta testing contract.
+- `SECURITY.md` — public security, privacy, and vulnerability-reporting boundary.
 - `tests/` — Workers integration tests.
 - `wrangler.jsonc` — public-safe Wrangler binding structure.
 
@@ -104,6 +105,8 @@ Authorized deployments use an ignored `wrangler.local.jsonc` file or an equivale
 
 `CampaignPlanningProvider` is optional. Deterministic mode must remain fully functional without a provider key. Assisted mode may refine the plan summary and rationales, but the fixed outputs, verified facts, and human-approval requirement remain server controlled.
 
+Generation has a separate `GENERATION_MODE`: `disabled`, `deterministic`, or `assisted`. Deterministic mode composes the approved private product image and exact commercial fields into a private SVG without calling an external provider. Assisted mode may supply a background image, but it must use the same deterministic product and text composition step. The Worker must compare the submitted brief and revision with the current approved Agent state before reserving credits.
+
 When adding a provider:
 
 1. implement the existing interface;
@@ -125,8 +128,9 @@ When adding a provider:
 - Derive the Campaign Agent instance from the authenticated workspace; never accept an arbitrary instance name from the browser.
 - Reject direct client state changes and stale plan approvals.
 - Bind SQL values rather than constructing SQL from user input.
-- Verify webhook signatures and process external events idempotently before enabling an integration.
 - Apply abuse controls to anonymous authentication and upload surfaces.
+- Keep user-facing failures generic; do not return provider, database, object-storage, or queue diagnostics.
+- Avoid third-party browser telemetry and font requests unless they are deliberately reviewed and documented.
 - Avoid exposing private deployment state through public documentation or logs.
 
 ## Contribution workflow

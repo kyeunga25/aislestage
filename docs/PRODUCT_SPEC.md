@@ -36,7 +36,8 @@
 5. Agent 產生受限制的輸出計劃並停在 `awaiting-approval`。
 6. 使用者可以重新規劃、提出調整，或批准指定 revision。
 7. 只有目前 revision 被批准後，介面才可以進入受控生成步驟。
-8. 輸出以私人路徑顯示；精確商業文字保持為可審核、可編輯的確定性圖層。
+8. Worker 再次比對已批准 brief、商品資產、revision、workflow 及比例；任一項被修改都拒絕排隊。
+9. 輸出以私人路徑顯示；精確商業文字保持為可審核、可編輯的確定性圖層。
 
 ### 帳號與 Beta access
 
@@ -125,7 +126,11 @@ idle
 - 三個比例的一致文字與安全區；
 - 最終審核及批准狀態。
 
-在確定性合成與真實 reference-image generation 完成驗證前，production `GENERATION_MODE` 保持關閉。介面可以展示版面方向，但不得把它描述為可下載的正式成品。
+目前已實作的確定性管線會把私人商品原圖以原始位元組嵌入 1080 px 寬的 1:1、4:5 及 9:16 SVG，並由程式排版品牌、商品名稱、價格、優惠、賣點、規格及 CTA。SVG 透過授權 Worker 路徑提供，並使用限制性內容安全標頭；原圖及輸出仍只存於私人 R2。
+
+`GENERATION_MODE` 支援三個明確狀態：`disabled`、`deterministic`、`assisted`。`deterministic` 不接觸外部 provider；`assisted` 可以生成背景，但商品與商業文字仍由確定性合成層處理。追蹤的公開設定保持 `disabled`，實際環境必須由部署操作明確選擇模式。
+
+SVG 是目前可審核的精確版面輸出。PNG／JPEG 不屬於目前公開支援格式，不可把 SVG 驗證描述為所有廣告渠道均可直接刊登。
 
 ## 8. 架構 / Architecture
 
@@ -154,6 +159,8 @@ React dashboard
 - plan revision、修訂與人工批准；
 - 私有商品圖片上傳、metadata 及授權預覽；
 - 三比例版面預覽及雙語文案；
+- 與已批准 revision 綁定的三比例確定性 SVG 合成；
+- 私人輸出保存、授權預覽及格式正確的下載；
 - Queue 與 usage accounting idempotency；
 - Agent 與 asset isolation integration tests。
 
@@ -162,6 +169,7 @@ React dashboard
 - 一套 brief 在不重複輸入下輸出 1:1、4:5、9:16；
 - 商品外觀及所有商業文字可逐項核對；
 - 未批准 revision 不可生成；
+- 已批准後修改價格、優惠、CTA、商品圖、workflow 或比例不可沿用舊批准；
 - 跨 workspace 不可取得 Agent state、來源圖或輸出；
 - deterministic preview 不接觸模型或外部 provider；
 - type check、Workers tests、production build、Wrangler dry run 及 browser responsive QA 全部通過後才交付。

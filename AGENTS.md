@@ -40,9 +40,10 @@ Generic binding names and interfaces may be committed. Account identifiers, reso
 ## Repository map
 
 - `docs/PRODUCT_STRATEGY.md` — public product and design principles.
-- `docs/PRODUCT_SPEC.md` — unified product, dashboard, Agent, architecture, and milestone contract.
+- `docs/PRODUCT_SPEC.md` — unified product, dashboard, Agent, architecture, and release contract.
 - `docs/CODEX_AGENT_BRIEF.md` — public engineering overview and local setup.
 - `docs/TODO.md` — public release and verification status.
+- `SECURITY.md` — public security, privacy, and reporting boundary.
 - `README.md` — project setup and verification commands.
 - `wrangler.jsonc` — Wrangler binding structure; do not commit account-specific values to a public branch.
 - `migrations/` — D1 schema history.

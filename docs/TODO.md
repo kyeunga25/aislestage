@@ -16,6 +16,9 @@ The current product, interface, Agent, and architecture contract is maintained i
 - [x] Deterministic local provider behavior for tests and demos.
 - [x] Responsive dashboard views for Campaign Packs, products, brands, and assets.
 - [x] Traditional Chinese and English campaign copy presentation.
+- [x] Approved-revision matching between Campaign Agent state and every queued output.
+- [x] Deterministic 1:1, 4:5, and 9:16 SVG composition using the private source image and exact commercial fields.
+- [x] Private generated-output storage, authorized inline preview, and content-type-aware download.
 
 ## Public verification contract
 
@@ -23,6 +26,8 @@ The current product, interface, Agent, and architecture contract is maintained i
 - [x] Wrangler dry-run validates the public-safe binding structure.
 - [x] Protected route, cross-workspace, stale approval, upload, and generation-gate tests are included.
 - [x] Invite-only registration, invite mismatch, and suspended-session tests are included.
+- [x] Stale or modified approved briefs are rejected before credit reservation.
+- [x] Deterministic output is covered without contacting an external provider.
 - [x] Account-specific identifiers and resource mappings are excluded from the tracked configuration.
 - [x] Public examples use explicit placeholders instead of realistic infrastructure values.
 - [x] Logs and error responses are designed not to expose credentials or full user assets.
