@@ -1,4 +1,6 @@
-# Product overview — ecommerce campaign asset workflow
+# Product strategy — ecommerce campaign asset workflow
+
+> Product behavior, dashboard structure, Agent contract, architecture, and milestone scope are defined in [PRODUCT_SPEC.md](PRODUCT_SPEC.md). This file keeps the shorter strategic rationale only.
 
 ## Purpose
 
@@ -41,13 +43,15 @@ The source product should remain unchanged wherever practical. Generative models
 - Make exact commercial text deterministic and reviewable.
 - Preserve original assets and derive working copies without overwriting them.
 - Keep generated and uploaded assets private by default.
-- Record technical quality signals without committing customer, pricing, or operational data.
+- Record technical quality signals without committing customer or non-public operational data.
 - Treat accessibility, privacy, authorization, abuse prevention, and deletion workflows as product requirements.
 
 ## Scope boundaries
 
 The repository focuses on the Campaign Pack workflow. A general design canvas, bulk catalog import, direct ad publishing, broad social automation, and complex organization workflows are outside the core scope unless they become independently justified.
 
+Campaign Agent is a bounded planning and approval layer inside this workflow. It is not an autonomous publishing agent and cannot bypass verified facts, workspace authorization, approval revisions, generation gates, or credit accounting.
+
 ## Public repository boundary
 
-Public documentation may describe architecture, interfaces, local development, testing, and security principles. It must not include account-specific infrastructure identifiers, customer or cohort details, internal launch plans, commercial assumptions, financing material, or provider-selection plans.
+Public documentation may describe architecture, interfaces, local development, testing, and security principles. It must not include account-specific infrastructure identifiers, customer or cohort details, or non-public business and operational material.

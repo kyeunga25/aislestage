@@ -1,23 +1,31 @@
+import { getAgentByName } from 'agents'
+import { CampaignAgent } from './agents/CampaignAgent'
 import { OpenAICopyProvider, OpenAIImageProvider, UnavailableBillingProvider } from './lib/providers'
 import { workflowById } from './lib/workflows'
 import type { GenerationInput } from './lib/types'
+
+export { CampaignAgent }
 
 export type Env = {
   DB: D1Database
   MEDIA_BUCKET: R2Bucket
   GENERATION_QUEUE: Queue<GenerationMessage>
+  CAMPAIGN_AGENT: DurableObjectNamespace<CampaignAgent>
   OPENAI_API_KEY?: string
   APP_ORIGIN?: string
-  REGISTRATION_MODE?: 'open' | 'closed'
+  REGISTRATION_MODE?: 'open' | 'invite' | 'closed'
   GENERATION_MODE?: 'enabled' | 'disabled'
   INITIAL_CREDIT_BALANCE?: string
+  AGENT_MODE?: 'deterministic' | 'assisted'
 }
 
 export type GenerationMessage = { generationId: string; input: GenerationInput }
-type AuthUser = { id: string; email: string; name: string }
+type AccountStatus = 'active' | 'suspended' | 'deactivated'
+type AccountType = 'standard' | 'beta' | 'test'
+type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
 type Workspace = { id: string; name: string; role: string; planStatus: string; availableCredits: number; reservedCredits: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
-// One generation consumes one technical usage unit. Commercial pricing is not encoded here.
+// One generation consumes one technical usage unit for idempotent accounting.
 const CREDIT_COST = 1
 const SESSION_COOKIE = 'aislepack_session'
 const SESSION_DAYS = 60
@@ -29,6 +37,9 @@ const REGISTER_WINDOW_MINUTES = 60
 const REGISTER_IP_LIMIT = 12
 const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
+const MAX_AGENT_BODY_BYTES = 48_000
+const MAX_PRODUCT_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const DUMMY_PASSWORD_SALT = 'bW90aXZlLWR1bW15LXNhbHQ='
 const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
@@ -150,13 +161,15 @@ function isAllowedOrigin(request: Request, env: Env) {
 }
 
 async function recordAuthAttempt(env: Env, request: Request, eventType: 'login_failed' | 'login_success' | 'register_failed' | 'register_success' | 'rate_limited', email = '') {
-  await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), email, getClientIp(request), eventType).run()
+  const [emailKey, ipKey] = await Promise.all([email ? sha256(email) : '', sha256(getClientIp(request))])
+  await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), emailKey, ipKey, eventType).run()
 }
 
 async function authAttemptCount(env: Env, request: Request, options: { email?: string; eventTypes: string[]; minutes: number }) {
-  const ip = getClientIp(request)
+  const ip = await sha256(getClientIp(request))
+  const email = options.email ? await sha256(options.email) : ''
   const placeholders = options.eventTypes.map(() => '?').join(',')
-  const bindings: unknown[] = options.email ? [options.email, ip, ...options.eventTypes, `-${options.minutes} minutes`] : [ip, ...options.eventTypes, `-${options.minutes} minutes`]
+  const bindings: unknown[] = options.email ? [email, ip, ...options.eventTypes, `-${options.minutes} minutes`] : [ip, ...options.eventTypes, `-${options.minutes} minutes`]
   const result = await env.DB.prepare(`
     SELECT COUNT(*) AS count
     FROM auth_attempts
@@ -192,6 +205,10 @@ function initialCreditBalance(env: Env) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
+function registrationMode(env: Env) {
+  return env.REGISTRATION_MODE === 'open' || env.REGISTRATION_MODE === 'invite' ? env.REGISTRATION_MODE : 'closed'
+}
+
 function validInput(value: unknown): value is GenerationInput {
   if (!value || typeof value !== 'object') return false
   const input = value as Partial<GenerationInput>
@@ -214,6 +231,24 @@ function validInput(value: unknown): value is GenerationInput {
     && boundedString(input.product?.promotion, 240, false)
     && boundedStringArray(input.product?.channels, 12, 80)
     && Array.isArray(input.referenceImageUrls) && input.referenceImageUrls.length === 0
+    && (input.referenceAssetIds === undefined || boundedStringArray(input.referenceAssetIds, 5, 80))
+}
+
+const productImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function hasValidProductImageSignature(contentType: string, bytes: Uint8Array) {
+  if (contentType === 'image/png') return bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)
+  if (contentType === 'image/jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  if (contentType === 'image/webp') return bytes.length >= 12
+    && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
+    && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
+  return false
+}
+
+function extensionForContentType(contentType: string) {
+  if (contentType === 'image/png') return 'png'
+  if (contentType === 'image/webp') return 'webp'
+  return 'jpg'
 }
 
 async function sessionResponse(env: Env, request: Request, userId: string, status = 200) {
@@ -240,10 +275,10 @@ async function workspacesForUser(env: Env, userId: string) {
 
 async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionContext | null> {
   const user = await env.DB.prepare(`
-    SELECT u.id, u.email, u.name
+    SELECT u.id, u.email, u.name, u.account_status AS accountStatus, u.account_type AS accountType
     FROM sessions s
     JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP
+    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.account_status = 'active'
   `).bind(tokenHash).first<AuthUser>()
   if (!user) return null
   const workspaces = await workspacesForUser(env, user.id)
@@ -277,14 +312,107 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
   `).bind(userId, workspaceId).first<Workspace>()
 }
 
+async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
+  const contentLength = Number(request.headers.get('content-length') || '0')
+  if (contentLength > MAX_UPLOAD_REQUEST_BYTES) return json({ error: '圖片檔案不可超過 8 MB。' }, { status: 413 })
+  if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data.' }, { status: 415 })
+
+  const form = await request.formData().catch(() => null)
+  const value = form?.get('file')
+  if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
+  if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或 WebP 圖片。' }, { status: 415 })
+  if (value.size <= 0 || value.size > MAX_PRODUCT_IMAGE_BYTES) return json({ error: '圖片檔案不可超過 8 MB。' }, { status: 413 })
+
+  const bytes = new Uint8Array(await value.arrayBuffer())
+  if (!hasValidProductImageSignature(value.type, bytes)) return json({ error: '圖片內容與檔案格式不符。' }, { status: 415 })
+
+  const assetId = crypto.randomUUID()
+  const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}.${extensionForContentType(value.type)}`
+  await env.MEDIA_BUCKET.put(objectKey, bytes, {
+    httpMetadata: { contentType: value.type },
+    customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id }
+  })
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO media_assets (id, workspace_id, created_by_user_id, kind, object_key, original_filename, content_type, size_bytes)
+      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?)
+    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, value.name.slice(0, 240) || 'product-image', value.type, value.size).run()
+  } catch {
+    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
+  }
+
+  return json({
+    asset: {
+      id: assetId,
+      name: value.name.slice(0, 240) || 'product-image',
+      contentType: value.type,
+      sizeBytes: value.size,
+      previewUrl: `/api/assets/${assetId}`
+    }
+  }, { status: 201 })
+}
+
+async function productAsset(request: Request, env: Env, session: SessionContext, assetId: string) {
+  const asset = await env.DB.prepare(`
+    SELECT a.object_key AS objectKey, a.content_type AS contentType
+    FROM media_assets a
+    JOIN workspace_memberships wm ON wm.workspace_id = a.workspace_id
+    WHERE a.id = ? AND wm.user_id = ? AND a.kind = 'product-source'
+  `).bind(assetId, session.user.id).first<{ objectKey: string; contentType: string }>()
+  if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
+  const object = await env.MEDIA_BUCKET.get(asset.objectKey)
+  if (!object) return json({ error: 'Image not found.' }, { status: 404 })
+  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff' } })
+}
+
+async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve' | 'revise') {
+  const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
+  try {
+    if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
+    if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
+    if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+    const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
+    if (parsed.tooLarge) return json({ error: 'Campaign brief is too large.' }, { status: 413 })
+    const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
+    if (action === 'plan') return json({ state: await agent.planBrief(body.brief) })
+    if (action === 'approve') {
+      const result = await agent.approvePlan(Number(body.revision))
+      return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
+    }
+    if (action === 'revise') {
+      const result = await agent.requestRevision(cleanString(body.note, 500))
+      return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
+    }
+    return json({ error: 'Not found.' }, { status: 404 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (/not ready|changed|required|Invalid Campaign/i.test(message)) return json({ error: message }, { status: 409 })
+    console.error('Campaign Agent request failed', { action, workspaceId: session.currentWorkspace.id })
+    return json({ error: 'Campaign Agent 暫時未能完成這個動作。' }, { status: 503 })
+  }
+}
+
+async function referenceAssetsBelongToWorkspace(env: Env, workspaceId: string, assetIds: string[]) {
+  if (!assetIds.length) return true
+  const placeholders = assetIds.map(() => '?').join(',')
+  const result = await env.DB.prepare(`SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ? AND id IN (${placeholders}) AND kind = 'product-source'`)
+    .bind(workspaceId, ...assetIds)
+    .first<{ count: number }>()
+  return result?.count === new Set(assetIds).size
+}
+
 async function register(request: Request, env: Env) {
-  if (env.REGISTRATION_MODE !== 'open') return json({ error: 'AislePack 現時只開放獲邀測試帳號。' }, { status: 403 })
+  const mode = registrationMode(env)
+  if (mode === 'closed') return json({ error: 'AislePack 現時只開放已有帳號登入。' }, { status: 403 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
   const body = parsed.body as Record<string, unknown> | null
   const email = normalizeEmail(body?.email)
   const password = cleanString(body?.password, 256)
+  const inviteCode = cleanString(body?.inviteCode, 256)
   const name = cleanString(body?.name) || email.split('@')[0]
   const workspaceName = cleanString(body?.workspaceName) || `${name} 的工作區`
   if (await isRegisterRateLimited(env, request)) {
@@ -300,19 +428,52 @@ async function register(request: Request, env: Env) {
     return json({ error: '密碼至少需要 8 個字元。' }, { status: 400 })
   }
 
+  let invite: { id: string; accountType: 'beta' | 'test' } | null = null
+  if (mode === 'invite') {
+    if (inviteCode.length < 12) {
+      await recordAuthAttempt(env, request, 'register_failed', email)
+      return json({ error: '請輸入有效的 Beta 邀請碼。' }, { status: 400 })
+    }
+    invite = await env.DB.prepare(`
+      SELECT id, account_type AS accountType
+      FROM beta_invites
+      WHERE token_hash = ? AND recipient_hash = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP
+    `).bind(await sha256(inviteCode), await sha256(`${email}\n${inviteCode}`)).first<{ id: string; accountType: 'beta' | 'test' }>()
+    if (!invite) {
+      await recordAuthAttempt(env, request, 'register_failed', email)
+      return json({ error: '邀請碼無效、已使用或與電郵不符。' }, { status: 403 })
+    }
+  }
+
   const userId = crypto.randomUUID()
   const workspaceId = crypto.randomUUID()
   const passwordHash = await hashPassword(password)
   try {
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO users (id, email, name, password_hash, password_salt) VALUES (?, ?, ?, ?, ?)').bind(userId, email, name, passwordHash.hash, passwordHash.salt),
+    const createUser = invite
+      ? env.DB.prepare(`
+        INSERT INTO users (id, email, name, password_hash, password_salt, account_type)
+        SELECT ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM beta_invites
+          WHERE id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP
+        )
+      `).bind(userId, email, name, passwordHash.hash, passwordHash.salt, invite.accountType, invite.id)
+      : env.DB.prepare('INSERT INTO users (id, email, name, password_hash, password_salt, account_type) VALUES (?, ?, ?, ?, ?, ?)').bind(userId, email, name, passwordHash.hash, passwordHash.salt, 'standard')
+    const statements = [
+      createUser,
       env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status) VALUES (?, ?, ?, ?)').bind(workspaceId, userId, workspaceName, 'trial'),
       env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
       env.DB.prepare('INSERT INTO credit_balances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialCreditBalance(env))
-    ])
+    ]
+    if (invite) statements.push(env.DB.prepare(`
+      UPDATE beta_invites
+      SET status = 'used', used_by_user_id = ?, used_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'pending'
+    `).bind(userId, invite.id))
+    await env.DB.batch(statements)
   } catch {
     await recordAuthAttempt(env, request, 'register_failed', email)
-    return json({ error: '這個電郵已經註冊。' }, { status: 409 })
+    return json({ error: invite ? '邀請註冊未能完成，請重新取得邀請。' : '這個電郵已經註冊。' }, { status: 409 })
   }
   await recordAuthAttempt(env, request, 'register_success', email)
   return sessionResponse(env, request, userId, 201)
@@ -329,11 +490,19 @@ async function login(request: Request, env: Env) {
     await recordAuthAttempt(env, request, 'rate_limited', email)
     return json({ error: '登入嘗試次數過多，請稍後再試。' }, { status: 429 })
   }
-  const user = await env.DB.prepare('SELECT id, email, name, password_hash AS passwordHash, password_salt AS passwordSalt FROM users WHERE email = ?').bind(email).first<AuthUser & { passwordHash: string; passwordSalt: string }>()
+  const user = await env.DB.prepare(`
+    SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
+      password_hash AS passwordHash, password_salt AS passwordSalt
+    FROM users WHERE email = ?
+  `).bind(email).first<AuthUser & { passwordHash: string; passwordSalt: string }>()
   const passwordMatches = user ? await verifyPassword(password, user.passwordHash, user.passwordSalt) : await verifyPassword(password, DUMMY_PASSWORD_HASH, DUMMY_PASSWORD_SALT)
   if (!user || !passwordMatches) {
     await recordAuthAttempt(env, request, 'login_failed', email)
     return json({ error: '電郵或密碼不正確。' }, { status: 401 })
+  }
+  if (user.accountStatus !== 'active') {
+    await recordAuthAttempt(env, request, 'login_failed', email)
+    return json({ error: '帳號目前不可使用。' }, { status: 403 })
   }
   await recordAuthAttempt(env, request, 'login_success', email)
   return sessionResponse(env, request, user.id)
@@ -432,6 +601,7 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const safeInput = { ...input, workspaceId: workspace.id }
+  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds || [])) return json({ error: 'Product asset not found.' }, { status: 400 })
   const workflow = workflowById(input.workflowId)
   if (!workflow.ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   const id = crypto.randomUUID()
@@ -493,8 +663,10 @@ export default {
       status: 'ok',
       service: 'campaign-asset-worker',
       releaseMode: 'restricted',
-      registrationOpen: env.REGISTRATION_MODE === 'open',
-      generationEnabled: env.GENERATION_MODE === 'enabled' && Boolean(env.OPENAI_API_KEY)
+      registrationMode: registrationMode(env),
+      registrationOpen: registrationMode(env) !== 'closed',
+      generationEnabled: env.GENERATION_MODE === 'enabled' && Boolean(env.OPENAI_API_KEY),
+      agentMode: env.AGENT_MODE === 'assisted' && Boolean(env.OPENAI_API_KEY) ? 'assisted' : 'deterministic'
     })
     if (url.pathname === '/api/workflows' && request.method === 'GET') return json({ workflows: ['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'] })
     if (url.pathname === '/api/auth/register' && request.method === 'POST') return register(request, env)
@@ -509,6 +681,23 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+    }
+    if (url.pathname === '/api/assets/product' && request.method === 'POST') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return uploadProductAsset(request, env, session)
+    }
+    const assetMatch = url.pathname.match(/^\/api\/assets\/([^/]+)$/)
+    if (assetMatch && request.method === 'GET') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return productAsset(request, env, session, assetMatch[1])
+    }
+    const agentAction = url.pathname.match(/^\/api\/campaign-agent(?:\/(plan|approve|revise))?$/)
+    if (agentAction && (request.method === 'GET' || request.method === 'POST')) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return campaignAgentRequest(request, env, session, agentAction[1] as 'plan' | 'approve' | 'revise' || 'state')
     }
     const imageMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/image$/)
     if (imageMatch && request.method === 'GET') {

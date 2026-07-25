@@ -40,6 +40,7 @@ export type GenerationInput = {
   brand: BrandPack
   product: Product
   referenceImageUrls: string[]
+  referenceAssetIds?: string[]
 }
 
 export type GenerationResult = {
@@ -62,6 +63,8 @@ export type AuthUser = {
   id: string
   email: string
   name: string
+  accountStatus: 'active' | 'suspended' | 'deactivated'
+  accountType: 'standard' | 'beta' | 'test'
 }
 
 export type WorkspaceSummary = {
@@ -83,6 +86,59 @@ export type PlatformStatus = {
   status: 'ok'
   service: string
   releaseMode: 'restricted'
+  registrationMode: 'open' | 'invite' | 'closed'
   registrationOpen: boolean
   generationEnabled: boolean
+  agentMode: 'deterministic' | 'assisted'
+}
+
+export type ProductAsset = {
+  id: string
+  name: string
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+  sizeBytes: number
+  previewUrl: string
+}
+
+export type CampaignAgentStage = 'idle' | 'needs-input' | 'awaiting-approval' | 'approved'
+
+export type CampaignBrief = {
+  brand: BrandPack
+  product: Product
+  assetId: string | null
+  intent: string
+}
+
+export type CampaignPlanItem = {
+  id: 'store-main' | 'social-ad' | 'story'
+  workflowId: WorkflowId
+  ratio: '1:1' | '4:5' | '9:16'
+  label: string
+  dimensions: string
+  rationale: string
+  selected: boolean
+}
+
+export type CampaignAgentCheck = {
+  id: 'facts' | 'asset' | 'claims' | 'outputs'
+  label: string
+  detail: string
+  status: 'complete' | 'action'
+}
+
+export type CampaignAgentMessage = {
+  id: string
+  role: 'agent' | 'user'
+  text: string
+}
+
+export type CampaignAgentState = {
+  stage: CampaignAgentStage
+  revision: number
+  summary: string
+  checks: CampaignAgentCheck[]
+  plan: CampaignPlanItem[]
+  messages: CampaignAgentMessage[]
+  mode: 'deterministic' | 'assisted'
+  approvedAt: string | null
 }

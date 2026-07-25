@@ -1,6 +1,8 @@
 # Engineering brief — ecommerce campaign assets
 
-This public-safe brief introduces the repository to contributors. It intentionally excludes private deployment mappings, internal planning, customer details, financial assumptions, and provider-selection decisions.
+This public-safe brief introduces the repository to contributors. It intentionally excludes private deployment mappings, customer details, and non-public business or operational material.
+
+The unified product, interface, Agent, and current release contract lives in [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md).
 
 ## Product purpose
 
@@ -15,6 +17,7 @@ Generative services may assist with scenes, backgrounds, layout suggestions, and
 - D1 for users, sessions, workspaces, jobs, and application records.
 - R2 for private source and generated assets.
 - Cloudflare Queues for asynchronous generation.
+- Cloudflare Agents SDK and one Durable Object instance per workspace for planning and approval state.
 - Provider interfaces for copy, image, and optional external-service integrations.
 
 ```text
@@ -22,6 +25,7 @@ React UI
   -> Worker API
     -> D1 via DB
     -> private R2 via MEDIA_BUCKET
+    -> CampaignAgent via CAMPAIGN_AGENT
     -> Queue via GENERATION_QUEUE
       -> CopyProvider
       -> ImageProvider
@@ -36,10 +40,13 @@ React UI
 - `src/lib/types.ts` — shared application types.
 - `src/lib/workflows.ts` — bounded workflow definitions.
 - `src/lib/providers.ts` — swappable provider interfaces and implementations.
+- `src/lib/campaign-agent.ts` — bounded brief sanitization and deterministic planning.
+- `src/agents/CampaignAgent.ts` — persistent plan, revision, and approval state.
 - `src/worker.ts` — Worker routes, authentication, authorization, queue processing, and private asset delivery.
 - `migrations/` — D1 schema history.
+- `docs/BETA_ACCESS.md` — public-safe account, role, invitation, and beta testing contract.
 - `tests/` — Workers integration tests.
-- `wrangler.jsonc` — Wrangler bindings and deployment structure.
+- `wrangler.jsonc` — public-safe Wrangler binding structure.
 
 ## Local development
 
@@ -84,13 +91,18 @@ The application code relies on generic binding names:
 - `DB` for D1;
 - `MEDIA_BUCKET` for R2;
 - `GENERATION_QUEUE` for Queues;
+- `CAMPAIGN_AGENT` for the workspace-scoped Campaign Agent;
 - `ASSETS` when supplied by the Workers static-assets runtime.
 
 Do not rename these bindings during documentation cleanup. Account IDs, resource names, database IDs, deployment URLs, and secret values belong in ignored local configuration or protected CI/Cloudflare settings.
 
+Authorized deployments use an ignored `wrangler.local.jsonc` file or an equivalent protected CI configuration. The tracked `wrangler.jsonc` is a validation template and must not contain a live infrastructure mapping.
+
 ## Provider and mock behavior
 
 `CopyProvider` and `ImageProvider` isolate external APIs from application logic. Tests should stub provider calls or use deterministic fixtures. The Vite development experience may use local demo data, but production code must never receive mock credentials or test-only access gates.
+
+`CampaignPlanningProvider` is optional. Deterministic mode must remain fully functional without a provider key. Assisted mode may refine the plan summary and rationales, but the fixed outputs, verified facts, and human-approval requirement remain server controlled.
 
 When adding a provider:
 
@@ -106,11 +118,16 @@ When adding a provider:
 - Authorize the authenticated user against the requested workspace.
 - Keep R2 buckets private and retrieve objects through authorized Worker routes or short-lived signed access.
 - Store only hashed session tokens server-side and use secure, HTTP-only cookies.
+- Keep beta invitation tokens and bound invite emails hashed at rest, and enforce account status on login and session loading.
+- Use one-way abuse keys rather than raw email or IP values in authentication-attempt records.
 - Validate upload content type, size, ownership, and workspace path.
+- Check both the upload MIME allowlist and file signature before writing a private product asset.
+- Derive the Campaign Agent instance from the authenticated workspace; never accept an arbitrary instance name from the browser.
+- Reject direct client state changes and stale plan approvals.
 - Bind SQL values rather than constructing SQL from user input.
 - Verify webhook signatures and process external events idempotently before enabling an integration.
 - Apply abuse controls to anonymous authentication and upload surfaces.
-- Avoid exposing internal deployment state through public documentation or logs.
+- Avoid exposing private deployment state through public documentation or logs.
 
 ## Contribution workflow
 

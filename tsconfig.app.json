@@ -17,5 +17,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*.tsx", "src/lib/types.ts", "src/lib/workflows.ts", "src/lib/demo-data.ts"]
+  "include": ["src/**/*.tsx", "src/lib/types.ts", "src/lib/workflows.ts", "src/lib/demo-data.ts", "src/lib/campaign-agent.ts"]
 }

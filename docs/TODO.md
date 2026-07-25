@@ -1,67 +1,30 @@
-# Public technical backlog
+# Public release status
 
-This backlog contains engineering work suitable for public collaboration. Checkboxes describe repository state only; deployment state is verified separately and is not recorded here.
+The current product, interface, Agent, and architecture contract is maintained in [`PRODUCT_SPEC.md`](PRODUCT_SPEC.md). This page records only capabilities and checks present in the repository.
 
-## Authentication and sessions
+## Implemented capabilities
 
-- [x] Require authentication for workspace, generation, and private output routes.
-- [x] Use HTTP-only session cookies and store only a token hash in D1.
-- [x] Cover registration gates, login, logout, expired sessions, and protected endpoints with integration tests.
-- [ ] Expand session-lifecycle tests across timestamp formats, cleanup jobs, and boundary times.
-- [ ] Add account- and source-aware authentication abuse controls with regression coverage.
-- [ ] Add session-management controls for reviewing and revoking active sessions.
+- [x] Authenticated sessions and workspace authorization for protected operations.
+- [x] Closed-registration and generation gates enforced by the Worker.
+- [x] Email-bound beta invitations and active/suspended/deactivated account lifecycle.
+- [x] Workspace-scoped private product-image upload and authorized preview routes.
+- [x] MIME allowlisting, file-size limits, and PNG/JPEG/WebP signature checks.
+- [x] One persistent Campaign Agent instance per authenticated workspace.
+- [x] Bounded 1:1, 4:5, and 9:16 planning with revision-aware human approval.
+- [x] Client-side Agent state mutation disabled.
+- [x] Queue delivery and usage-accounting idempotency covered by integration tests.
+- [x] Deterministic local provider behavior for tests and demos.
+- [x] Responsive dashboard views for Campaign Packs, products, brands, and assets.
+- [x] Traditional Chinese and English campaign copy presentation.
 
-## Workspace isolation
+## Public verification contract
 
-- [x] Scope workspace and generation queries to the authenticated user.
-- [x] Test cross-workspace list, create, and private-output access.
-- [ ] Add reusable authorization helpers for future product and asset endpoints.
-- [ ] Add role-transition and membership-removal tests before exposing multi-user controls.
+- [x] Type checking, Workers integration tests, and production builds are available through npm scripts.
+- [x] Wrangler dry-run validates the public-safe binding structure.
+- [x] Protected route, cross-workspace, stale approval, upload, and generation-gate tests are included.
+- [x] Invite-only registration, invite mismatch, and suspended-session tests are included.
+- [x] Account-specific identifiers and resource mappings are excluded from the tracked configuration.
+- [x] Public examples use explicit placeholders instead of realistic infrastructure values.
+- [x] Logs and error responses are designed not to expose credentials or full user assets.
 
-## Upload validation and private assets
-
-- [ ] Add an authenticated product-image upload endpoint.
-- [ ] Allowlist supported image formats and verify file signatures.
-- [ ] Enforce request and decoded-image size limits.
-- [ ] Store originals under workspace-scoped private R2 keys.
-- [ ] Preserve the original and create derived working assets separately.
-- [ ] Record asset ownership and metadata in D1.
-- [ ] Serve previews and downloads only after workspace authorization.
-- [ ] Add asset retention and deletion flows.
-
-## Asynchronous processing
-
-- [x] Cover duplicate queue delivery and idempotent state transitions with tests.
-- [ ] Add bounded provider response validation and failure classification.
-- [ ] Add timeout, retry, and dead-letter recovery tests.
-- [ ] Add structured operational logs that exclude credentials and user content.
-
-## Testing and quality
-
-- [x] Run type checking, Workers integration tests, and production builds in CI.
-- [ ] Add frontend tests for authentication state transitions and account changes.
-- [ ] Add browser-level tests for keyboard navigation, responsive layout, and critical flows.
-- [ ] Add regression coverage for malformed JSON, oversized requests, and unsupported media.
-- [ ] Add deterministic provider mocks for success, rejection, timeout, and retry behavior.
-
-## Accessibility
-
-- [ ] Verify labels, focus order, error announcements, and keyboard-only operation.
-- [ ] Check color contrast and reduced-motion behavior.
-- [ ] Test authenticated flows with automated accessibility tooling and manual keyboard review.
-
-## Privacy and abuse controls
-
-- [ ] Document data categories, retention periods, and deletion behavior.
-- [ ] Add privacy-safe audit events for security-relevant actions.
-- [ ] Add rate limiting and abuse challenges to anonymous high-cost surfaces.
-- [ ] Ensure logs and error responses do not expose user content or infrastructure identifiers.
-- [ ] Add content reporting and account/asset deletion workflows before broad access.
-
-## Deployment verification
-
-- [ ] Keep account-specific identifiers outside public tracked configuration.
-- [ ] Document how protected CI or Cloudflare settings provide deployment mappings.
-- [ ] Validate every configuration change with `npm run cf:dry-run`.
-- [ ] Confirm migrations against an isolated environment before any reviewed remote application.
-- [ ] Maintain a documented rollback procedure without publishing live resource mappings.
+Deployment state, private infrastructure mappings, customer information, and non-public business or operational material are intentionally not recorded in this repository.

@@ -2,6 +2,25 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { cookieFrom, dispatch, registerAccount } from './helpers'
 
+function base64Url(bytes: Uint8Array) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
+async function hashValue(value: string) {
+  return base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))
+}
+
+async function createBetaInvite(email: string, inviteCode: string, accountType: 'beta' | 'test' = 'beta') {
+  const id = crypto.randomUUID()
+  await env.DB.prepare(`
+    INSERT INTO beta_invites (id, token_hash, recipient_hash, account_type, expires_at)
+    VALUES (?, ?, ?, ?, datetime('now', '+7 days'))
+  `).bind(id, await hashValue(inviteCode), await hashValue(`${email.toLowerCase()}\n${inviteCode}`), accountType).run()
+  return id
+}
+
 describe('restricted registration authentication', () => {
   it('keeps public registration closed when the server-side gate is closed', async () => {
     const response = await dispatch('/api/auth/register', {
@@ -35,7 +54,8 @@ describe('restricted registration authentication', () => {
     expect(setCookie).toContain('Max-Age=5184000')
     expect(setCookie).toContain('Secure')
 
-    const payload = await response.json() as { user: { id: string }; currentWorkspace: { id: string; role: string; availableCredits: number; reservedCredits: number } }
+    const payload = await response.json() as { user: { id: string; accountStatus: string; accountType: string }; currentWorkspace: { id: string; role: string; availableCredits: number; reservedCredits: number } }
+    expect(payload.user).toMatchObject({ accountStatus: 'active', accountType: 'standard' })
     expect(payload.currentWorkspace).toMatchObject({ role: 'owner', availableCredits: 3, reservedCredits: 0 })
 
     const membership = await env.DB.prepare('SELECT role FROM workspace_memberships WHERE user_id = ? AND workspace_id = ?')
@@ -46,6 +66,47 @@ describe('restricted registration authentication', () => {
     const session = await dispatch('/api/session', { headers: { cookie: cookieFrom(response) } })
     expect(session.status).toBe(200)
     expect(await session.json()).toMatchObject({ authenticated: true, user: { id: payload.user.id } })
+  })
+
+  it('creates a beta account only from an unexpired email-bound invite', async () => {
+    const email = `beta-${crypto.randomUUID()}@example.test`
+    const inviteCode = `invite-${crypto.randomUUID()}`
+    const inviteId = await createBetaInvite(email, inviteCode)
+
+    const response = await dispatch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.12', origin: 'https://app.test' },
+      body: JSON.stringify({ email, inviteCode, password: 'SecurePass123!', name: 'Beta Tester', workspaceName: 'Beta Workspace' })
+    }, { ...env, REGISTRATION_MODE: 'invite' })
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toMatchObject({ user: { accountStatus: 'active', accountType: 'beta' }, currentWorkspace: { role: 'owner' } })
+    expect(await env.DB.prepare('SELECT status FROM beta_invites WHERE id = ?').bind(inviteId).first()).toEqual({ status: 'used' })
+
+    const reused = await dispatch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.15', origin: 'https://app.test' },
+      body: JSON.stringify({ email, inviteCode, password: 'SecurePass123!' })
+    }, { ...env, REGISTRATION_MODE: 'invite' })
+    expect(reused.status).toBe(403)
+  })
+
+  it('rejects an invite that is not bound to the submitted email', async () => {
+    const inviteCode = `invite-${crypto.randomUUID()}`
+    await createBetaInvite(`intended-${crypto.randomUUID()}@example.test`, inviteCode)
+
+    const response = await dispatch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.13', origin: 'https://app.test' },
+      body: JSON.stringify({ email: `other-${crypto.randomUUID()}@example.test`, inviteCode, password: 'SecurePass123!' })
+    }, { ...env, REGISTRATION_MODE: 'invite' })
+
+    expect(response.status).toBe(403)
+  })
+
+  it('reports invite registration without opening public registration', async () => {
+    const response = await dispatch('/api/health', {}, { ...env, REGISTRATION_MODE: 'invite' })
+    expect(await response.json()).toMatchObject({ registrationMode: 'invite', registrationOpen: true })
   })
 
   it('logs in, logs out and invalidates the stored session', async () => {
@@ -81,8 +142,24 @@ describe('restricted registration authentication', () => {
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0')
   })
 
+  it('blocks suspended accounts from existing sessions and new logins', async () => {
+    const account = await registerAccount('Suspended User')
+    await env.DB.prepare("UPDATE users SET account_status = 'suspended' WHERE id = ?").bind(account.user.id).run()
+
+    const session = await dispatch('/api/session', { headers: { cookie: account.cookie } })
+    expect(await session.json()).toEqual({ authenticated: false })
+    expect(session.headers.get('set-cookie')).toContain('Max-Age=0')
+
+    const login = await dispatch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.14', origin: 'https://app.test' },
+      body: JSON.stringify({ email: account.user.email, password: 'SecurePass123!' })
+    })
+    expect(login.status).toBe(403)
+  })
+
   it('returns 401 for every protected resource without a session', async () => {
-    for (const path of ['/api/workspaces', '/api/generations', '/api/generations/missing/image']) {
+    for (const path of ['/api/workspaces', '/api/generations', '/api/generations/missing/image', '/api/assets/missing', '/api/campaign-agent']) {
       const response = await dispatch(path)
       expect(response.status, path).toBe(401)
       expect(await response.json()).toEqual({ error: 'Authentication required.' })
@@ -119,9 +196,10 @@ describe('restricted registration authentication', () => {
   it('rate limits repeated login failures for the same email and IP', async () => {
     const email = `limited-${crypto.randomUUID()}@example.test`
     const ip = '198.51.100.42'
+    const [emailKey, ipKey] = await Promise.all([hashValue(email), hashValue(ip)])
     const attempts = Array.from({ length: 8 }, () => env.DB.prepare(
       "INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, 'login_failed')"
-    ).bind(crypto.randomUUID(), email, ip))
+    ).bind(crypto.randomUUID(), emailKey, ipKey))
     await env.DB.batch(attempts)
 
     const response = await dispatch('/api/auth/login', {

@@ -6,7 +6,7 @@ const APP_ORIGIN = 'https://app.test'
 
 export type RegisteredAccount = {
   cookie: string
-  user: { id: string; email: string; name: string }
+  user: { id: string; email: string; name: string; accountStatus: 'active' | 'suspended' | 'deactivated'; accountType: 'standard' | 'beta' | 'test' }
   currentWorkspace: {
     id: string
     name: string
