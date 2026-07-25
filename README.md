@@ -1,38 +1,54 @@
 # AislePack — AI 電商素材工作台
 
-一個以 React、Cloudflare Workers 與 Agents SDK 建立的電商 Campaign Pack 工作台。它把有權使用的商品圖片、已核實的商業資料及人工批准結合成協調一致的 1:1、4:5、9:16 素材流程。
+AislePack 把一張有權使用的商品圖片、已核實的繁中／英文商業資料，以及人工批准，整理成一套 1:1、4:5、9:16 Campaign Pack。
 
-An ecommerce Campaign Pack workspace built with React, Cloudflare Workers, and the Agents SDK. It combines an approved product image, verified commercial facts, and explicit human approval before generation.
+AislePack turns an approved product image, verified Traditional Chinese and English commercial copy, and explicit human approval into a coordinated three-format Campaign Pack.
 
-Campaign Agent 會檢查資料、建立固定三比例計劃並等待使用者批准。商品外觀及精確商業文字仍以 product-preserving、deterministic 的方式處理，不交由圖片模型自由重畫。
+目前版本以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只會檢查資料和規劃固定輸出，不會自行新增產品宣稱、發佈廣告或跳過批准。
 
-## Architecture
+## 已完成能力
 
-- React, Vite, and TypeScript frontend.
-- Cloudflare Worker API and static assets.
-- D1 through the `DB` binding.
-- Private R2 assets through the `MEDIA_BUCKET` binding.
-- Asynchronous jobs through the `GENERATION_QUEUE` binding.
-- Workspace-scoped planning and approval state through the `CAMPAIGN_AGENT` binding.
-- Deterministic SVG composition that embeds the approved private product image and exact commercial text.
-- Swappable copy and image provider interfaces.
+- Session、帳號狀態及 workspace 授權；
+- 電郵綁定的一次性邀請註冊；
+- 私人 R2 商品圖上傳、格式／大小檢查及授權預覽；
+- 每個 workspace 一個 SQLite-backed Campaign Agent；
+- 批准 revision 與提交 brief 完整比對；
+- 一次、原子、具冪等鍵的三比例 Campaign Pack 建立；
+- Queue 重送安全、失敗退回可用輸出數；
+- 私人 SVG 輸出、下載及繁中／英文文案；
+- 桌面及手機介面、真實素材包／商品／品牌／素材視圖；
+- 本機 demo 與隔離 Workers integration tests。
 
-Start with [the unified product specification](docs/PRODUCT_SPEC.md), then use [the beta access contract](docs/BETA_ACCESS.md), [the engineering brief](docs/CODEX_AGENT_BRIEF.md), [the security policy](SECURITY.md), and [the public release status](docs/TODO.md) for implementation details.
+## 架構
 
-The runtime keeps the bounded workflow friendly to Cloudflare's included usage: [Static Assets](https://developers.cloudflare.com/workers/static-assets/) serve the SPA without invoking the Worker except for `/api/*`; [D1](https://developers.cloudflare.com/d1/) stores relational metadata; private [R2](https://developers.cloudflare.com/r2/) holds source and output objects; [Queues](https://developers.cloudflare.com/queues/) isolate generation retries; a SQLite-backed Durable Object keeps one approved Campaign Agent state per workspace; and a Cron Trigger removes expired authentication records. Deterministic generation uses these bindings without a paid model call. Actual usage still depends on traffic and should be monitored in Cloudflare.
+- React 19、Vite 8、TypeScript 7；
+- Cloudflare Worker API + Static Assets；
+- D1：帳號、workspace、邀請、素材 metadata、Campaign Pack 與輸出記錄；
+- private R2：商品來源圖與衍生素材；
+- Queues：非同步輸出與重試；
+- Agents SDK Durable Object：workspace-scoped 規劃與批准狀態；
+- Cron Trigger：過期 session 與短期驗證記錄清理。
 
-## Local development
+Static Assets 只在 `/api/*` 先執行 Worker；其餘 SPA 檔案由資產層提供。確定性模式不需要付費模型呼叫。D1、R2、Queues、Durable Objects 與 Workers 的實際免費用量及限制以 Cloudflare 目前文件和帳戶方案為準：
+
+- [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
+- [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)
+- [R2 pricing](https://developers.cloudflare.com/r2/pricing/)
+- [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/)
+- [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+
+## 本機開發
+
+需要 Node.js 22 或更新版本。
 
 ```bash
-git clone <REPOSITORY_URL>
-cd marketing_image_ai_web
 npm ci
 npm run dev
 ```
 
-The development UI can use local demo data. Workers integration tests use isolated D1, R2, and Queue bindings and must not contact production resources.
+開發介面使用合成 demo 資料；整合測試使用隔離 D1、R2、Queue 及 Durable Object，不連接正式資源或付費 provider。
 
-## Verification
+## 完整檢查
 
 ```bash
 git diff --check
@@ -40,11 +56,14 @@ npm run check
 npm test
 npm run build
 npm run cf:dry-run
+npm audit --omit=dev
 ```
 
-## Cloudflare configuration
+`npm run check` 亦會核對由 `wrangler types` 產生的 `worker-env.d.ts`，避免 bindings 與程式型別漂移。
 
-Keep these binding names stable because application code depends on them:
+## Cloudflare 設定
+
+程式依賴以下穩定 binding 名稱：
 
 ```text
 DB
@@ -54,59 +73,41 @@ CAMPAIGN_AGENT
 ASSETS
 ```
 
-Public examples must use explicit placeholders:
+追蹤的 `wrangler.jsonc` 只包含明確 placeholder，並保持 `REGISTRATION_MODE=closed`、`GENERATION_MODE=disabled`。正式映射只可放在被忽略且限制權限的 `wrangler.local.jsonc`；不可把帳戶識別碼、D1 identifier、實際資源名稱、部署 URL 或 secret 寫入 Git。
 
-```text
-<WORKER_NAME>
-<D1_DATABASE_NAME>
-<D1_DATABASE_ID>
-<R2_BUCKET_NAME>
-<QUEUE_NAME>
-<DEAD_LETTER_QUEUE_NAME>
-<PUBLIC_APP_URL>
+正式環境使用：
+
+- `REGISTRATION_MODE=invite`；
+- `GENERATION_MODE=deterministic`；
+- `AGENT_MODE=deterministic`；
+- 每個新邀請 workspace 六個可用輸出（兩套完整素材包）。
+
+部署順序：
+
+1. 核對被 Git 忽略的受保護資源映射；
+2. `npm run check && npm test && npm run build`；
+3. 執行 `npm run cf:dry-run`；
+4. 對 `wrangler.local.jsonc` 指向的 `DB` 執行 `npm run cf:migrate`；
+5. 執行 `npm run cf:deploy`，再檢查 `/api/health`、未授權路徑、登入頁及一套隔離 Campaign Pack。
+
+GitHub Actions 只使用公開 placeholder 設定執行 check、test、audit、build 及 dry-run，不持有 Cloudflare 帳戶或資源映射。正式部署刻意與公開 PR check 分開，避免第三方 build 詳情連結公開基礎設施識別資料。
+
+建立一次性邀請時，從本機環境提供收件電郵和受保護 D1 名稱；程式只把 hash 寫入 D1，邀請碼只顯示一次：
+
+```bash
+AISLEPACK_INVITE_EMAIL='<recipient>' \
+AISLEPACK_INVITE_DATABASE='<database>' \
+npm run cf:invite
 ```
 
-Store account-specific identifiers in ignored local configuration or protected CI/Cloudflare settings. Do not replace placeholders with realistic-looking sample identifiers.
+provider secret 只可透過 Wrangler secret 或同等受保護設定加入。`assisted` 模式可生成背景，但商品原圖與商業文字仍由確定性合成層處理。正式支援下載格式是 SVG；PNG／JPEG 不在目前輸出合約內。
 
-`GENERATION_MODE` accepts `disabled`, `deterministic`, or `assisted`. The tracked template stays `disabled`. Deterministic mode does not require a provider secret; assisted mode requires a server-side provider secret and still uses deterministic product/text composition. The current downloadable exact-layout format is SVG; PNG and JPEG are not advertised as supported output formats.
+## 文件
 
-For an authorized deployment, copy the public structure to the ignored `wrangler.local.jsonc` file and populate it from protected deployment records. `npm run cf:deploy`, `npm run cf:migrate`, and `npm run cf:secrets` deliberately use that ignored file; `npm run cf:dry-run` validates only the public-safe template.
+- [統一產品規格](docs/PRODUCT_SPEC.md)
+- [工程與部署](docs/ENGINEERING.md)
+- [Beta access 合約](docs/BETA_ACCESS.md)
+- [發佈狀態](docs/RELEASE_STATUS.md)
+- [安全與私隱](SECURITY.md)
 
-Cloudflare Workers Builds can use `npm run cf:deploy:build` for the production deploy command and `npm run cf:preview:build` for non-production versions. The preparation step runs only inside Workers Builds and creates an ignored, permission-restricted Wrangler file from protected build variables. Keep the following values in Cloudflare rather than GitHub or tracked files:
-
-```text
-CLOUDFLARE_WORKER_NAME
-CLOUDFLARE_D1_DATABASE_NAME
-CLOUDFLARE_D1_DATABASE_ID
-CLOUDFLARE_R2_BUCKET_NAME
-CLOUDFLARE_QUEUE_NAME
-CLOUDFLARE_DEAD_LETTER_QUEUE_NAME
-CLOUDFLARE_APP_ORIGIN
-```
-
-The recommended Workers Builds build command is `npm run check && npm test && npm run build`. Repository and production-branch selection, resource values, build-token details, deployment URLs, and build history remain protected Cloudflare settings.
-
-Set provider credentials with Wrangler secrets or the equivalent protected deployment setting. `.env.example` lists names only and must never contain real values.
-
-Before deploying:
-
-1. validate the selected private deployment configuration;
-2. apply reviewed migrations to the intended environment;
-3. run the Wrangler dry-run command;
-4. confirm that registration, generation, and other high-cost capabilities use deliberate server-side gates;
-5. deploy only after the target account and resource mappings have been independently verified.
-
-## Security and privacy
-
-- Protected APIs require an authenticated session.
-- Workspace access is checked server-side.
-- Closed, invite-only, and open registration are separate server-side modes; production defaults to closed.
-- Suspended or deactivated accounts cannot create or continue sessions.
-- Uploaded and generated assets remain private by default.
-- Provider keys are Worker-side secrets and are never exposed to the browser.
-- The browser loads application assets from the same origin and does not contact third-party font or analytics services.
-- SQL values are bound parameters.
-- Uploads, provider responses, and asynchronous retries require validation and bounded processing.
-- Queue and provider failures return controlled messages instead of exposing infrastructure or provider details.
-
-Security-sensitive changes should include regression tests without publishing customer data, deployment identifiers, or non-public operational details.
+所有公開測試、截圖、commit、PR 及文件只可使用合成資料；不得包含真實使用者資料、非公開背景、內部商業資料或部署識別資訊。

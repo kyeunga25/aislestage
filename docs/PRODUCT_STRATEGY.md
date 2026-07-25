@@ -1,6 +1,6 @@
 # Product strategy — ecommerce campaign asset workflow
 
-> Product behavior, dashboard structure, Agent contract, architecture, and milestone scope are defined in [PRODUCT_SPEC.md](PRODUCT_SPEC.md). This file keeps the shorter strategic rationale only.
+> Product behavior, dashboard structure, Agent contract, architecture, and release contract are defined in [PRODUCT_SPEC.md](PRODUCT_SPEC.md). This file keeps the shorter strategic rationale only.
 
 ## Purpose
 
@@ -50,7 +50,7 @@ The source product should remain unchanged wherever practical. Generative models
 
 The repository focuses on the Campaign Pack workflow. A general design canvas, bulk catalog import, direct ad publishing, broad social automation, and complex organization workflows are outside the core scope unless they become independently justified.
 
-Campaign Agent is a bounded planning and approval layer inside this workflow. It is not an autonomous publishing agent and cannot bypass verified facts, workspace authorization, approval revisions, generation gates, or credit accounting.
+Campaign Agent is a bounded planning and approval layer inside this workflow. It is not an autonomous publishing agent and cannot bypass verified facts, workspace authorization, approval revisions, generation gates, or output allowance accounting.
 
 ## Public repository boundary
 
