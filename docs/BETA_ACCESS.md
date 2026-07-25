@@ -7,7 +7,7 @@
 | 身分 | 可用範圍 | 目前限制 |
 | --- | --- | --- |
 | 未登入訪客 | 健康狀態、workflow 清單、登入；註冊受 server gate 控制 | 不可讀取 workspace、Agent、圖片或生成記錄 |
-| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准及生成流程 | 尚未提供成員或帳單管理 API |
+| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准及生成流程 | 只限內容操作，沒有管理 API |
 | `admin` | 與 `owner` 相同的內容操作 | 角色已保留，但尚未有獨立管理權限 |
 | `member` | 與 `owner` 相同的內容操作 | 角色已保留，但尚未限制批准或生成動作 |
 
@@ -31,9 +31,9 @@
 
 - `account_type`：`standard`、`beta`、`test`；只作環境及測試分類，不授予額外權限。
 - `account_status`：`active`、`suspended`、`deactivated`；只有 `active` 可以建立或繼續 session。
-- workspace role：`owner`、`admin`、`member`；日後的成員管理及操作權限應以 server-side policy 明確執行。
+- workspace role：`owner`、`admin`、`member`；目前只表示 active membership，所有內容操作仍由 server-side workspace scope 驗證。
 
-公開介面不提供帳號清單或邀請管理。邀請建立、撤銷、帳號狀態變更及成員指派必須經受保護的營運流程完成；其 UI 可以沿用現有 Auth、workspace switcher 及帳號入口擴充，而毋須改動登入資料合約。
+公開介面不提供帳號清單或邀請管理。邀請建立、撤銷、帳號狀態變更及成員指派只可經受保護的營運流程完成。
 
 ## 隔離測試流程
 

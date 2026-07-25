@@ -9,6 +9,7 @@ dist/
 !.env.example
 wrangler.local.jsonc
 wrangler.*.local.jsonc
+wrangler.ci.generated.jsonc
 *.tsbuildinfo
 coverage/
 tmp/

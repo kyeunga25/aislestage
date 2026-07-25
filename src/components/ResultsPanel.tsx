@@ -44,6 +44,8 @@ export function ResultsPanel({ results, product, cta, agentState, isGenerating, 
         {outputs.map((output) => {
           const result = results.find((item) => item.aspectRatio === output.ratio)
           const hasGeneratedImage = Boolean(result?.imageUrl) && !demoMode
+          const statusLabel = result?.status === 'failed' ? '生成失敗' : result?.status === 'processing' ? '處理中' : result?.status === 'queued' ? '排隊中' : demoMode && result ? '示範預覽' : '待生成'
+          const extension = result?.contentType === 'image/svg+xml' ? 'svg' : 'png'
           return <article className="result-card" key={output.ratio}>
             <div className={`result-image ${output.className}`}>
               <img src={result?.imageUrl || campaignScene} alt={`${output.ratio} ${output.label}${hasGeneratedImage ? '' : '版面預覽'}`} />
@@ -53,8 +55,8 @@ export function ResultsPanel({ results, product, cta, agentState, isGenerating, 
             <div className="result-meta">
               <span><strong>{output.ratio}</strong>{output.label}</span>
               {hasGeneratedImage
-                ? <a href={result!.imageUrl!} download={`aislepack-${output.ratio.replace(':', 'x')}.png`}><ArrowDownToLine size={16} />下載</a>
-                : <span className="result-status">{demoMode && result ? '示範預覽' : isGenerating ? '處理中' : '待生成'}</span>}
+                ? <a href={result!.imageUrl!} download={`aislepack-${output.ratio.replace(':', 'x')}.${extension}`}><ArrowDownToLine size={16} />下載</a>
+                : <span className={`result-status ${result?.status || ''}`} title={result?.errorMessage || undefined}>{isGenerating && !result ? '處理中' : statusLabel}</span>}
             </div>
           </article>
         })}

@@ -16,6 +16,7 @@ function validState(state: CampaignAgentState) {
     && state.plan.length <= 3
     && state.checks.length <= 8
     && state.messages.length <= 12
+    && (state.brief === null || typeof state.brief === 'object')
 }
 
 export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {

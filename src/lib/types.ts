@@ -37,10 +37,12 @@ export type GenerationInput = {
   workspaceId: string
   workflowId: WorkflowId
   aspectRatio: AspectRatio
+  approvedRevision: number
+  intent: string
   brand: BrandPack
   product: Product
   referenceImageUrls: string[]
-  referenceAssetIds?: string[]
+  referenceAssetIds: string[]
 }
 
 export type GenerationResult = {
@@ -51,6 +53,8 @@ export type GenerationResult = {
   title: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
   errorMessage?: string | null
+  contentType?: 'image/svg+xml' | 'image/png' | null
+  approvedRevision?: number
   createdAt?: string
 }
 
@@ -89,6 +93,7 @@ export type PlatformStatus = {
   registrationMode: 'open' | 'invite' | 'closed'
   registrationOpen: boolean
   generationEnabled: boolean
+  generationMode: 'disabled' | 'deterministic' | 'assisted'
   agentMode: 'deterministic' | 'assisted'
 }
 
@@ -141,4 +146,5 @@ export type CampaignAgentState = {
   messages: CampaignAgentMessage[]
   mode: 'deterministic' | 'assisted'
   approvedAt: string | null
+  brief: CampaignBrief | null
 }

@@ -1,6 +1,8 @@
 import { getAgentByName } from 'agents'
 import { CampaignAgent } from './agents/CampaignAgent'
-import { OpenAICopyProvider, OpenAIImageProvider, UnavailableBillingProvider } from './lib/providers'
+import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
+import { sanitizeCampaignBrief } from './lib/campaign-agent'
+import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { workflowById } from './lib/workflows'
 import type { GenerationInput } from './lib/types'
 
@@ -14,7 +16,7 @@ export type Env = {
   OPENAI_API_KEY?: string
   APP_ORIGIN?: string
   REGISTRATION_MODE?: 'open' | 'invite' | 'closed'
-  GENERATION_MODE?: 'enabled' | 'disabled'
+  GENERATION_MODE?: 'enabled' | 'disabled' | 'deterministic' | 'assisted'
   INITIAL_CREDIT_BALANCE?: string
   AGENT_MODE?: 'deterministic' | 'assisted'
 }
@@ -41,6 +43,8 @@ const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_PRODUCT_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const MAX_AUTH_ATTEMPT_DAYS = 7
+const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
+const FAILED_GENERATION_MESSAGE = '素材未能完成，技術額度已自動退回。'
 const DUMMY_PASSWORD_SALT = 'bW90aXZlLWR1bW15LXNhbHQ='
 const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
 
@@ -209,6 +213,12 @@ function registrationMode(env: Env) {
   return env.REGISTRATION_MODE === 'open' || env.REGISTRATION_MODE === 'invite' ? env.REGISTRATION_MODE : 'closed'
 }
 
+function generationMode(env: Env): 'disabled' | 'deterministic' | 'assisted' {
+  if (env.GENERATION_MODE === 'deterministic') return 'deterministic'
+  if ((env.GENERATION_MODE === 'assisted' || env.GENERATION_MODE === 'enabled') && env.OPENAI_API_KEY) return 'assisted'
+  return 'disabled'
+}
+
 function validInput(value: unknown): value is GenerationInput {
   if (!value || typeof value !== 'object') return false
   const input = value as Partial<GenerationInput>
@@ -217,6 +227,8 @@ function validInput(value: unknown): value is GenerationInput {
   return boundedString(input.workspaceId, 64)
     && typeof input.workflowId === 'string' && workflowIds.has(input.workflowId)
     && typeof input.aspectRatio === 'string' && ratios.has(input.aspectRatio)
+    && Number.isSafeInteger(input.approvedRevision) && Number(input.approvedRevision) > 0
+    && boundedString(input.intent, 120, false)
     && boundedString(input.brand?.name, 120)
     && boundedString(input.brand?.tone, 240, false)
     && boundedStringArray(input.brand?.colors, 8, 24)
@@ -231,7 +243,7 @@ function validInput(value: unknown): value is GenerationInput {
     && boundedString(input.product?.promotion, 240, false)
     && boundedStringArray(input.product?.channels, 12, 80)
     && Array.isArray(input.referenceImageUrls) && input.referenceImageUrls.length === 0
-    && (input.referenceAssetIds === undefined || boundedStringArray(input.referenceAssetIds, 5, 80))
+    && boundedStringArray(input.referenceAssetIds, 1, 80) && input.referenceAssetIds?.length === 1
 }
 
 const productImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -364,7 +376,7 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
-  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff' } })
+  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
 }
 
 async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve' | 'revise') {
@@ -386,10 +398,8 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
       return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
     }
     return json({ error: 'Not found.' }, { status: 404 })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : ''
-    if (/not ready|changed|required|Invalid Campaign/i.test(message)) return json({ error: message }, { status: 409 })
-    console.error('Campaign Agent request failed', { action, workspaceId: session.currentWorkspace.id })
+  } catch {
+    console.error('campaign-agent-request-failed', { action })
     return json({ error: 'Campaign Agent 暫時未能完成這個動作。' }, { status: 503 })
   }
 }
@@ -401,6 +411,36 @@ async function referenceAssetsBelongToWorkspace(env: Env, workspaceId: string, a
     .bind(workspaceId, ...assetIds)
     .first<{ count: number }>()
   return result?.count === new Set(assetIds).size
+}
+
+async function approvedGenerationInput(env: Env, input: GenerationInput) {
+  const agent = await getAgentByName(env.CAMPAIGN_AGENT, input.workspaceId)
+  const state = await agent.getPlan()
+  if (state.stage !== 'approved' || state.revision !== input.approvedRevision || !state.brief) return false
+  const approvedOutput = state.plan.some((item) => item.selected && item.workflowId === input.workflowId && item.ratio === input.aspectRatio)
+  if (!approvedOutput) return false
+  const submittedBrief = sanitizeCampaignBrief({
+    assetId: input.referenceAssetIds[0],
+    intent: input.intent,
+    brand: input.brand,
+    product: input.product
+  })
+  return JSON.stringify(submittedBrief) === JSON.stringify(state.brief)
+}
+
+async function generationSourceAsset(env: Env, input: GenerationInput) {
+  const asset = await env.DB.prepare(`
+    SELECT object_key AS objectKey, content_type AS contentType
+    FROM media_assets
+    WHERE id = ? AND workspace_id = ? AND kind = 'product-source'
+  `).bind(input.referenceAssetIds[0], input.workspaceId).first<{ objectKey: string; contentType: 'image/png' | 'image/jpeg' | 'image/webp' }>()
+  if (!asset) throw new Error('Approved product asset is unavailable.')
+  const object = await env.MEDIA_BUCKET.get(asset.objectKey)
+  if (!object) throw new Error('Approved product asset is unavailable.')
+  return {
+    base64: bytesToBase64(new Uint8Array(await object.arrayBuffer())),
+    contentType: asset.contentType
+  }
 }
 
 async function register(request: Request, env: Env) {
@@ -570,13 +610,13 @@ async function failGenerationAndRelease(env: Env, workspaceId: string, generatio
   ])
 }
 
-async function completeGenerationAndSettle(env: Env, workspaceId: string, generationId: string, outputKey: string) {
+async function completeGenerationAndSettle(env: Env, workspaceId: string, generationId: string, outputKey: string, outputContentType: string) {
   await env.DB.batch([
     env.DB.prepare(`
       UPDATE generations
-      SET status = 'completed', output_key = ?, error_message = NULL, completed_at = CURRENT_TIMESTAMP
+      SET status = 'completed', output_key = ?, output_content_type = ?, error_message = NULL, completed_at = CURRENT_TIMESTAMP
       WHERE id = ? AND workspace_id = ? AND status = 'processing'
-    `).bind(outputKey, generationId, workspaceId),
+    `).bind(outputKey, outputContentType, generationId, workspaceId),
     env.DB.prepare(`
       INSERT OR IGNORE INTO credit_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'settlement', 0, 'Generation completed'
@@ -592,7 +632,7 @@ async function completeGenerationAndSettle(env: Env, workspaceId: string, genera
 }
 
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
-  if (env.GENERATION_MODE !== 'enabled' || !env.OPENAI_API_KEY) return json({ error: 'AI 生成服務目前未開放。' }, { status: 503 })
+  if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
   const contentLength = Number(request.headers.get('content-length') || '0')
   if (contentLength > MAX_GENERATION_BODY_BYTES) return json({ error: 'Generation payload is too large.' }, { status: 413 })
@@ -600,17 +640,25 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   if (!validInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
   const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const safeInput = { ...input, workspaceId: workspace.id }
-  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds || [])) return json({ error: 'Product asset not found.' }, { status: 400 })
+  const brief = sanitizeCampaignBrief({ assetId: input.referenceAssetIds[0], intent: input.intent, brand: input.brand, product: input.product })
+  const safeInput: GenerationInput = { ...input, workspaceId: workspace.id, intent: brief.intent, brand: brief.brand, product: brief.product, referenceImageUrls: [], referenceAssetIds: [input.referenceAssetIds[0]] }
+  const compositionIssues = validateCompositionInput(safeInput)
+  if (compositionIssues.length) return json({ error: compositionIssues[0], issues: compositionIssues }, { status: 422 })
+  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)) return json({ error: 'Product asset not found.' }, { status: 400 })
   const workflow = workflowById(input.workflowId)
   if (!workflow.ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
+  try {
+    if (!await approvedGenerationInput(env, safeInput)) return json({ error: 'Campaign plan approval is missing, stale, or does not match this output.' }, { status: 409 })
+  } catch {
+    return json({ error: 'Campaign approval state is temporarily unavailable.' }, { status: 503 })
+  }
   const id = crypto.randomUUID()
   let reservationCreated = false
   let generationCreated = false
   try {
     await reserveCredits(env, workspace.id, id)
     reservationCreated = true
-    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, credit_cost, input_json) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', CREDIT_COST, JSON.stringify(safeInput)).run()
+    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', CREDIT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
     generationCreated = true
     await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
     return json({ id, status: 'queued', reservedCredits: CREDIT_COST }, { status: 202 })
@@ -630,12 +678,14 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
   const workspace = await getWorkspace(env, session.user.id, workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const result = await env.DB.prepare(`
-    SELECT id, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status, output_key AS outputKey, error_message AS errorMessage, created_at AS createdAt
+    SELECT id, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status, output_key AS outputKey,
+      output_content_type AS contentType, approved_revision AS approvedRevision,
+      error_message AS errorMessage, created_at AS createdAt
     FROM generations
     WHERE workspace_id = ?
     ORDER BY created_at DESC
     LIMIT 20
-  `).bind(workspace.id).all<{ id: string; workflowId: string; aspectRatio: string; status: string; outputKey: string | null; errorMessage: string | null; createdAt: string }>()
+  `).bind(workspace.id).all<{ id: string; workflowId: string; aspectRatio: string; status: string; outputKey: string | null; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
   return json({ generations: result.results.map((item) => ({ ...item, imageUrl: item.outputKey ? `/api/generations/${item.id}/image` : null })) })
 }
 
@@ -649,13 +699,21 @@ async function generationImage(request: Request, env: Env, session: SessionConte
   if (!row?.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
   const object = await env.MEDIA_BUCKET.get(row.outputKey)
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
-  return new Response(object.body, { headers: { 'content-type': object.httpMetadata?.contentType || 'image/png', 'cache-control': 'private, max-age=300' } })
+  const contentType = object.httpMetadata?.contentType || 'image/png'
+  const headers = new Headers({
+    'content-type': contentType,
+    'cache-control': 'private, max-age=300',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer'
+  })
+  if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+  return new Response(object.body, { headers })
 }
 
 export default {
   async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url)
-    if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && url.pathname !== '/api/payment/webhook' && !isAllowedOrigin(request, env)) {
+    if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !isAllowedOrigin(request, env)) {
       return json({ error: 'Request origin is not allowed.' }, { status: 403 })
     }
     if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/')) return new Response(null, { status: 204 })
@@ -665,7 +723,8 @@ export default {
       releaseMode: 'restricted',
       registrationMode: registrationMode(env),
       registrationOpen: registrationMode(env) !== 'closed',
-      generationEnabled: env.GENERATION_MODE === 'enabled' && Boolean(env.OPENAI_API_KEY),
+      generationEnabled: generationMode(env) !== 'disabled',
+      generationMode: generationMode(env),
       agentMode: env.AGENT_MODE === 'assisted' && Boolean(env.OPENAI_API_KEY) ? 'assisted' : 'deterministic'
     })
     if (url.pathname === '/api/workflows' && request.method === 'GET') return json({ workflows: ['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'] })
@@ -715,15 +774,6 @@ export default {
       if (session instanceof Response) return session
       return createGeneration(request, env, session)
     }
-    if (url.pathname === '/api/payment/webhook' && request.method === 'POST') {
-      try {
-        const event = await new UnavailableBillingProvider().verifyWebhook(request)
-        await env.DB.prepare('INSERT INTO payment_events (provider_event_id, provider, event_type, payload_json) VALUES (?, ?, ?, ?)').bind(event.eventId, 'external', event.type, JSON.stringify(event.data)).run()
-        return json({ received: true })
-      } catch (error) {
-        return json({ error: error instanceof Error ? error.message : 'Webhook rejected.' }, { status: 401 })
-      }
-    }
     return json({ error: 'Not found.' }, { status: 404 })
   },
 
@@ -734,6 +784,7 @@ export default {
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
       const { generationId, input } = message.body as GenerationMessage
+      let storedOutputKey: string | null = null
       try {
         const claim = await env.DB.prepare(`
           UPDATE generations
@@ -745,32 +796,51 @@ export default {
           message.ack()
           continue
         }
-        if (env.GENERATION_MODE !== 'enabled' || !env.OPENAI_API_KEY) throw new Error('AI generation is disabled for this deployment.')
+        const mode = generationMode(env)
+        if (mode === 'disabled') throw new Error('Campaign generation is disabled for this deployment.')
         const workflow = workflowById(input.workflowId)
-        const copy = await new OpenAICopyProvider(env.OPENAI_API_KEY).createCopy({ brand: input.brand, product: input.product, workflowTitle: workflow.title, aspectRatio: input.aspectRatio })
-        const generated = await new OpenAIImageProvider(env.OPENAI_API_KEY).generate({ prompt: copy.imagePrompt, aspectRatio: input.aspectRatio, referenceImageUrls: input.referenceImageUrls })
-        const key = `workspaces/${input.workspaceId}/generations/${generationId}.png`
-        await env.MEDIA_BUCKET.put(key, Uint8Array.from(atob(generated.imageBase64), (char) => char.charCodeAt(0)), { httpMetadata: { contentType: 'image/png' }, customMetadata: { workflow: input.workflowId } })
-        await completeGenerationAndSettle(env, input.workspaceId, generationId, key)
+        const source = await generationSourceAsset(env, input)
+        let background: { base64: string; contentType: 'image/png' } | undefined
+        if (mode === 'assisted' && env.OPENAI_API_KEY) {
+          const copy = await new OpenAICopyProvider(env.OPENAI_API_KEY).createCopy({ brand: input.brand, product: input.product, workflowTitle: workflow.title, aspectRatio: input.aspectRatio })
+          const generated = await new OpenAIImageProvider(env.OPENAI_API_KEY).generate({ prompt: `${copy.imagePrompt}\nBackground scene only. Do not render text, logos, prices, claims, or a replacement product.`, aspectRatio: input.aspectRatio, referenceImageUrls: [] })
+          background = { base64: generated.imageBase64, contentType: 'image/png' }
+        }
+        const output = composeCampaignSvg({ input, source, background })
+        const key = `workspaces/${input.workspaceId}/generations/${generationId}.svg`
+        await env.MEDIA_BUCKET.put(key, output, {
+          httpMetadata: { contentType: CAMPAIGN_OUTPUT_CONTENT_TYPE },
+          customMetadata: {
+            workflow: input.workflowId,
+            sourceAssetId: input.referenceAssetIds[0],
+            approvedRevision: String(input.approvedRevision),
+            compositionVersion: CAMPAIGN_COMPOSITION_VERSION,
+            generationMode: mode
+          }
+        })
+        storedOutputKey = key
+        await completeGenerationAndSettle(env, input.workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE)
+        storedOutputKey = null
         message.ack()
       } catch (error) {
-        const reason = error instanceof Error ? error.message : 'Generation failed.'
-        const retryable = error instanceof TypeError || /request failed: (408|409|429|5\d\d)/i.test(reason)
+        if (storedOutputKey) await env.MEDIA_BUCKET.delete(storedOutputKey).catch(() => null)
+        const internalReason = error instanceof Error ? error.message : ''
+        const retryable = error instanceof TypeError || /request failed: (408|409|429|5\d\d)/i.test(internalReason)
         if (retryable && message.attempts <= 3) {
           const reset = await env.DB.prepare(`
             UPDATE generations SET status = 'queued', error_message = ?
             WHERE id = ? AND workspace_id = ? AND status = 'processing'
-          `).bind(reason.slice(0, 500), generationId, input.workspaceId).run()
+          `).bind(RETRYING_GENERATION_MESSAGE, generationId, input.workspaceId).run()
           if (reset.meta.changes) {
             message.retry({ delaySeconds: 60 })
             continue
           }
         }
         try {
-          await failGenerationAndRelease(env, input.workspaceId, generationId, reason)
+          await failGenerationAndRelease(env, input.workspaceId, generationId, FAILED_GENERATION_MESSAGE)
           message.ack()
-        } catch (settlementError) {
-          console.error('Unable to fail and release generation', { generationId, error: settlementError instanceof Error ? settlementError.message : 'Unknown error' })
+        } catch {
+          console.error('generation-settlement-failed', { generationId })
           const reset = await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing'").bind(generationId, input.workspaceId).run()
           if (reset.meta.changes) message.retry({ delaySeconds: 60 })
           else message.ack()

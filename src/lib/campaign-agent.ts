@@ -47,7 +47,8 @@ export function initialCampaignAgentState(): CampaignAgentState {
     plan: [],
     messages: [{ id: 'welcome', role: 'agent', text: '我會檢查商品資料、建議三個渠道尺寸，並在你批准前停止。' }],
     mode: 'deterministic',
-    approvedAt: null
+    approvedAt: null,
+    brief: null
   }
 }
 
@@ -107,6 +108,7 @@ export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: Campa
       { id: `review-${revision}`, role: 'agent', text: needsInput ? '我找到需要補充的資料，已在檢查清單標示。' : '資料檢查完成。我已準備三個輸出，等待你批准。' }
     ],
     mode,
-    approvedAt: null
+    approvedAt: null,
+    brief
   }
 }

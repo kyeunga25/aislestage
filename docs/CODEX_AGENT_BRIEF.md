@@ -45,6 +45,7 @@ React UI
 - `src/worker.ts` — Worker routes, authentication, authorization, queue processing, and private asset delivery.
 - `migrations/` — D1 schema history.
 - `docs/BETA_ACCESS.md` — public-safe account, role, invitation, and beta testing contract.
+- `SECURITY.md` — public security, privacy, and vulnerability-reporting boundary.
 - `tests/` — Workers integration tests.
 - `wrangler.jsonc` — public-safe Wrangler binding structure.
 
@@ -98,11 +99,15 @@ Do not rename these bindings during documentation cleanup. Account IDs, resource
 
 Authorized deployments use an ignored `wrangler.local.jsonc` file or an equivalent protected CI configuration. The tracked `wrangler.jsonc` is a validation template and must not contain a live infrastructure mapping.
 
+For Cloudflare Workers Builds, use `npm run check && npm test && npm run build` as the build command, `npm run cf:deploy:build` as the production deploy command, and `npm run cf:preview:build` when non-production versions are enabled. The deployment scripts accept only protected Cloudflare build variables, generate an ignored Wrangler file, and keep registration closed with deterministic Agent and generation modes. Repository selection, branch control, identifiers, resource names, tokens, URLs, and build history are external deployment state and must not be copied into public documentation.
+
 ## Provider and mock behavior
 
 `CopyProvider` and `ImageProvider` isolate external APIs from application logic. Tests should stub provider calls or use deterministic fixtures. The Vite development experience may use local demo data, but production code must never receive mock credentials or test-only access gates.
 
 `CampaignPlanningProvider` is optional. Deterministic mode must remain fully functional without a provider key. Assisted mode may refine the plan summary and rationales, but the fixed outputs, verified facts, and human-approval requirement remain server controlled.
+
+Generation has a separate `GENERATION_MODE`: `disabled`, `deterministic`, or `assisted`. Deterministic mode composes the approved private product image and exact commercial fields into a private SVG without calling an external provider. Assisted mode may supply a background image, but it must use the same deterministic product and text composition step. The Worker must compare the submitted brief and revision with the current approved Agent state before reserving credits.
 
 When adding a provider:
 
@@ -125,8 +130,9 @@ When adding a provider:
 - Derive the Campaign Agent instance from the authenticated workspace; never accept an arbitrary instance name from the browser.
 - Reject direct client state changes and stale plan approvals.
 - Bind SQL values rather than constructing SQL from user input.
-- Verify webhook signatures and process external events idempotently before enabling an integration.
 - Apply abuse controls to anonymous authentication and upload surfaces.
+- Keep user-facing failures generic; do not return provider, database, object-storage, or queue diagnostics.
+- Avoid third-party browser telemetry and font requests unless they are deliberately reviewed and documented.
 - Avoid exposing private deployment state through public documentation or logs.
 
 ## Contribution workflow
