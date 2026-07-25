@@ -1,5 +1,5 @@
-import { Bell, ChevronDown, CircleHelp, LogOut, Sparkles } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { CircleHelp, LogOut, Sparkles } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import demoSpeaker from './assets/demo-speaker.png'
 import campaignScene from './assets/campaign-speaker-scene.png'
 import { AuthPage } from './components/AuthPage'
@@ -10,7 +10,7 @@ import type { NavigationSection } from './components/Icon'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { buildCampaignPlan, initialCampaignAgentState } from './lib/campaign-agent'
-import { demoResults, starterBrand, starterProduct } from './lib/demo-data'
+import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { workflowById } from './lib/workflows'
 import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkflowId, WorkspaceSummary } from './lib/types'
 
@@ -21,7 +21,7 @@ type AuthedSession = {
 
 const demoSession: AuthedSession = {
   user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User', accountStatus: 'active', accountType: 'test' },
-  currentWorkspace: { id: 'demo-workspace', name: 'Example Store', role: 'owner', planStatus: 'trial', availableCredits: 6, reservedCredits: 0 }
+  currentWorkspace: { id: 'demo-workspace', name: 'Example Store', role: 'owner', accessStatus: 'active', availableOutputs: 6, reservedOutputs: 0 }
 }
 
 const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
@@ -63,15 +63,42 @@ export default function App() {
   const [isLoadingSession, setIsLoadingSession] = useState(true)
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
   const [activeSection, setActiveSection] = useState<NavigationSection>('workspace')
-  const [brand, setBrand] = useState<BrandPack>(starterBrand)
-  const [product, setProduct] = useState<Product>(starterProduct)
+  const [brand, setBrand] = useState<BrandPack>(import.meta.env.DEV ? starterBrand : emptyBrand)
+  const [product, setProduct] = useState<Product>(import.meta.env.DEV ? starterProduct : emptyProduct)
   const [intent, setIntent] = useState('限時優惠')
-  const [image, setImage] = useState<ImageState>({ name: 'minibeat_speaker_black.png', url: demoSpeaker, asset: null, status: import.meta.env.DEV ? 'demo' : 'error', error: import.meta.env.DEV ? '' : '請上傳商品原圖' })
+  const [image, setImage] = useState<ImageState>(import.meta.env.DEV
+    ? { name: 'minibeat_speaker_black.png', url: demoSpeaker, asset: null, status: 'demo', error: '' }
+    : { name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
   const [agentState, setAgentState] = useState<CampaignAgentState>(initialCampaignAgentState())
   const [agentBusy, setAgentBusy] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [serverResults, setServerResults] = useState<GenerationResult[]>([])
   const [notice, setNotice] = useState('')
+  const generationRequestKey = useRef<string | null>(null)
+
+  function applyCampaignState(nextState: CampaignAgentState) {
+    setAgentState(nextState)
+    if (!nextState.brief) {
+      setBrand(emptyBrand)
+      setProduct(emptyProduct)
+      setIntent('限時優惠')
+      setImage({ name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
+      return
+    }
+    setBrand(nextState.brief.brand)
+    setProduct(nextState.brief.product)
+    setIntent(nextState.brief.intent || '限時優惠')
+    if (nextState.brief.assetId) {
+      const previewUrl = `/api/assets/${nextState.brief.assetId}`
+      setImage({
+        name: '已保存的商品圖片',
+        url: previewUrl,
+        asset: { id: nextState.brief.assetId, name: '已保存的商品圖片', contentType: 'image/png', sizeBytes: 0, previewUrl },
+        status: 'ready',
+        error: ''
+      })
+    }
+  }
 
   useEffect(() => {
     Promise.all([loadSession(), loadPlatformStatus()]).then(async ([nextSession, nextPlatformStatus]) => {
@@ -83,7 +110,7 @@ export default function App() {
           agentAction('').catch(() => initialCampaignAgentState())
         ])
         setServerResults(generations)
-        setAgentState(campaignAgent)
+        applyCampaignState(campaignAgent)
       }
     }).catch(() => {
       setSession(import.meta.env.DEV ? demoSession : null)
@@ -100,7 +127,28 @@ export default function App() {
     }
   }
 
+  function invalidatePlan() {
+    generationRequestKey.current = null
+    setAgentState((current) => current.stage === 'idle' ? current : initialCampaignAgentState())
+  }
+
+  function changeBrand(next: BrandPack) {
+    setBrand(next)
+    invalidatePlan()
+  }
+
+  function changeProduct(next: Product) {
+    setProduct(next)
+    invalidatePlan()
+  }
+
+  function changeIntent(next: string) {
+    setIntent(next)
+    invalidatePlan()
+  }
+
   async function planCampaign() {
+    generationRequestKey.current = null
     setAgentBusy(true)
     setNotice('')
     try {
@@ -134,23 +182,17 @@ export default function App() {
     }
   }
 
-  async function reviseCampaign(note: string) {
-    setAgentBusy(true)
-    setNotice('')
-    try {
-      if (session?.user.id === 'demo-user') {
-        setAgentState((current) => ({ ...current, stage: 'awaiting-approval', revision: current.revision + 1, approvedAt: null, summary: `已記錄調整要求：${note.slice(0, 500)}`, messages: [...current.messages, { id: `revision-${current.revision + 1}`, role: 'user', text: note.slice(0, 500) }] }))
-      } else {
-        setAgentState(await agentAction('/revise', { note }))
-      }
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : '未能送出調整。')
-    } finally {
-      setAgentBusy(false)
-    }
-  }
-
   async function uploadProductImage(file: File) {
+    generationRequestKey.current = null
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setNotice('只支援 PNG、JPEG 或 WebP 圖片。')
+      return
+    }
+    if (file.size <= 0 || file.size > 4 * 1024 * 1024) {
+      setNotice('圖片檔案不可超過 4 MB。')
+      return
+    }
+    setNotice('')
     const localUrl = URL.createObjectURL(file)
     setImage((current) => {
       if (current.url.startsWith('blob:')) URL.revokeObjectURL(current.url)
@@ -175,6 +217,43 @@ export default function App() {
     }
   }
 
+  async function deleteProductImage() {
+    if (!window.confirm('刪除這張私人商品圖片？現有 Agent 計劃亦會重設。')) return
+    setNotice('')
+    try {
+      if (image.asset) {
+        const response = await fetch(`/api/assets/${encodeURIComponent(image.asset.id)}`, { method: 'DELETE' })
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({})) as { error?: string }
+          throw new Error(data.error || '未能刪除商品圖片。')
+        }
+      }
+      if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
+      setImage({ name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
+      setAgentState(initialCampaignAgentState())
+      generationRequestKey.current = null
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '未能刪除商品圖片。')
+    }
+  }
+
+  async function deleteGeneration(result: GenerationResult) {
+    if (!window.confirm(`刪除 ${result.aspectRatio} 私人輸出？`)) return
+    setNotice('')
+    try {
+      if (session?.user.id !== 'demo-user') {
+        const response = await fetch(`/api/generations/${encodeURIComponent(result.id)}`, { method: 'DELETE' })
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({})) as { error?: string }
+          throw new Error(data.error || '未能刪除輸出。')
+        }
+      }
+      setServerResults((current) => current.filter((item) => item.id !== result.id))
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '未能刪除輸出。')
+    }
+  }
+
   async function generatePack() {
     if (!session || agentState.stage !== 'approved') return
     if (!platformStatus.generationEnabled) {
@@ -194,27 +273,41 @@ export default function App() {
 
     try {
       const selectedPlan = agentState.plan.filter((item) => item.selected)
-      const created: GenerationResult[] = []
-      for (const item of selectedPlan) {
-        const response = await fetch('/api/generations', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: session.currentWorkspace.id,
-            workflowId: item.workflowId,
-            aspectRatio: item.ratio,
-            approvedRevision: agentState.revision,
-            intent,
-            brand,
-            product,
-            referenceImageUrls: [],
-            referenceAssetIds: image.asset ? [image.asset.id] : []
-          })
+      generationRequestKey.current ||= crypto.randomUUID()
+      const response = await fetch('/api/campaign-packs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          idempotencyKey: generationRequestKey.current,
+          workspaceId: session.currentWorkspace.id,
+          approvedRevision: agentState.revision,
+          intent,
+          brand,
+          product,
+          referenceAssetIds: image.asset ? [image.asset.id] : [],
+          outputs: selectedPlan.map((item) => ({ workflowId: item.workflowId, aspectRatio: item.ratio }))
         })
-        const data = await response.json().catch(() => ({})) as { id?: string; status?: GenerationResult['status']; error?: string }
-        if (!response.ok || !data.id) throw new Error(data.error || `未能建立 ${item.ratio} 生成任務。`)
-        created.push({ id: data.id, workflowId: item.workflowId, aspectRatio: item.ratio, imageUrl: null, title: `${item.ratio} · ${item.label}`, status: data.status || 'queued' })
+      })
+      const data = await response.json().catch(() => ({})) as {
+        campaignPackId?: string
+        generations?: Array<Omit<GenerationResult, 'title' | 'imageUrl'> & { imageUrl?: string | null }>
+        error?: string
       }
+      if (!response.ok || !data.campaignPackId || !data.generations?.length) throw new Error(data.error || '未能建立完整 Campaign Pack。')
+      const created: GenerationResult[] = data.generations.map((item) => ({
+        ...item,
+        imageUrl: item.imageUrl || null,
+        title: `${item.aspectRatio} · ${workflowById(item.workflowId).title}`
+      }))
+      generationRequestKey.current = null
+      setSession((current) => current ? {
+        ...current,
+        currentWorkspace: {
+          ...current.currentWorkspace,
+          availableOutputs: Math.max(0, current.currentWorkspace.availableOutputs - created.length),
+          reservedOutputs: current.currentWorkspace.reservedOutputs + created.length
+        }
+      } : current)
       setServerResults((current) => [...created, ...current])
       const generationIds = new Set(created.map((item) => item.id))
       for (let attempt = 0; attempt < 16; attempt += 1) {
@@ -224,7 +317,9 @@ export default function App() {
         const pack = latest.filter((item) => generationIds.has(item.id))
         if (pack.length === generationIds.size && pack.every((item) => item.status === 'completed' || item.status === 'failed')) {
           const failed = pack.find((item) => item.status === 'failed')
-          if (failed) setNotice(failed.errorMessage || '部分素材未能完成，額度已自動退回。')
+          if (failed) setNotice(failed.errorMessage || '部分素材未能完成，可用輸出數已自動退回。')
+          const refreshedSession = await loadSession().catch(() => null)
+          if (refreshedSession) setSession(refreshedSession)
           window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
           return
         }
@@ -232,6 +327,8 @@ export default function App() {
       setNotice('素材仍在背景處理，可稍後在 Campaign Packs 查看最新狀態。')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能建立 Campaign Pack。')
+      const refreshedSession = await loadSession().catch(() => null)
+      if (refreshedSession) setSession(refreshedSession)
     } finally {
       setIsGenerating(false)
     }
@@ -242,12 +339,16 @@ export default function App() {
     setSession(null)
     setServerResults([])
     setAgentState(initialCampaignAgentState())
+    setBrand(emptyBrand)
+    setProduct(emptyProduct)
+    setIntent('限時優惠')
+    setImage({ name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
   }
 
   if (isLoadingSession) return <div className="loading-screen"><Sparkles size={24} /><span>正在載入工作區…</span></div>
   if (!session) return <AuthPage registrationMode={platformStatus.registrationMode} onAuthenticated={(nextSession) => {
     setSession(nextSession)
-    void Promise.all([loadGenerations(nextSession.currentWorkspace.id), agentAction('').catch(() => initialCampaignAgentState())]).then(([results, campaignAgent]) => { setServerResults(results); setAgentState(campaignAgent) })
+    void Promise.all([loadGenerations(nextSession.currentWorkspace.id), agentAction('').catch(() => initialCampaignAgentState())]).then(([results, campaignAgent]) => { setServerResults(results); applyCampaignState(campaignAgent) })
   }} />
 
   const userInitial = session.user.name.trim().charAt(0).toUpperCase() || session.user.email.charAt(0).toUpperCase()
@@ -258,10 +359,9 @@ export default function App() {
       <header className="topbar">
         <a className="mobile-brand" href="#workspace" aria-label="AislePack"><BrandMark /><strong>AislePack</strong></a>
         <div className="topbar-spacer" />
-        <span className="credit-chip"><Sparkles size={15} />可用額度 <strong>{session.currentWorkspace.availableCredits}</strong></span>
-        <button className="icon-button" type="button" aria-label="通知"><Bell size={18} /></button>
-        <button className="workspace-chip" type="button"><span>{session.currentWorkspace.name.charAt(0)}</span><strong>{session.currentWorkspace.name}</strong><ChevronDown size={15} /></button>
-        <button className="user-avatar" type="button" title={session.user.name}>{userInitial}</button>
+        <span className="allowance-chip"><Sparkles size={15} />可用輸出 <strong>{session.currentWorkspace.availableOutputs}</strong></span>
+        <span className="workspace-chip"><span>{session.currentWorkspace.name.charAt(0)}</span><strong>{session.currentWorkspace.name}</strong></span>
+        <span className="user-avatar" title={session.user.name}>{userInitial}</span>
         <button className="icon-button logout-button" type="button" aria-label="登出" onClick={logout}><LogOut size={17} /></button>
       </header>
 
@@ -269,10 +369,14 @@ export default function App() {
         {activeSection === 'workspace' ? <>
           <div className="page-title"><div><h1>建立 Campaign Pack</h1><p>一張商品圖，完成整套推廣素材；Agent 先規劃，你批准後才生成。</p></div><a className="help-link-inline" href="#support"><CircleHelp size={16} />使用指引</a></div>
           {!platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
-          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={setBrand} onProductChange={setProduct} onIntentChange={setIntent} onImageSelected={(file) => void uploadProductImage(file)} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} onRevise={(note) => void reviseCampaign(note)} />
+          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
-          {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} onGenerate={() => void generatePack()} /> : null}
-        </> : <CollectionView section={activeSection} brand={brand} product={product} results={serverResults} imageUrl={image.url} onBack={() => setActiveSection('workspace')} />}
+          {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} onGenerate={() => void generatePack()} /> : null}
+          <section className="support-panel" id="support" aria-labelledby="support-title">
+            <div><CircleHelp size={20} /><div><h2 id="support-title">使用指引</h2><p>先填妥繁中與英文商業資料，再上傳有權使用的商品原圖。Agent 只會建立計劃；你批准後，系統才會一次建立三個私人輸出。</p></div></div>
+            <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>批准後建立、預覽並下載素材。</li></ol>
+          </section>
+        </> : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
       </main>
     </div>
   </div>

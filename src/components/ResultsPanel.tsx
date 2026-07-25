@@ -7,6 +7,7 @@ type Props = {
   results: GenerationResult[]
   product: Product
   cta: string
+  ctaEn: string
   agentState: CampaignAgentState
   isGenerating: boolean
   generationAvailable: boolean
@@ -15,22 +16,28 @@ type Props = {
 }
 
 const outputs = [
-  { ratio: '1:1', label: '商品主圖', className: 'square', kicker: '隨身好聲音', title: '細機身，大聲勢' },
-  { ratio: '4:5', label: '社交廣告', className: 'portrait', kicker: '戶外陪伴每一刻', title: '音樂不設限' },
-  { ratio: '9:16', label: '限時動態', className: 'story', kicker: '輕巧・清晰・耐用', title: '帶著音樂出發' }
+  { ratio: '1:1', label: '商品主圖', className: 'square' },
+  { ratio: '4:5', label: '社交廣告', className: 'portrait' },
+  { ratio: '9:16', label: '限時動態', className: 'story' }
 ] as const
 
-export function ResultsPanel({ results, product, cta, agentState, isGenerating, generationAvailable, demoMode, onGenerate }: Props) {
+export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGenerating, generationAvailable, demoMode, onGenerate }: Props) {
   const [language, setLanguage] = useState<'zh-Hant' | 'en'>('zh-Hant')
   const [copied, setCopied] = useState(false)
-  const zhCaption = `細機身，大聲勢。${product.name} ${product.promotion} 現正開始。\n\n${product.benefits.filter(Boolean).join('、')}。${product.price}，${cta}。`
-  const enCaption = `Big sound, compact form. ${product.name} is ready for every day. ${product.benefits.filter(Boolean).join(', ')}. ${product.price}. Shop now.`
+  const latestPackId = results.find((item) => item.campaignPackId)?.campaignPackId
+  const visibleResults = latestPackId ? results.filter((item) => item.campaignPackId === latestPackId) : results
+  const zhCaption = `${product.name}\n${product.promotion}\n${product.benefits.filter(Boolean).map((item) => `✓ ${item}`).join('\n')}\n${product.price} · ${cta}`
+  const enCaption = `${product.nameEn}\n${product.promotionEn}\n${product.benefitsEn.filter(Boolean).map((item) => `✓ ${item}`).join('\n')}\n${product.price} · ${ctaEn}`
   const caption = language === 'zh-Hant' ? zhCaption : enCaption
 
   async function copyCaption() {
-    await navigator.clipboard.writeText(caption)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1600)
+    try {
+      await navigator.clipboard.writeText(caption)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      setCopied(false)
+    }
   }
 
   return <section className="results-panel" id="campaign-results" aria-labelledby="result-title">
@@ -42,14 +49,14 @@ export function ResultsPanel({ results, product, cta, agentState, isGenerating, 
     <div className="result-workspace">
       <div className="result-collection">
         {outputs.map((output) => {
-          const result = results.find((item) => item.aspectRatio === output.ratio)
+          const result = visibleResults.find((item) => item.aspectRatio === output.ratio)
           const hasGeneratedImage = Boolean(result?.imageUrl) && !demoMode
           const statusLabel = result?.status === 'failed' ? '生成失敗' : result?.status === 'processing' ? '處理中' : result?.status === 'queued' ? '排隊中' : demoMode && result ? '示範預覽' : '待生成'
           const extension = result?.contentType === 'image/svg+xml' ? 'svg' : 'png'
           return <article className="result-card" key={output.ratio}>
             <div className={`result-image ${output.className}`}>
               <img src={result?.imageUrl || campaignScene} alt={`${output.ratio} ${output.label}${hasGeneratedImage ? '' : '版面預覽'}`} />
-              {!hasGeneratedImage ? <div className="deterministic-overlay"><span>{output.kicker}</span><strong>{output.title}</strong><small>{product.name}</small><b>{product.price}</b><em>{product.promotion}</em></div> : null}
+              {!hasGeneratedImage ? <div className="deterministic-overlay"><span>{product.benefits[0]}</span><strong>{product.name}</strong><small>{product.benefits.slice(1, 3).filter(Boolean).join(' · ')}</small><b>{product.price}</b><em>{product.promotion}</em></div> : null}
               <span className="preview-label">{hasGeneratedImage ? '已生成' : isGenerating ? '正在生成' : demoMode && result ? '互動示範' : '版面預覽'}</span>
             </div>
             <div className="result-meta">
@@ -64,9 +71,9 @@ export function ResultsPanel({ results, product, cta, agentState, isGenerating, 
 
       <aside className="copy-panel" aria-label="雙語推廣文案">
         <div className="copy-tabs"><button className={language === 'zh-Hant' ? 'active' : ''} type="button" onClick={() => setLanguage('zh-Hant')}>繁體中文</button><button className={language === 'en' ? 'active' : ''} type="button" onClick={() => setLanguage('en')}>English</button></div>
-        <div className="copy-block"><span>{language === 'zh-Hant' ? '主標題' : 'Headline'}</span><strong>{language === 'zh-Hant' ? `細機身，大聲勢。${product.name}` : `Big sound, compact form. ${product.name}`}</strong></div>
-        <div className="copy-block"><span>{language === 'zh-Hant' ? '賣點文案' : 'Product copy'}</span><p>{language === 'zh-Hant' ? product.benefits.filter(Boolean).map((item) => `✓ ${item}`).join('\n') : product.benefits.filter(Boolean).map((item) => `✓ ${item}`).join('\n')}</p></div>
-        <div className="copy-block"><span>{language === 'zh-Hant' ? '行動呼籲（CTA）' : 'Call to action'}</span><p>{language === 'zh-Hant' ? `${product.promotion}，${cta}！` : `${product.promotion}. Shop now.`}</p></div>
+        <div className="copy-block"><span>{language === 'zh-Hant' ? '商品標題' : 'Product name'}</span><strong>{language === 'zh-Hant' ? product.name : product.nameEn}</strong></div>
+        <div className="copy-block"><span>{language === 'zh-Hant' ? '賣點文案' : 'Product copy'}</span><p>{(language === 'zh-Hant' ? product.benefits : product.benefitsEn).filter(Boolean).map((item) => `✓ ${item}`).join('\n')}</p></div>
+        <div className="copy-block"><span>{language === 'zh-Hant' ? '優惠與行動呼籲' : 'Promotion and call to action'}</span><p>{language === 'zh-Hant' ? `${product.promotion} · ${cta}` : `${product.promotionEn} · ${ctaEn}`}</p></div>
         <button className="outline-button copy-all" type="button" onClick={() => void copyCaption()}><Copy size={16} />{copied ? '已複製' : '複製全部文案'}</button>
       </aside>
     </div>

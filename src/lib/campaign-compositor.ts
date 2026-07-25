@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import type { AspectRatio, GenerationInput } from './types'
 
 export const CAMPAIGN_COMPOSITION_VERSION = 'deterministic-svg-v1'
@@ -147,12 +148,7 @@ export function validateCompositionInput(input: GenerationInput) {
 }
 
 export function bytesToBase64(bytes: Uint8Array) {
-  const chunks: string[] = []
-  const chunkSize = 0x8000
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    chunks.push(String.fromCharCode(...bytes.subarray(index, index + chunkSize)))
-  }
-  return btoa(chunks.join(''))
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')
 }
 
 export function composeCampaignSvg({ input, source, background }: CompositionOptions) {

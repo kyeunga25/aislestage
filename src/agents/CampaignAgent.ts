@@ -69,22 +69,6 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
   }
 
   @callable()
-  requestRevision(note: string) {
-    const cleanNote = typeof note === 'string' ? note.trim().slice(0, 500) : ''
-    if (!cleanNote) return { ok: false as const, error: 'Revision note is required.' }
-    const next: CampaignAgentState = {
-      ...this.state,
-      stage: 'awaiting-approval',
-      revision: this.state.revision + 1,
-      approvedAt: null,
-      summary: `已記錄調整要求：${cleanNote}`,
-      messages: [...this.state.messages, { id: `revision-${this.state.revision + 1}`, role: 'user' as const, text: cleanNote }].slice(-12)
-    }
-    this.setState(next)
-    return { ok: true as const, state: next }
-  }
-
-  @callable()
   resetPlan() {
     const next = initialCampaignAgentState()
     this.setState(next)

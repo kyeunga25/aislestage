@@ -8,27 +8,20 @@ import type { GenerationInput } from './lib/types'
 
 export { CampaignAgent }
 
-export type Env = {
-  DB: D1Database
-  MEDIA_BUCKET: R2Bucket
+export type Env = Omit<WorkerEnv, 'GENERATION_QUEUE'> & {
   GENERATION_QUEUE: Queue<GenerationMessage>
-  CAMPAIGN_AGENT: DurableObjectNamespace<CampaignAgent>
   OPENAI_API_KEY?: string
-  APP_ORIGIN?: string
-  REGISTRATION_MODE?: 'open' | 'invite' | 'closed'
-  GENERATION_MODE?: 'enabled' | 'disabled' | 'deterministic' | 'assisted'
-  INITIAL_CREDIT_BALANCE?: string
-  AGENT_MODE?: 'deterministic' | 'assisted'
+  INITIAL_OUTPUT_ALLOWANCE?: string
 }
 
 export type GenerationMessage = { generationId: string; input: GenerationInput }
 type AccountStatus = 'active' | 'suspended' | 'deactivated'
 type AccountType = 'standard' | 'beta' | 'test'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
-type Workspace = { id: string; name: string; role: string; planStatus: string; availableCredits: number; reservedCredits: number }
+type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'paused'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
-// One generation consumes one technical usage unit for idempotent accounting.
-const CREDIT_COST = 1
+// One generated output consumes one technical allowance unit for idempotent accounting.
+const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislepack_session'
 const SESSION_DAYS = 60
 const PASSWORD_ITERATIONS = 100_000
@@ -40,12 +33,12 @@ const REGISTER_IP_LIMIT = 12
 const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AGENT_BODY_BYTES = 48_000
-const MAX_PRODUCT_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
-const FAILED_GENERATION_MESSAGE = '素材未能完成，技術額度已自動退回。'
-const DUMMY_PASSWORD_SALT = 'bW90aXZlLWR1bW15LXNhbHQ='
+const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
+const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
 const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
 
 const json = (body: unknown, init: ResponseInit = {}) => {
@@ -87,10 +80,8 @@ async function hashPassword(password: string, salt = crypto.getRandomValues(new 
 function constantTimeEqual(left: string, right: string) {
   const leftBytes = textEncoder.encode(left)
   const rightBytes = textEncoder.encode(right)
-  const length = Math.max(leftBytes.length, rightBytes.length)
-  let diff = leftBytes.length ^ rightBytes.length
-  for (let index = 0; index < length; index += 1) diff |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0)
-  return diff === 0
+  const subtle = crypto.subtle as unknown as SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }
+  return leftBytes.length === rightBytes.length && subtle.timingSafeEqual(leftBytes, rightBytes)
 }
 
 async function verifyPassword(password: string, storedHash: string, storedSalt: string) {
@@ -204,8 +195,8 @@ function boundedStringArray(value: unknown, maxItems: number, maxLength: number)
   return Array.isArray(value) && value.length <= maxItems && value.every((item) => boundedString(item, maxLength, false))
 }
 
-function initialCreditBalance(env: Env) {
-  const value = Number(env.INITIAL_CREDIT_BALANCE)
+function initialOutputAllowance(env: Env) {
+  const value = Number(env.INITIAL_OUTPUT_ALLOWANCE)
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
@@ -235,12 +226,16 @@ function validInput(value: unknown): value is GenerationInput {
     && boundedString(input.brand?.forbiddenWords, 500, false)
     && (input.brand?.locale === 'zh-Hant' || input.brand?.locale === 'en')
     && boundedString(input.brand?.cta, 120, false)
+    && boundedString(input.brand?.ctaEn, 120, false)
     && boundedString(input.product?.name, 160)
+    && boundedString(input.product?.nameEn, 160)
     && boundedString(input.product?.category, 120)
     && boundedStringArray(input.product?.benefits, 8, 240)
+    && boundedStringArray(input.product?.benefitsEn, 8, 240)
     && boundedString(input.product?.specifications, 1_000, false)
     && boundedString(input.product?.price, 120, false)
     && boundedString(input.product?.promotion, 240, false)
+    && boundedString(input.product?.promotionEn, 240, false)
     && boundedStringArray(input.product?.channels, 12, 80)
     && Array.isArray(input.referenceImageUrls) && input.referenceImageUrls.length === 0
     && boundedStringArray(input.referenceAssetIds, 1, 80) && input.referenceAssetIds?.length === 1
@@ -254,6 +249,45 @@ function hasValidProductImageSignature(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/webp') return bytes.length >= 12
     && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
     && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
+  return false
+}
+
+function chunkName(bytes: Uint8Array, offset: number) {
+  return String.fromCharCode(...bytes.slice(offset, offset + 4))
+}
+
+function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
+  if (contentType === 'image/jpeg') {
+    let offset = 2
+    while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
+      const marker = bytes[offset + 1]
+      if (marker === 0xda || marker === 0xd9) break
+      if (marker === 0xe1 || marker === 0xed || marker === 0xfe) return true
+      const length = (bytes[offset + 2] << 8) | bytes[offset + 3]
+      if (length < 2) break
+      offset += length + 2
+    }
+    return false
+  }
+  if (contentType === 'image/png') {
+    const metadataChunks = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
+    let offset = 8
+    while (offset + 12 <= bytes.length) {
+      const length = ((bytes[offset] << 24) >>> 0) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]
+      if (metadataChunks.has(chunkName(bytes, offset + 4))) return true
+      offset += 12 + length
+    }
+    return false
+  }
+  if (contentType === 'image/webp') {
+    let offset = 12
+    while (offset + 8 <= bytes.length) {
+      const name = chunkName(bytes, offset)
+      if (name === 'EXIF' || name === 'XMP ') return true
+      const length = bytes[offset + 4] + (bytes[offset + 5] << 8) + (bytes[offset + 6] << 16) + ((bytes[offset + 7] << 24) >>> 0)
+      offset += 8 + length + (length % 2)
+    }
+  }
   return false
 }
 
@@ -275,11 +309,11 @@ async function sessionResponse(env: Env, request: Request, userId: string, statu
 
 async function workspacesForUser(env: Env, userId: string) {
   const result = await env.DB.prepare(`
-    SELECT w.id, w.name, w.plan_status AS planStatus, wm.role, COALESCE(cb.available, 0) AS availableCredits, COALESCE(cb.reserved, 0) AS reservedCredits
+    SELECT w.id, w.name, w.access_status AS accessStatus, wm.role, COALESCE(oa.available, 0) AS availableOutputs, COALESCE(oa.reserved, 0) AS reservedOutputs
     FROM workspace_memberships wm
     JOIN workspaces w ON w.id = wm.workspace_id
-    LEFT JOIN credit_balances cb ON cb.workspace_id = w.id
-    WHERE wm.user_id = ?
+    LEFT JOIN output_allowances oa ON oa.workspace_id = w.id
+    WHERE wm.user_id = ? AND w.access_status = 'active'
     ORDER BY wm.created_at ASC
   `).bind(userId).all<Workspace>()
   return result.results
@@ -316,29 +350,31 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
 
 async function getWorkspace(env: Env, userId: string, workspaceId: string) {
   return env.DB.prepare(`
-    SELECT w.id, w.name, w.plan_status AS planStatus, wm.role, COALESCE(cb.available, 0) AS availableCredits, COALESCE(cb.reserved, 0) AS reservedCredits
+    SELECT w.id, w.name, w.access_status AS accessStatus, wm.role, COALESCE(oa.available, 0) AS availableOutputs, COALESCE(oa.reserved, 0) AS reservedOutputs
     FROM workspace_memberships wm
     JOIN workspaces w ON w.id = wm.workspace_id
-    LEFT JOIN credit_balances cb ON cb.workspace_id = w.id
-    WHERE wm.user_id = ? AND wm.workspace_id = ?
+    LEFT JOIN output_allowances oa ON oa.workspace_id = w.id
+    WHERE wm.user_id = ? AND wm.workspace_id = ? AND w.access_status = 'active'
   `).bind(userId, workspaceId).first<Workspace>()
 }
 
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
   const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength > MAX_UPLOAD_REQUEST_BYTES) return json({ error: '圖片檔案不可超過 8 MB。' }, { status: 413 })
+  if (contentLength > MAX_UPLOAD_REQUEST_BYTES) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
   if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data.' }, { status: 415 })
 
   const form = await request.formData().catch(() => null)
   const value = form?.get('file')
   if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
   if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或 WebP 圖片。' }, { status: 415 })
-  if (value.size <= 0 || value.size > MAX_PRODUCT_IMAGE_BYTES) return json({ error: '圖片檔案不可超過 8 MB。' }, { status: 413 })
+  if (value.size <= 0 || value.size > MAX_PRODUCT_IMAGE_BYTES) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
 
   const bytes = new Uint8Array(await value.arrayBuffer())
   if (!hasValidProductImageSignature(value.type, bytes)) return json({ error: '圖片內容與檔案格式不符。' }, { status: 415 })
+  if (hasPrivateImageMetadata(value.type, bytes)) return json({ error: '圖片含有 EXIF、XMP 或文字 metadata；請先移除隱藏資料再上傳。' }, { status: 400 })
 
   const assetId = crypto.randomUUID()
+  const storedFilename = `product-image.${extensionForContentType(value.type)}`
   const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}.${extensionForContentType(value.type)}`
   await env.MEDIA_BUCKET.put(objectKey, bytes, {
     httpMetadata: { contentType: value.type },
@@ -349,7 +385,7 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     await env.DB.prepare(`
       INSERT INTO media_assets (id, workspace_id, created_by_user_id, kind, object_key, original_filename, content_type, size_bytes)
       VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?)
-    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, value.name.slice(0, 240) || 'product-image', value.type, value.size).run()
+    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size).run()
   } catch {
     await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
     return json({ error: '未能儲存商品圖片。' }, { status: 503 })
@@ -358,7 +394,7 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   return json({
     asset: {
       id: assetId,
-      name: value.name.slice(0, 240) || 'product-image',
+      name: storedFilename,
       contentType: value.type,
       sizeBytes: value.size,
       previewUrl: `/api/assets/${assetId}`
@@ -379,7 +415,27 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
   return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
 }
 
-async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve' | 'revise') {
+async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
+  const asset = await env.DB.prepare(`
+    SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId
+    FROM media_assets a
+    JOIN workspace_memberships wm ON wm.workspace_id = a.workspace_id
+    JOIN workspaces w ON w.id = a.workspace_id
+    WHERE a.id = ? AND wm.user_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
+  `).bind(assetId, session.user.id).first<{ objectKey: string; workspaceId: string }>()
+  if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
+  try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, asset.workspaceId)
+    await agent.resetPlan()
+    await env.MEDIA_BUCKET.delete(asset.objectKey)
+    await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(assetId, asset.workspaceId).run()
+    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  } catch {
+    return json({ error: '未能刪除商品圖片。' }, { status: 503 })
+  }
+}
+
+async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve') {
   const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
   try {
     if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
@@ -391,10 +447,6 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     if (action === 'plan') return json({ state: await agent.planBrief(body.brief) })
     if (action === 'approve') {
       const result = await agent.approvePlan(Number(body.revision))
-      return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
-    }
-    if (action === 'revise') {
-      const result = await agent.requestRevision(cleanString(body.note, 500))
       return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
     }
     return json({ error: 'Not found.' }, { status: 404 })
@@ -501,9 +553,9 @@ async function register(request: Request, env: Env) {
       : env.DB.prepare('INSERT INTO users (id, email, name, password_hash, password_salt, account_type) VALUES (?, ?, ?, ?, ?, ?)').bind(userId, email, name, passwordHash.hash, passwordHash.salt, 'standard')
     const statements = [
       createUser,
-      env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status) VALUES (?, ?, ?, ?)').bind(workspaceId, userId, workspaceName, 'trial'),
+      env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status, access_status) VALUES (?, ?, ?, ?, ?)').bind(workspaceId, userId, workspaceName, 'active', 'active'),
       env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
-      env.DB.prepare('INSERT INTO credit_balances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialCreditBalance(env))
+      env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialOutputAllowance(env))
     ]
     if (invite) statements.push(env.DB.prepare(`
       UPDATE beta_invites
@@ -554,38 +606,38 @@ async function logout(request: Request, env: Env) {
   return json({ ok: true }, { headers: { 'set-cookie': expiredSessionCookie(request) } })
 }
 
-async function reserveCredits(env: Env, workspaceId: string, generationId: string) {
+async function reserveOutput(env: Env, workspaceId: string, generationId: string) {
   const [ledger, balance] = await env.DB.batch([
     env.DB.prepare(`
-      INSERT INTO credit_ledger (id, workspace_id, generation_id, event_type, amount, note)
-      SELECT ?, ?, ?, 'reservation', ?, 'Generation credit reservation'
+      INSERT INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
+      SELECT ?, ?, ?, 'reservation', ?, 'Output allowance reservation'
       WHERE EXISTS (
-        SELECT 1 FROM credit_balances WHERE workspace_id = ? AND available >= ?
+        SELECT 1 FROM output_allowances WHERE workspace_id = ? AND available >= ?
       )
-    `).bind(crypto.randomUUID(), workspaceId, generationId, -CREDIT_COST, workspaceId, CREDIT_COST),
+    `).bind(crypto.randomUUID(), workspaceId, generationId, -OUTPUT_COST, workspaceId, OUTPUT_COST),
     env.DB.prepare(`
-      UPDATE credit_balances
+      UPDATE output_allowances
       SET available = available - ?, reserved = reserved + ?, updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ? AND available >= ? AND changes() = 1
-    `).bind(CREDIT_COST, CREDIT_COST, workspaceId, CREDIT_COST)
+    `).bind(OUTPUT_COST, OUTPUT_COST, workspaceId, OUTPUT_COST)
   ])
-  if (!ledger.meta.changes || !balance.meta.changes) throw new Error('INSUFFICIENT_CREDITS')
+  if (!ledger.meta.changes || !balance.meta.changes) throw new Error('INSUFFICIENT_OUTPUT_ALLOWANCE')
 }
 
 async function releaseOrphanReservation(env: Env, workspaceId: string, generationId: string, reason: string) {
   await env.DB.batch([
     env.DB.prepare(`
-      INSERT OR IGNORE INTO credit_ledger (id, workspace_id, generation_id, event_type, amount, note)
+      INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'release', ?, ?
       WHERE EXISTS (
-        SELECT 1 FROM credit_ledger WHERE generation_id = ? AND event_type = 'reservation'
+        SELECT 1 FROM output_ledger WHERE generation_id = ? AND event_type = 'reservation'
       )
-    `).bind(crypto.randomUUID(), workspaceId, generationId, CREDIT_COST, reason, generationId),
+    `).bind(crypto.randomUUID(), workspaceId, generationId, OUTPUT_COST, reason, generationId),
     env.DB.prepare(`
-      UPDATE credit_balances
+      UPDATE output_allowances
       SET available = available + ?, reserved = MAX(reserved - ?, 0), updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ? AND changes() = 1
-    `).bind(CREDIT_COST, CREDIT_COST, workspaceId)
+    `).bind(OUTPUT_COST, OUTPUT_COST, workspaceId)
   ])
 }
 
@@ -597,16 +649,16 @@ async function failGenerationAndRelease(env: Env, workspaceId: string, generatio
       WHERE id = ? AND workspace_id = ? AND status IN ('queued', 'processing')
     `).bind(reason.slice(0, 500), generationId, workspaceId),
     env.DB.prepare(`
-      INSERT OR IGNORE INTO credit_ledger (id, workspace_id, generation_id, event_type, amount, note)
+      INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'release', ?, ?
       WHERE changes() = 1
-        AND EXISTS (SELECT 1 FROM credit_ledger WHERE generation_id = ? AND event_type = 'reservation')
-    `).bind(crypto.randomUUID(), workspaceId, generationId, CREDIT_COST, reason.slice(0, 500), generationId),
+        AND EXISTS (SELECT 1 FROM output_ledger WHERE generation_id = ? AND event_type = 'reservation')
+    `).bind(crypto.randomUUID(), workspaceId, generationId, OUTPUT_COST, reason.slice(0, 500), generationId),
     env.DB.prepare(`
-      UPDATE credit_balances
+      UPDATE output_allowances
       SET available = available + ?, reserved = MAX(reserved - ?, 0), updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ? AND changes() = 1
-    `).bind(CREDIT_COST, CREDIT_COST, workspaceId)
+    `).bind(OUTPUT_COST, OUTPUT_COST, workspaceId)
   ])
 }
 
@@ -618,17 +670,185 @@ async function completeGenerationAndSettle(env: Env, workspaceId: string, genera
       WHERE id = ? AND workspace_id = ? AND status = 'processing'
     `).bind(outputKey, outputContentType, generationId, workspaceId),
     env.DB.prepare(`
-      INSERT OR IGNORE INTO credit_ledger (id, workspace_id, generation_id, event_type, amount, note)
+      INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'settlement', 0, 'Generation completed'
       WHERE changes() = 1
-        AND EXISTS (SELECT 1 FROM credit_ledger WHERE generation_id = ? AND event_type = 'reservation')
+        AND EXISTS (SELECT 1 FROM output_ledger WHERE generation_id = ? AND event_type = 'reservation')
     `).bind(crypto.randomUUID(), workspaceId, generationId, generationId),
     env.DB.prepare(`
-      UPDATE credit_balances
+      UPDATE output_allowances
       SET reserved = MAX(reserved - ?, 0), updated_at = CURRENT_TIMESTAMP
       WHERE workspace_id = ? AND changes() = 1
-    `).bind(CREDIT_COST, workspaceId)
+    `).bind(OUTPUT_COST, workspaceId)
   ])
+}
+
+type CampaignPackRequest = {
+  idempotencyKey: string
+  workspaceId: string
+  approvedRevision: number
+  intent: string
+  brand: GenerationInput['brand']
+  product: GenerationInput['product']
+  referenceAssetIds: string[]
+  outputs: Array<Pick<GenerationInput, 'workflowId' | 'aspectRatio'>>
+}
+
+function campaignPackInputs(value: unknown): { request: CampaignPackRequest; inputs: GenerationInput[] } | null {
+  if (!value || typeof value !== 'object') return null
+  const request = value as Partial<CampaignPackRequest>
+  if (!boundedString(request.idempotencyKey, 100) || !/^[a-z0-9_-]{16,100}$/i.test(request.idempotencyKey!)) return null
+  if (!boundedString(request.workspaceId, 64) || !Number.isSafeInteger(request.approvedRevision) || Number(request.approvedRevision) <= 0) return null
+  if (!Array.isArray(request.outputs) || request.outputs.length < 1 || request.outputs.length > 3) return null
+  const inputs = request.outputs.map((output) => ({
+    workspaceId: request.workspaceId!,
+    workflowId: output?.workflowId,
+    aspectRatio: output?.aspectRatio,
+    approvedRevision: request.approvedRevision!,
+    intent: request.intent,
+    brand: request.brand,
+    product: request.product,
+    referenceImageUrls: [],
+    referenceAssetIds: request.referenceAssetIds
+  }))
+  if (!inputs.every(validInput)) return null
+  const outputKeys = inputs.map((input) => `${input.workflowId}:${input.aspectRatio}`)
+  if (new Set(outputKeys).size !== outputKeys.length) return null
+  return { request: request as CampaignPackRequest, inputs: inputs as GenerationInput[] }
+}
+
+async function approvedCampaignPackInputs(env: Env, inputs: GenerationInput[]) {
+  const first = inputs[0]
+  const agent = await getAgentByName(env.CAMPAIGN_AGENT, first.workspaceId)
+  const state = await agent.getPlan()
+  if (state.stage !== 'approved' || state.revision !== first.approvedRevision || !state.brief) return false
+  const submittedBrief = sanitizeCampaignBrief({
+    assetId: first.referenceAssetIds[0],
+    intent: first.intent,
+    brand: first.brand,
+    product: first.product
+  })
+  if (JSON.stringify(submittedBrief) !== JSON.stringify(state.brief)) return false
+  return inputs.every((input) => state.plan.some((item) => item.selected && item.workflowId === input.workflowId && item.ratio === input.aspectRatio))
+}
+
+async function packGenerations(env: Env, workspaceId: string, campaignPackId: string) {
+  const result = await env.DB.prepare(`
+    SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio,
+      status, output_content_type AS contentType, approved_revision AS approvedRevision,
+      error_message AS errorMessage, created_at AS createdAt
+    FROM generations
+    WHERE workspace_id = ? AND campaign_pack_id = ?
+    ORDER BY created_at ASC
+  `).bind(workspaceId, campaignPackId).all<{
+    id: string
+    campaignPackId: string
+    workflowId: GenerationInput['workflowId']
+    aspectRatio: GenerationInput['aspectRatio']
+    status: 'queued' | 'processing' | 'completed' | 'failed'
+    contentType: 'image/svg+xml' | 'image/png' | null
+    approvedRevision: number
+    errorMessage: string | null
+    createdAt: string
+  }>()
+  return result.results.map((item) => ({ ...item, imageUrl: item.status === 'completed' ? `/api/generations/${item.id}/image` : null }))
+}
+
+async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
+  if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
+  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Campaign Pack payload is too large.' }, { status: 413 })
+  const parsedPack = campaignPackInputs(parsed.body)
+  if (!parsedPack) return json({ error: 'Invalid Campaign Pack payload.' }, { status: 400 })
+  const workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
+  if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
+
+  const existing = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+    .bind(workspace.id, parsedPack.request.idempotencyKey)
+    .first<{ id: string }>()
+  if (existing) return json({ campaignPackId: existing.id, generations: await packGenerations(env, workspace.id, existing.id), replayed: true })
+
+  const brief = sanitizeCampaignBrief({
+    assetId: parsedPack.request.referenceAssetIds[0],
+    intent: parsedPack.request.intent,
+    brand: parsedPack.request.brand,
+    product: parsedPack.request.product
+  })
+  const inputs = parsedPack.inputs.map((input) => ({
+    ...input,
+    workspaceId: workspace.id,
+    intent: brief.intent,
+    brand: brief.brand,
+    product: brief.product,
+    referenceImageUrls: [],
+    referenceAssetIds: [parsedPack.request.referenceAssetIds[0]]
+  }))
+  for (const input of inputs) {
+    const issues = validateCompositionInput(input)
+    if (issues.length) return json({ error: issues[0], issues }, { status: 422 })
+    if (!workflowById(input.workflowId).ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
+  }
+  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)) return json({ error: 'Product asset not found.' }, { status: 400 })
+  try {
+    if (!await approvedCampaignPackInputs(env, inputs)) return json({ error: 'Campaign plan approval is missing, stale, or does not match this pack.' }, { status: 409 })
+  } catch {
+    return json({ error: 'Campaign approval state is temporarily unavailable.' }, { status: 503 })
+  }
+
+  const campaignPackId = crypto.randomUUID()
+  const queued = inputs.map((input) => ({ generationId: crypto.randomUUID(), input }))
+  const outputCount = queued.length * OUTPUT_COST
+  try {
+    const statements = [
+      env.DB.prepare(`
+        UPDATE output_allowances
+        SET available = available - ?, reserved = reserved + ?, updated_at = CURRENT_TIMESTAMP
+        WHERE workspace_id = ? AND available >= ?
+      `).bind(outputCount, outputCount, workspace.id, outputCount),
+      env.DB.prepare(`
+        INSERT INTO campaign_packs (id, workspace_id, idempotency_key, approved_revision)
+        SELECT ?, ?, ?, ? WHERE changes() = 1
+      `).bind(campaignPackId, workspace.id, parsedPack.request.idempotencyKey, parsedPack.request.approvedRevision)
+    ]
+    for (const item of queued) {
+      statements.push(env.DB.prepare(`
+        INSERT INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
+        SELECT ?, ?, ?, 'reservation', ?, 'Campaign Pack output reservation'
+        WHERE EXISTS (SELECT 1 FROM campaign_packs WHERE id = ? AND workspace_id = ?)
+      `).bind(crypto.randomUUID(), workspace.id, item.generationId, -OUTPUT_COST, campaignPackId, workspace.id))
+    }
+    for (const item of queued) {
+      statements.push(env.DB.prepare(`
+        INSERT INTO generations (id, workspace_id, campaign_pack_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, approved_revision)
+        SELECT ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM campaign_packs WHERE id = ? AND workspace_id = ?)
+      `).bind(item.generationId, workspace.id, campaignPackId, item.input.workflowId, item.input.aspectRatio, OUTPUT_COST, OUTPUT_COST, JSON.stringify(item.input), item.input.approvedRevision, campaignPackId, workspace.id))
+    }
+    const results = await env.DB.batch(statements)
+    if (!results[0].meta.changes) {
+      const replay = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+        .bind(workspace.id, parsedPack.request.idempotencyKey)
+        .first<{ id: string }>()
+      if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
+      return json({ error: `至少需要 ${outputCount} 個可用輸出。` }, { status: 409 })
+    }
+  } catch {
+    const replay = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+      .bind(workspace.id, parsedPack.request.idempotencyKey)
+      .first<{ id: string }>()
+    if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
+    return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+  }
+
+  try {
+    await env.GENERATION_QUEUE.sendBatch(queued.map((item) => ({ body: { generationId: item.generationId, input: item.input } })))
+  } catch {
+    for (const item of queued) await failGenerationAndRelease(env, workspace.id, item.generationId, 'Unable to enqueue Campaign Pack output.').catch(() => null)
+    return json({ error: 'Unable to queue Campaign Pack.' }, { status: 503 })
+  }
+
+  return json({ campaignPackId, generations: await packGenerations(env, workspace.id, campaignPackId), reservedOutputs: outputCount }, { status: 202 })
 }
 
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
@@ -656,14 +876,14 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   let reservationCreated = false
   let generationCreated = false
   try {
-    await reserveCredits(env, workspace.id, id)
+    await reserveOutput(env, workspace.id, id)
     reservationCreated = true
-    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', CREDIT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
+    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', OUTPUT_COST, OUTPUT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
     generationCreated = true
     await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
-    return json({ id, status: 'queued', reservedCredits: CREDIT_COST }, { status: 202 })
+    return json({ id, status: 'queued', reservedOutputs: OUTPUT_COST }, { status: 202 })
   } catch (error) {
-    if (error instanceof Error && error.message === 'INSUFFICIENT_CREDITS') return json({ error: 'Insufficient credits.' }, { status: 402 })
+    if (error instanceof Error && error.message === 'INSUFFICIENT_OUTPUT_ALLOWANCE') return json({ error: '可用輸出數不足。' }, { status: 409 })
     if (reservationCreated) {
       if (generationCreated) await failGenerationAndRelease(env, workspace.id, id, 'Unable to enqueue generation.').catch(() => null)
       else await releaseOrphanReservation(env, workspace.id, id, 'Unable to create generation record.').catch(() => null)
@@ -678,14 +898,14 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
   const workspace = await getWorkspace(env, session.user.id, workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const result = await env.DB.prepare(`
-    SELECT id, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status, output_key AS outputKey,
+    SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status, output_key AS outputKey,
       output_content_type AS contentType, approved_revision AS approvedRevision,
       error_message AS errorMessage, created_at AS createdAt
     FROM generations
     WHERE workspace_id = ?
     ORDER BY created_at DESC
     LIMIT 20
-  `).bind(workspace.id).all<{ id: string; workflowId: string; aspectRatio: string; status: string; outputKey: string | null; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
+  `).bind(workspace.id).all<{ id: string; campaignPackId: string | null; workflowId: string; aspectRatio: string; status: string; outputKey: string | null; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
   return json({ generations: result.results.map((item) => ({ ...item, imageUrl: item.outputKey ? `/api/generations/${item.id}/image` : null })) })
 }
 
@@ -708,6 +928,25 @@ async function generationImage(request: Request, env: Env, session: SessionConte
   })
   if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
   return new Response(object.body, { headers })
+}
+
+async function deleteGeneration(env: Env, session: SessionContext, generationId: string) {
+  const row = await env.DB.prepare(`
+    SELECT g.output_key AS outputKey, g.status
+    FROM generations g
+    JOIN workspace_memberships wm ON wm.workspace_id = g.workspace_id
+    JOIN workspaces w ON w.id = g.workspace_id
+    WHERE g.id = ? AND wm.user_id = ? AND w.access_status = 'active'
+  `).bind(generationId, session.user.id).first<{ outputKey: string | null; status: string }>()
+  if (!row) return json({ error: 'Output not found.' }, { status: 404 })
+  if (row.status === 'queued' || row.status === 'processing') return json({ error: '仍在處理的輸出不可刪除。' }, { status: 409 })
+  try {
+    if (row.outputKey) await env.MEDIA_BUCKET.delete(row.outputKey)
+    await env.DB.prepare('DELETE FROM generations WHERE id = ?').bind(generationId).run()
+    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  } catch {
+    return json({ error: '未能刪除輸出。' }, { status: 503 })
+  }
 }
 
 export default {
@@ -752,17 +991,28 @@ export default {
       if (session instanceof Response) return session
       return productAsset(request, env, session, assetMatch[1])
     }
-    const agentAction = url.pathname.match(/^\/api\/campaign-agent(?:\/(plan|approve|revise))?$/)
+    if (assetMatch && request.method === 'DELETE') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return deleteProductAsset(env, session, assetMatch[1])
+    }
+    const agentAction = url.pathname.match(/^\/api\/campaign-agent(?:\/(plan|approve))?$/)
     if (agentAction && (request.method === 'GET' || request.method === 'POST')) {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
-      return campaignAgentRequest(request, env, session, agentAction[1] as 'plan' | 'approve' | 'revise' || 'state')
+      return campaignAgentRequest(request, env, session, agentAction[1] as 'plan' | 'approve' || 'state')
     }
     const imageMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/image$/)
     if (imageMatch && request.method === 'GET') {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       return generationImage(request, env, session, imageMatch[1])
+    }
+    const generationMatch = url.pathname.match(/^\/api\/generations\/([^/]+)$/)
+    if (generationMatch && request.method === 'DELETE') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return deleteGeneration(env, session, generationMatch[1])
     }
     if (url.pathname === '/api/generations' && request.method === 'GET') {
       const session = await requireSession(request, env)
@@ -773,6 +1023,11 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       return createGeneration(request, env, session)
+    }
+    if (url.pathname === '/api/campaign-packs' && request.method === 'POST') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return createCampaignPack(request, env, session)
     }
     return json({ error: 'Not found.' }, { status: 404 })
   },
@@ -840,7 +1095,7 @@ export default {
           await failGenerationAndRelease(env, input.workspaceId, generationId, FAILED_GENERATION_MESSAGE)
           message.ack()
         } catch {
-          console.error('generation-settlement-failed', { generationId })
+          console.error('generation-settlement-failed')
           const reset = await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing'").bind(generationId, input.workspaceId).run()
           if (reset.meta.changes) message.retry({ delaySeconds: 60 })
           else message.ack()

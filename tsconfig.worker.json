@@ -4,12 +4,12 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.worker.tsbuildinfo",
     "target": "ES2022",
     "lib": ["ES2022", "WebWorker"],
-    "types": ["@cloudflare/workers-types/experimental"],
+    "types": ["@cloudflare/workers-types/experimental", "node"],
     "skipLibCheck": true,
     "strict": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true
   },
-  "include": ["src/worker.ts", "src/agents/**/*.ts", "src/lib/**/*.ts"]
+  "include": ["worker-env.d.ts", "src/worker.ts", "src/agents/**/*.ts", "src/lib/**/*.ts"]
 }
