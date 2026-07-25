@@ -45,12 +45,44 @@ export type GenerationInput = {
 export type GenerationResult = {
   id: string
   workflowId: WorkflowId
-  imageUrl: string
+  aspectRatio: AspectRatio
+  imageUrl: string | null
   title: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
+  errorMessage?: string | null
+  createdAt?: string
 }
 
 export type CreditBalance = {
   available: number
   reserved: number
+}
+
+export type AuthUser = {
+  id: string
+  email: string
+  name: string
+}
+
+export type WorkspaceSummary = {
+  id: string
+  name: string
+  role: 'owner' | 'admin' | 'member'
+  planStatus: string
+  availableCredits: number
+  reservedCredits: number
+}
+
+export type SessionPayload = {
+  authenticated: boolean
+  user?: AuthUser
+  currentWorkspace?: WorkspaceSummary
+}
+
+export type PlatformStatus = {
+  status: 'ok'
+  service: string
+  releaseMode: 'restricted'
+  registrationOpen: boolean
+  generationEnabled: boolean
 }
