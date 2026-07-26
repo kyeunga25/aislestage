@@ -406,7 +406,7 @@ a { color: inherit; }
 .workspace-preview-bar > span:first-child { display: inline-flex; align-items: center; gap: 6px; font-size: 9px; }
 .workspace-preview-bar .brand-mark { width: 20px; height: 20px; }
 .workspace-preview-bar > span:last-child { border: 1px solid #b9e6d5; border-radius: 4px; background: #effaf5; color: #157d58; padding: 4px 7px; font-size: 8px; font-weight: 750; }
-.workspace-preview-body { min-height: 360px; display: grid; grid-template-columns: minmax(130px,.68fr) 24px minmax(315px,1.8fr); align-items: center; gap: 11px; padding: 22px 6px 18px; }
+.workspace-preview-body { min-height: 280px; display: grid; grid-template-columns: minmax(130px,.68fr) 24px minmax(315px,1.8fr); align-items: center; gap: 11px; padding: 22px 6px 18px; }
 .source-preview { display: grid; gap: 7px; }
 .source-preview > span,.campaign-mini > span { color: #69768a; font-size: 8px; font-weight: 700; }
 .source-preview img { width: 100%; aspect-ratio: 1; display: block; object-fit: contain; border: 1px solid #e0e4ea; border-radius: 6px; background: #f4f4f2; }
