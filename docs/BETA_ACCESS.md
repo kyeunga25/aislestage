@@ -6,14 +6,22 @@
 
 | 身分 | 可用範圍 | 目前限制 |
 | --- | --- | --- |
-| 未登入訪客 | 健康狀態、workflow 清單、登入；註冊受 server gate 控制 | 不可讀取 workspace、Agent、圖片或生成記錄 |
+| 未登入訪客 | 公開產品主頁；健康狀態及 workflow 清單可按部署 policy 保持公開 | 不可讀取 workspace、Agent、圖片或生成記錄 |
 | `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准及生成流程 | 只限內容操作，沒有管理 API |
 | `admin` | 與 `owner` 相同的內容操作 | 角色已保留，但尚未有獨立管理權限 |
 | `member` | 與 `owner` 相同的內容操作 | 角色已保留，但尚未限制批准或生成動作 |
 
-每個受保護請求都要先通過 session，再以 `workspace_memberships` 驗證 workspace。現階段三種角色只代表成員關係；程式不會假設角色名稱本身已形成完整 RBAC。
+正式環境的每個受保護請求都要先通過 Cloudflare Access，再由 Worker 驗證 JWT，最後以 `workspace_memberships` 驗證 workspace。現階段三種角色只代表成員關係；程式不會假設角色名稱本身已形成完整 RBAC。
 
-## Beta 註冊模式
+## Access-first 登入
+
+`AUTH_MODE=access` 是正式主流程。`/app*` 與受保護 API 由 Access path policy 攔截；Worker 只接受通過 RS256 簽章、issuer 及 application audience 核對的 `Cf-Access-Jwt-Assertion`。Access subject 只以 SHA-256 hash 保存，並與單一 user 綁定。
+
+`ACCESS_AUTO_PROVISION=enabled` 只可在 Access allow policy 已收窄至受邀電郵或 group 後使用。通過 policy 的第一個請求會建立 beta account 與私人 workspace；若關閉自動建立，身份必須先對應既有 active account。密碼登入及註冊 endpoint 在 Access 模式返回 not found。
+
+`AUTH_MODE=password` 只保留給本機、隔離測試及遷移相容；以下舊式邀請合約仍由 integration tests 覆蓋，但不會出現在新的公開登入路徑。
+
+## 相容密碼註冊模式
 
 `REGISTRATION_MODE` 有三個 server-side 模式：
 

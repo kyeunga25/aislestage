@@ -2,6 +2,17 @@
 
 本頁只記錄可由 repository 或正式環境核對的公開狀態，不記錄私有基礎設施映射、使用者資料、營運資料或商業規劃。
 
+## v0.5.0 candidate
+
+- [x] 公開繁中／英文產品主頁及 `/app` 私人工作區路由；
+- [x] desktop／mobile 無水平溢出，導覽、語言切換及 deep route browser QA；
+- [x] Cloudflare Access RS256 JWT、issuer、audience 及 identity claim 驗證；
+- [x] Access subject hash 綁定、active D1 membership 與受控 beta workspace 建立；
+- [x] Access 模式停用密碼登入／註冊，並使用同網域 Access logout；
+- [x] 缺少設定、缺少 token、錯誤 audience、未獲邀身份及重複請求的 integration tests；
+- [ ] 正式 Access application、allow policy、D1 migration 及 active deployment 驗證；
+- [ ] GitHub PR checks、merge SHA、tag／release 及 local/origin/main 一致性。
+
 ## v0.4.0 repository contract
 
 - [x] React 19、Vite 8、TypeScript 7 及目前 Wrangler／Workers types；
@@ -47,7 +58,7 @@
 2026-07-26 已完成以下發佈驗收；記錄只保留公開可披露的結果，不包含正式網址、帳戶識別碼、D1 identifier、實際資源名稱或測試憑證：
 
 - [x] `git diff --check`、TypeScript／binding type check、36 個 Workers tests、production build、Wrangler dry-run 及 production dependency audit 全部通過；
-- [x] GitHub pull request CI 對應已審核提交並通過，私隱字串檢查沒有發現受保護設定、對話內容或內部商業規劃；
+- [x] GitHub pull request CI 對應已審核提交並通過，私隱字串檢查沒有發現受保護設定或內部商業資料；
 - [x] D1 migration 已套用，active Cloudflare deployment 對應已合併的同一版本；
 - [x] live root、SPA deep route、health、security headers、匿名 session、受保護 API 及 invite registration gate 通過；
 - [x] 正式邀請流程建立隔離測試 workspace，Campaign Agent 建立及保存三輸出計劃，人工批准後 Queue 完成 1:1、4:5、9:16 素材；
