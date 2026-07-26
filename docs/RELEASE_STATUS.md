@@ -2,7 +2,13 @@
 
 本頁只記錄可由 repository 或正式環境核對的公開狀態，不記錄私有基礎設施映射、使用者資料、營運資料或商業規劃。
 
-## v0.5.0 candidate
+## v0.5.1 candidate
+
+- [x] 1280px 原生 desktop viewport 的 Hero 預覽卡密度與概念稿重新對照；
+- [x] mobile breakpoint 維持無水平溢出；
+- [ ] GitHub CI、merge、active deployment、tag／release 及最終截圖驗證。
+
+## v0.5.0 verified release
 
 - [x] 公開繁中／英文產品主頁及 `/app` 私人工作區路由；
 - [x] desktop／mobile 無水平溢出，導覽、語言切換及 deep route browser QA；
