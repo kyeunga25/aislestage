@@ -1,4 +1,5 @@
 import { getAgentByName } from 'agents'
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { sanitizeCampaignBrief } from './lib/campaign-agent'
@@ -12,6 +13,10 @@ export type Env = Omit<WorkerEnv, 'GENERATION_QUEUE'> & {
   GENERATION_QUEUE: Queue<GenerationMessage>
   OPENAI_API_KEY?: string
   INITIAL_OUTPUT_ALLOWANCE?: string
+  AUTH_MODE?: string
+  ACCESS_TEAM_DOMAIN?: string
+  ACCESS_AUD?: string
+  ACCESS_AUTO_PROVISION?: string
 }
 
 export type GenerationMessage = { generationId: string; input: GenerationInput }
@@ -20,6 +25,8 @@ type AccountType = 'standard' | 'beta' | 'test'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
 type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'paused'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
+type AccessIdentity = { subject: string; email: string; name: string }
+type AccessFailureCode = 'authentication-required' | 'membership-required' | 'configuration-error'
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislepack_session'
@@ -40,6 +47,7 @@ const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會�
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
 const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
 const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
+const accessJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
 
 const json = (body: unknown, init: ResponseInit = {}) => {
   const headers = new Headers(init.headers)
@@ -204,6 +212,62 @@ function registrationMode(env: Env) {
   return env.REGISTRATION_MODE === 'open' || env.REGISTRATION_MODE === 'invite' ? env.REGISTRATION_MODE : 'closed'
 }
 
+function authMode(env: Env): 'access' | 'password' {
+  return env.AUTH_MODE === 'access' ? 'access' : 'password'
+}
+
+function accessError(code: AccessFailureCode, status: 401 | 403 | 503, message: string) {
+  return json({ authenticated: false, code, error: message }, { status })
+}
+
+function accessConfiguration(env: Env) {
+  const rawDomain = env.ACCESS_TEAM_DOMAIN?.trim() || ''
+  const audience = env.ACCESS_AUD?.trim() || ''
+  try {
+    const domain = new URL(rawDomain)
+    const validDomain = domain.protocol === 'https:'
+      && domain.hostname.endsWith('.cloudflareaccess.com')
+      && domain.pathname === '/'
+      && !domain.search
+      && !domain.hash
+    if (!validDomain || !audience || audience.length > 512) return null
+    return { teamDomain: domain.origin, audience }
+  } catch {
+    return null
+  }
+}
+
+function identityFromPayload(payload: JWTPayload): AccessIdentity | null {
+  const subject = cleanString(payload.sub, 512)
+  const email = normalizeEmail(payload.email)
+  const name = cleanString(payload.name || payload.common_name, 120) || email.split('@')[0]
+  if (!subject || !validEmail(email)) return null
+  return { subject, email, name }
+}
+
+async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessIdentity | Response> {
+  const configuration = accessConfiguration(env)
+  if (!configuration) return accessError('configuration-error', 503, 'Access configuration is unavailable.')
+  const token = request.headers.get('cf-access-jwt-assertion')
+  if (!token) return accessError('authentication-required', 401, 'Cloudflare Access authentication is required.')
+  try {
+    let jwks = accessJwks.get(configuration.teamDomain)
+    if (!jwks) {
+      jwks = createRemoteJWKSet(new URL(`${configuration.teamDomain}/cdn-cgi/access/certs`))
+      accessJwks.set(configuration.teamDomain, jwks)
+    }
+    const { payload } = await jwtVerify(token, jwks, {
+      issuer: configuration.teamDomain,
+      audience: configuration.audience,
+      algorithms: ['RS256']
+    })
+    const identity = identityFromPayload(payload)
+    return identity || accessError('authentication-required', 401, 'Cloudflare Access identity is incomplete.')
+  } catch {
+    return accessError('authentication-required', 401, 'Cloudflare Access authentication is invalid.')
+  }
+}
+
 function generationMode(env: Env): 'disabled' | 'deterministic' | 'assisted' {
   if (env.GENERATION_MODE === 'deterministic') return 'deterministic'
   if ((env.GENERATION_MODE === 'assisted' || env.GENERATION_MODE === 'enabled') && env.OPENAI_API_KEY) return 'assisted'
@@ -333,6 +397,74 @@ async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionCo
   return { user, currentWorkspace: workspaces[0] }
 }
 
+async function accessSession(request: Request, env: Env): Promise<SessionContext | Response> {
+  const identity = await verifyAccessIdentity(request, env)
+  if (identity instanceof Response) return identity
+  const subjectHash = await sha256(identity.subject)
+  let user = await env.DB.prepare(`
+    SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+    FROM users
+    WHERE access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
+  `).bind(subjectHash).first<AuthUser>()
+
+  if (user && normalizeEmail(user.email) !== identity.email) {
+    return accessError('membership-required', 403, 'The verified identity does not match this workspace account.')
+  }
+
+  if (!user) {
+    const emailAccount = await env.DB.prepare(`
+      SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
+        auth_mode AS authMode, access_subject_hash AS accessSubjectHash
+      FROM users
+      WHERE email = ?
+    `).bind(identity.email).first<AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }>()
+
+    if (emailAccount) {
+      if (emailAccount.accountStatus !== 'active' || (emailAccount.accessSubjectHash && emailAccount.accessSubjectHash !== subjectHash)) {
+        return accessError('membership-required', 403, 'This identity does not have an active workspace membership.')
+      }
+      await env.DB.prepare(`
+        UPDATE users
+        SET access_subject_hash = ?, auth_mode = 'access', name = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND (access_subject_hash IS NULL OR access_subject_hash = ?)
+      `).bind(subjectHash, identity.name, emailAccount.id, subjectHash).run()
+      user = await env.DB.prepare(`
+        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+        FROM users
+        WHERE id = ? AND email = ? AND access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
+      `).bind(emailAccount.id, identity.email, subjectHash).first<AuthUser>()
+    } else if (env.ACCESS_AUTO_PROVISION === 'enabled') {
+      const userId = crypto.randomUUID()
+      const workspaceId = crypto.randomUUID()
+      const randomPassword = base64Url(crypto.getRandomValues(new Uint8Array(32)))
+      const passwordHash = await hashPassword(randomPassword)
+      try {
+        await env.DB.batch([
+          env.DB.prepare(`
+            INSERT INTO users (id, email, name, password_hash, password_salt, account_type, auth_mode, access_subject_hash)
+            VALUES (?, ?, ?, ?, ?, 'beta', 'access', ?)
+          `).bind(userId, identity.email, identity.name, passwordHash.hash, passwordHash.salt, subjectHash),
+          env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status, access_status) VALUES (?, ?, ?, ?, ?)').bind(workspaceId, userId, 'AislePack 工作區', 'active', 'active'),
+          env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
+          env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialOutputAllowance(env))
+        ])
+      } catch {
+        // A concurrent first request may have provisioned the same identity.
+      }
+      user = await env.DB.prepare(`
+        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+        FROM users
+        WHERE access_subject_hash = ? AND email = ? AND auth_mode = 'access' AND account_status = 'active'
+      `).bind(subjectHash, identity.email).first<AuthUser>()
+    }
+  }
+
+  if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AislePack workspace.')
+  const workspaces = await workspacesForUser(env, user.id)
+  if (!workspaces[0]) return accessError('membership-required', 403, 'This account has no active workspace membership.')
+  return { user, currentWorkspace: workspaces[0] }
+}
+
 async function cleanExpiredSessions(env: Env) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP'),
@@ -341,6 +473,7 @@ async function cleanExpiredSessions(env: Env) {
 }
 
 async function requireSession(request: Request, env: Env): Promise<SessionContext | Response> {
+  if (authMode(env) === 'access') return accessSession(request, env)
   const token = parseCookie(request, SESSION_COOKIE)
   if (!token) return json({ error: 'Authentication required.' }, { status: 401 })
   const session = await loadSessionByHash(env, await sha256(token))
@@ -584,10 +717,12 @@ async function login(request: Request, env: Env) {
   }
   const user = await env.DB.prepare(`
     SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
-      password_hash AS passwordHash, password_salt AS passwordSalt
+      password_hash AS passwordHash, password_salt AS passwordSalt, auth_mode AS authMode
     FROM users WHERE email = ?
-  `).bind(email).first<AuthUser & { passwordHash: string; passwordSalt: string }>()
-  const passwordMatches = user ? await verifyPassword(password, user.passwordHash, user.passwordSalt) : await verifyPassword(password, DUMMY_PASSWORD_HASH, DUMMY_PASSWORD_SALT)
+  `).bind(email).first<AuthUser & { passwordHash: string; passwordSalt: string; authMode: 'password' | 'access' }>()
+  const passwordMatches = user?.authMode === 'password'
+    ? await verifyPassword(password, user.passwordHash, user.passwordSalt)
+    : await verifyPassword(password, DUMMY_PASSWORD_HASH, DUMMY_PASSWORD_SALT)
   if (!user || !passwordMatches) {
     await recordAuthAttempt(env, request, 'login_failed', email)
     return json({ error: '電郵或密碼不正確。' }, { status: 401 })
@@ -952,6 +1087,7 @@ async function deleteGeneration(env: Env, session: SessionContext, generationId:
 export default {
   async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url)
+    const activeAuthMode = authMode(env)
     if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !isAllowedOrigin(request, env)) {
       return json({ error: 'Request origin is not allowed.' }, { status: 403 })
     }
@@ -960,19 +1096,20 @@ export default {
       status: 'ok',
       service: 'campaign-asset-worker',
       releaseMode: 'restricted',
-      registrationMode: registrationMode(env),
-      registrationOpen: registrationMode(env) !== 'closed',
+      authMode: activeAuthMode,
+      registrationMode: activeAuthMode === 'access' ? 'closed' : registrationMode(env),
+      registrationOpen: activeAuthMode === 'password' && registrationMode(env) !== 'closed',
       generationEnabled: generationMode(env) !== 'disabled',
       generationMode: generationMode(env),
       agentMode: env.AGENT_MODE === 'assisted' && Boolean(env.OPENAI_API_KEY) ? 'assisted' : 'deterministic'
     })
     if (url.pathname === '/api/workflows' && request.method === 'GET') return json({ workflows: ['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'] })
-    if (url.pathname === '/api/auth/register' && request.method === 'POST') return register(request, env)
-    if (url.pathname === '/api/auth/login' && request.method === 'POST') return login(request, env)
-    if (url.pathname === '/api/auth/logout' && request.method === 'POST') return logout(request, env)
+    if (url.pathname === '/api/auth/register' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password registration is disabled.' }, { status: 404 }) : register(request, env)
+    if (url.pathname === '/api/auth/login' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password login is disabled.' }, { status: 404 }) : login(request, env)
+    if (url.pathname === '/api/auth/logout' && request.method === 'POST') return activeAuthMode === 'access' ? json({ ok: true, logoutUrl: '/cdn-cgi/access/logout' }) : logout(request, env)
     if (url.pathname === '/api/session' && request.method === 'GET') {
       const session = await requireSession(request, env)
-      if (session instanceof Response) return json({ authenticated: false }, { headers: session.headers })
+      if (session instanceof Response) return activeAuthMode === 'access' ? session : json({ authenticated: false }, { headers: session.headers })
       return json({ authenticated: true, user: session.user, currentWorkspace: session.currentWorkspace })
     }
     if (url.pathname === '/api/workspaces' && request.method === 'GET') {

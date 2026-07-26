@@ -42,6 +42,10 @@
   },
   "vars": {
     "APP_ORIGIN": "https://example.invalid",
+    "AUTH_MODE": "access",
+    "ACCESS_TEAM_DOMAIN": "https://example.invalid",
+    "ACCESS_AUD": "replace-with-access-audience",
+    "ACCESS_AUTO_PROVISION": "disabled",
     "REGISTRATION_MODE": "closed",
     "GENERATION_MODE": "disabled",
     "AGENT_MODE": "deterministic"
