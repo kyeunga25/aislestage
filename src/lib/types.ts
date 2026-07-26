@@ -89,12 +89,15 @@ export type SessionPayload = {
   authenticated: boolean
   user?: AuthUser
   currentWorkspace?: WorkspaceSummary
+  code?: 'authentication-required' | 'membership-required' | 'configuration-error' | 'unavailable'
+  error?: string
 }
 
 export type PlatformStatus = {
   status: 'ok'
   service: string
   releaseMode: 'restricted'
+  authMode: 'access' | 'password'
   registrationMode: 'open' | 'invite' | 'closed'
   registrationOpen: boolean
   generationEnabled: boolean

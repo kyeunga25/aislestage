@@ -6,9 +6,13 @@ AislePack turns an approved product image, verified Traditional Chinese and Engl
 
 目前版本以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只會檢查資料和規劃固定輸出，不會自行新增產品宣稱、發佈廣告或跳過批准。
 
+公開主頁位於 `/`，介紹產品、流程及私隱邊界；私人工作區位於 `/app`。正式登入以 Cloudflare Access 作邊緣身份驗證，Worker 仍會驗證簽章並核對 D1 workspace membership。
+
 ## 已完成能力
 
 - Session、帳號狀態及 workspace 授權；
+- 公開雙語產品主頁與獨立 `/app` 工作區路由；
+- Cloudflare Access JWT 驗證、subject hash 綁定及受控 beta workspace 建立；
 - 電郵綁定的一次性邀請註冊；
 - 私人 R2 商品圖上傳、格式／大小檢查及授權預覽；
 - 每個 workspace 一個 SQLite-backed Campaign Agent；
@@ -23,6 +27,7 @@ AislePack turns an approved product image, verified Traditional Chinese and Engl
 
 - React 19、Vite 8、TypeScript 7；
 - Cloudflare Worker API + Static Assets；
+- Cloudflare Access：`/app*` 與受保護 API 的第一層身份及 policy gate；
 - D1：帳號、workspace、邀請、素材 metadata、Campaign Pack 與輸出記錄；
 - private R2：商品來源圖與衍生素材；
 - Queues：非同步輸出與重試；
@@ -73,11 +78,13 @@ CAMPAIGN_AGENT
 ASSETS
 ```
 
-追蹤的 `wrangler.jsonc` 只包含明確 placeholder，並保持 `REGISTRATION_MODE=closed`、`GENERATION_MODE=disabled`。正式映射只可放在被忽略且限制權限的 `wrangler.local.jsonc`；不可把帳戶識別碼、D1 identifier、實際資源名稱、部署 URL 或 secret 寫入 Git。
+追蹤的 `wrangler.jsonc` 只包含明確 placeholder，並保持 `AUTH_MODE=access`、`ACCESS_AUTO_PROVISION=disabled`、`REGISTRATION_MODE=closed`、`GENERATION_MODE=disabled`。正式映射只可放在被忽略且限制權限的 `wrangler.local.jsonc`；不可把帳戶識別碼、Access audience、team domain、D1 identifier、實際資源名稱、部署 URL 或 secret 寫入 Git。
 
 正式環境使用：
 
-- `REGISTRATION_MODE=invite`；
+- `AUTH_MODE=access`，以及受保護的 Access team domain 與 audience；
+- Access policy 收窄至受邀身份後，才按需要設定 `ACCESS_AUTO_PROVISION=enabled`；
+- `REGISTRATION_MODE=closed`，停用公開密碼註冊與登入；
 - `GENERATION_MODE=deterministic`；
 - `AGENT_MODE=deterministic`；
 - 每個新邀請 workspace 六個可用輸出（兩套完整素材包）。
@@ -107,6 +114,7 @@ provider secret 只可透過 Wrangler secret 或同等受保護設定加入。`a
 - [統一產品規格](docs/PRODUCT_SPEC.md)
 - [工程與部署](docs/ENGINEERING.md)
 - [Beta access 合約](docs/BETA_ACCESS.md)
+- [Cloudflare Access 設定](docs/ACCESS_SETUP.md)
 - [發佈狀態](docs/RELEASE_STATUS.md)
 - [安全與私隱](SECURITY.md)
 

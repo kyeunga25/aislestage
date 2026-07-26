@@ -12,6 +12,10 @@ export default defineConfig({
       miniflare: {
         bindings: {
           APP_ORIGIN: 'https://app.test',
+          AUTH_MODE: 'password',
+          ACCESS_TEAM_DOMAIN: 'https://test-team.cloudflareaccess.com',
+          ACCESS_AUD: 'test-access-audience',
+          ACCESS_AUTO_PROVISION: 'disabled',
           REGISTRATION_MODE: 'open',
           GENERATION_MODE: 'enabled',
           AGENT_MODE: 'deterministic',

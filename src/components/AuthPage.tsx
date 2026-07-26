@@ -13,6 +13,7 @@ type Mode = 'login' | 'register'
 async function submitAuth(mode: Mode, payload: Record<string, string>) {
   const response = await fetch(`/api/auth/${mode}`, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload)
   })
