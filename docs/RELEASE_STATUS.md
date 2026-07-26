@@ -10,7 +10,7 @@
 - [x] Access subject hash 綁定、active D1 membership 與受控 beta workspace 建立；
 - [x] Access 模式停用密碼登入／註冊，並使用同網域 Access logout；
 - [x] 缺少設定、缺少 token、錯誤 audience、未獲邀身份及重複請求的 integration tests；
-- [ ] 正式 Access application、allow policy、D1 migration 及 active deployment 驗證；
+- [x] 正式 Access application、allow policy、D1 migration 及 active deployment 驗證；
 - [ ] GitHub PR checks、merge SHA、tag／release 及 local/origin/main 一致性。
 
 ## v0.4.0 repository contract
