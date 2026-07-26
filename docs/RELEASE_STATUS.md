@@ -2,11 +2,11 @@
 
 本頁只記錄可由 repository 或正式環境核對的公開狀態，不記錄私有基礎設施映射、使用者資料、營運資料或商業規劃。
 
-## v0.5.1 candidate
+## v0.5.1 verified release
 
 - [x] 1280px 原生 desktop viewport 的 Hero 預覽卡密度與概念稿重新對照；
 - [x] mobile breakpoint 維持無水平溢出；
-- [ ] GitHub CI、merge、active deployment、tag／release 及最終截圖驗證。
+- [x] GitHub CI、merge、active deployment、tag／release 及最終截圖驗證。
 
 ## v0.5.0 verified release
 
