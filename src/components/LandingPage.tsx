@@ -1,33 +1,52 @@
 import { ArrowRight, Check, FileCheck2, Image as ImageIcon, Layers3, LockKeyhole, Menu, ShieldCheck, Sparkles, Upload, UserCheck, X } from 'lucide-react'
 import { useState } from 'react'
-import campaignScene from '../assets/campaign-speaker-scene.png'
-import demoSpeaker from '../assets/demo-speaker.png'
+import workspaceAgent from '../assets/workspace-agent.png'
+import workspaceBrief from '../assets/workspace-brief.png'
+import workspaceOverview from '../assets/workspace-overview.jpg'
+import workspaceResults from '../assets/workspace-results.png'
 import { BrandMark } from './BrandMark'
 
 type Locale = 'zh-Hant' | 'en'
 
 const copy = {
   'zh-Hant': {
-    navProduct: '產品', navFlow: '流程', navSecurity: '私隱與安全', login: '登入工作區',
+    navProduct: '產品', navCases: '使用情境', navFlow: '流程', navSecurity: '私隱與安全', login: '登入工作區',
     eyebrow: '由商品原圖到整套推廣素材', title: <>一張商品圖，<br />完成整套 <span>Campaign Pack</span></>,
-    intro: 'AisleStage 先整理已核准的商品資料，讓 Agent 規劃三個常用比例；你確認後，系統才會建立可直接使用的素材與雙語文案。',
+    intro: '如果你要為同一件商品準備網店主圖、社交廣告與限時動態，AisleStage 會把已核實的商品資料、私人原圖和雙語文案集中在一個批准流程。價格、優惠及 CTA 不必在不同版型重複輸入。',
     how: '看看運作方式', trust: ['受邀測試', '私人素材', '可重複輸出'],
-    source: '商品原圖', approved: '計劃已批准', create: '建立素材',
+    planStatus: '等待批准',
     proof: [
       ['原圖作為來源', '不重新繪製已上傳商品'],
       ['準確商業文字', '價格、優惠與 CTA 確定性排版'],
       ['先批准後建立', 'Agent 不會跳過人工確認'],
       ['三個常用比例', '1:1、4:5、9:16 一次到位']
     ],
+    workspaceEyebrow: '實際工作區',
+    workspaceTitle: '三個實際畫面，看清楚 app 怎樣運作',
+    workspaceBody: '以下全部取自目前本機互動 demo。從已核實的商業資料、私人商品原圖，到 Agent 提交計劃及三比例素材預覽，每一步都在同一個可追溯的批准流程內完成。',
+    workspaceSteps: [
+      ['01 · 輸入', '把商業資料與商品原圖放在一起', '只輸入會真正出現在素材上的商品名、價格、優惠、最多三項賣點、品牌語氣及 CTA；原圖則保留在獲授權的工作區路徑。'],
+      ['02 · 批准', 'Agent 先檢查，再停下來等你批准', 'Campaign Agent 核對資料、商品圖片及文字安全區，列出 1:1、4:5、9:16 三個固定輸出。你未批准前，它不會建立素材或代為發佈。'],
+      ['03 · 預覽', '同一處預覽三比例素材與雙語文案', '批准後可同時檢視商品主圖、社交廣告及限時動態，旁邊保留繁中／英文文案。每個輸出可獨立下載及管理，不會自動發佈。']
+    ],
+    workspaceCaption: '資料已完成檢查，Campaign Agent 正等待使用者批准三個輸出。',
+    actualInterface: '實際介面',
+    casesEyebrow: '貼近日常電商工作',
+    casesTitle: '不是自由 prompt 工具，而是三個常見的實際任務',
+    casesBody: '每個情境都由同一個原則開始：只使用已核實資料與有權使用的圖片，先讓人核對，再建立整套素材。',
+    caseLabels: ['你面對的情況', '在工作區處理', '最後得到'],
+    cases: [
+      ['新品上架', '商品已拍好，也有經核實的名稱、賣點與價格，但商品頁、社交 feed 和 story 仍要分開排版。', '輸入一次商業資料，選擇「新品推廣」，讓 Agent 規劃三個固定比例；你核對版型及文字後才批准。', '一套協調的商品主圖、社交廣告、限時動態，以及可複製的繁中和英文文案。'],
+      ['限時優惠更新', '活動價、免運或截止日期要同步到多個版型，最怕其中一張仍沿用舊資料。', '在同一份 brief 更新價格、優惠與 CTA。修改後舊計劃立即失效，必須重新規劃和批准。', '三個輸出都以目前批准的 revision 為準，價格、優惠與 CTA 由程式準確排版。'],
+      ['日常／節日 Campaign', '同一商品要持續出現在不同渠道，但商品外觀、品牌語氣和已核實賣點不能走樣。', '沿用同一張私人商品圖與品牌資料，按「日常銷售」或「節日活動」建立獨立 Campaign Pack。', '每套素材可獨立預覽、下載和管理；商品原圖不需要公開，Agent 也不會代為發佈。']
+    ],
     flowEyebrow: '清楚、可控的工作流程', flowTitle: '三步，從已核准資料到 Campaign Pack',
     steps: [
-      ['01', '提交已核准資料', '輸入品牌、商品、價格、優惠與雙語文案，再上傳有權使用的商品原圖。'],
-      ['02', 'Agent 規劃', '系統檢查資料完整度，安排 1:1、4:5、9:16 輸出及文案，不自行新增宣稱。'],
-      ['03', '批准並建立', '你先核對計劃；只有批准後，系統才建立同一套 Campaign Pack。']
+      ['01', '提交已核准資料', '輸入品牌、商品、價格、優惠、最多三項賣點與繁中／英文 CTA，再上傳有權使用的 PNG、JPEG 或 WebP 商品原圖。'],
+      ['02', 'Agent 規劃', '系統檢查商業資料、來源圖及文字安全區，安排 1080 × 1080、1080 × 1350、1080 × 1920 三個輸出，不自行新增宣稱。'],
+      ['03', '批准並建立', '你先核對目前 revision；修改任何資料都要重新規劃。只有批准後，系統才一次建立整套 Campaign Pack。']
     ],
-    featureEyebrow: '為實際電商渠道而設', featureTitle: <>一次批准，<br />整套素材同步完成</>,
-    featureBody: '同一張商品原圖與同一份商業資料，整理成比例一致、內容準確的素材包。每個輸出仍可獨立預覽、下載與管理。',
-    featurePoints: ['同一商品來源與已核准資料', '繁中／英文文案一起整理', '三個比例保持一致', '冪等建立，避免重複扣減'],
+    featurePoints: ['1:1 · 1080 × 1080 商品主圖', '4:5 · 1080 × 1350 社交廣告', '9:16 · 1080 × 1920 限時動態', '附可複製的繁中／英文文案'],
     securityEyebrow: '私隱與安全，設計在每一步', securityBody: '公開主頁與私人工作區分開。登入由 Cloudflare Access 驗證，Worker 再核對簽章與 D1 成員關係；圖片與輸出只經授權路徑讀取。',
     securityItems: [
       ['Cloudflare Access', '先在邊緣驗證身份'],
@@ -40,26 +59,43 @@ const copy = {
     footerLine: 'AisleStage · AI 電商素材工作台', footerSecurity: '私隱與安全', footerFlow: '運作方式'
   },
   en: {
-    navProduct: 'Product', navFlow: 'How it works', navSecurity: 'Privacy & security', login: 'Sign in to workspace',
+    navProduct: 'Product', navCases: 'Use cases', navFlow: 'How it works', navSecurity: 'Privacy & security', login: 'Sign in to workspace',
     eyebrow: 'From one approved product image to a complete campaign set', title: <>One product image.<br />One coordinated <span>Campaign Pack.</span></>,
-    intro: 'AisleStage organises approved product facts, lets the Agent plan three practical ratios, and creates bilingual assets only after you approve the plan.',
+    intro: 'When one product needs a storefront visual, a social ad and a story, AisleStage keeps verified facts, the private source image and bilingual copy inside one approval flow. Price, offer and CTA do not need to be re-entered for every format.',
     how: 'See how it works', trust: ['Invite-only beta', 'Private assets', 'Repeatable output'],
-    source: 'Source image', approved: 'Plan approved', create: 'Create assets',
+    planStatus: 'Awaiting approval',
     proof: [
       ['Source-image fidelity', 'Your uploaded product remains the source'],
       ['Exact commercial text', 'Price, offer and CTA are laid out deterministically'],
       ['Approval before creation', 'The Agent cannot skip your review'],
       ['Three practical ratios', '1:1, 4:5 and 9:16 in one pack']
     ],
+    workspaceEyebrow: 'The real workspace',
+    workspaceTitle: 'Three real screens show how the app works',
+    workspaceBody: 'Every view below comes from the current local interactive demo. Verified commercial facts, the private product source, the Agent plan and the three-ratio preview all stay inside one traceable approval flow.',
+    workspaceSteps: [
+      ['01 · Input', 'Keep commercial facts and source imagery together', 'Enter only the product name, price, offer, up to three benefits, brand tone and CTAs that may appear in the assets. The source stays behind authorised workspace routes.'],
+      ['02 · Approve', 'The Agent checks first, then waits for you', 'Campaign Agent checks the brief, source image and text-safe areas before proposing 1:1, 4:5 and 9:16 outputs. It cannot create assets or publish before your approval.'],
+      ['03 · Preview', 'Review three ratios and bilingual copy together', 'After approval, compare the product visual, social ad and story beside Traditional Chinese and English copy. Each output can be downloaded and managed separately; nothing is auto-published.']
+    ],
+    workspaceCaption: 'The brief has passed its checks and the Campaign Agent is waiting for approval of all three outputs.',
+    actualInterface: 'Actual interface',
+    casesEyebrow: 'Built around everyday commerce work',
+    casesTitle: 'Not a free-prompt tool: three practical jobs',
+    casesBody: 'Every scenario starts with the same rule: use only verified facts and entitled imagery, keep a person in the review loop, then create the coordinated set.',
+    caseLabels: ['The situation', 'Inside the workspace', 'What you receive'],
+    cases: [
+      ['New product launch', 'The product is photographed and its name, benefits and price are verified, but the storefront, feed and story still need separate layouts.', 'Enter the commercial brief once, choose “New product”, and let the Agent plan the three fixed ratios. Approve only after checking layout and text.', 'A coordinated product visual, social ad and story, with copyable Traditional Chinese and English captions.'],
+      ['Limited-time offer update', 'A campaign price, delivery offer or deadline must stay aligned across formats, without one asset retaining old information.', 'Update price, offer and CTA in the same brief. The old plan is invalidated immediately and must be planned and approved again.', 'All three outputs use the currently approved revision, with price, offer and CTA laid out deterministically.'],
+      ['Always-on or seasonal campaign', 'One product appears across channels over time, while product appearance, brand tone and verified benefits must remain consistent.', 'Reuse the same private source and brand facts, then create a separate pack for an always-on or seasonal campaign intent.', 'Each pack can be previewed, downloaded and managed independently. The source stays private and the Agent does not publish for you.']
+    ],
     flowEyebrow: 'A clear, controlled workflow', flowTitle: 'Three steps from approved facts to Campaign Pack',
     steps: [
-      ['01', 'Submit approved facts', 'Add brand, product, price, offer and bilingual copy, then upload an image you are allowed to use.'],
-      ['02', 'Agent plans', 'The system checks completeness and plans 1:1, 4:5 and 9:16 outputs without inventing claims.'],
-      ['03', 'Approve and create', 'Review the plan first. The system creates the coordinated pack only after approval.']
+      ['01', 'Submit approved facts', 'Add brand, product, price, offer, up to three benefits and Traditional Chinese and English CTAs, then upload an entitled PNG, JPEG or WebP source.'],
+      ['02', 'Agent plans', 'The system checks the commercial facts, source and text-safe areas, then plans 1080 × 1080, 1080 × 1350 and 1080 × 1920 outputs without inventing claims.'],
+      ['03', 'Approve and create', 'Review the current revision first. Editing any fact requires a new plan; only an approved revision can create the full Campaign Pack.']
     ],
-    featureEyebrow: 'Built for real commerce channels', featureTitle: <>Approve once.<br />Keep every asset aligned.</>,
-    featureBody: 'One source image and one approved commercial brief become a consistent set. Every output can still be previewed, downloaded and managed separately.',
-    featurePoints: ['One source and one approved brief', 'Traditional Chinese and English copy', 'Three ratios kept consistent', 'Idempotent creation prevents double charging'],
+    featurePoints: ['1:1 · 1080 × 1080 product visual', '4:5 · 1080 × 1350 social ad', '9:16 · 1080 × 1920 story', 'Copyable Traditional Chinese and English captions'],
     securityEyebrow: 'Privacy and security at every step', securityBody: 'The public site and private workspace are separate. Cloudflare Access verifies identity at the edge, the Worker validates the signed JWT and D1 membership, and private files are served only through authorised routes.',
     securityItems: [
       ['Cloudflare Access', 'Identity checked at the edge'],
@@ -97,6 +133,7 @@ export function LandingPage() {
       <div className={`landing-nav-wrap${menuOpen ? ' open' : ''}`} id="landing-nav">
         <nav className="landing-nav" aria-label="Public navigation">
           <a href="#product" onClick={closeMenu}>{t.navProduct}</a>
+          <a href="#use-cases" onClick={closeMenu}>{t.navCases}</a>
           <a href="#workflow" onClick={closeMenu}>{t.navFlow}</a>
           <a href="#security" onClick={closeMenu}>{t.navSecurity}</a>
         </nav>
@@ -122,27 +159,17 @@ export function LandingPage() {
           </ul>
         </div>
 
-        <div className="hero-workspace" aria-label="Campaign Pack product preview">
-          <div className="workspace-preview-bar">
-            <span><BrandMark /><strong>AisleStage</strong></span>
-            <span>{t.approved}</span>
+        <figure className="hero-interface">
+          <div className="hero-interface-bar"><span>{t.actualInterface}</span><strong>{t.planStatus}</strong></div>
+          <picture>
+            <source media="(max-width: 560px)" srcSet={workspaceBrief} />
+            <img src={workspaceOverview} width="1536" height="720" alt={locale === 'zh-Hant' ? 'AisleStage 實際工作區，顯示商品資料、商品原圖與等待批准的 Campaign Agent 計劃' : 'Actual AisleStage workspace showing product facts, source image and a Campaign Agent plan awaiting approval'} />
+          </picture>
+          <div className="hero-interface-flow" aria-label={locale === 'zh-Hant' ? '畫面內的三個主要區域' : 'Three main areas in this view'}>
+            {t.workspaceSteps.map(([label, title]) => <span key={label}><b>{label}</b>{title}</span>)}
           </div>
-          <div className="workspace-preview-body">
-            <div className="source-preview">
-              <span>{t.source}</span>
-              <img src={demoSpeaker} alt={locale === 'zh-Hant' ? '黑色便攜式揚聲器示例商品原圖' : 'Example source image of a black portable speaker'} />
-              <small>AisleBeat S1 · HK$399</small>
-            </div>
-            <ArrowRight className="preview-flow-arrow" size={21} aria-hidden="true" />
-            <div className="campaign-preview-grid">
-              {(['1:1', '4:5', '9:16'] as const).map((ratio) => <article className={`campaign-mini ratio-${ratio.replace(':', '-')}`} key={ratio}>
-                <span>{ratio}</span>
-                <div><img src={campaignScene} alt="" /><div className="campaign-mini-copy"><strong>{locale === 'zh-Hant' ? '隨身好聲音' : 'Sound that travels'}</strong><b>HK$399</b><small>{locale === 'zh-Hant' ? '立即選購' : 'Shop now'}</small></div></div>
-              </article>)}
-            </div>
-          </div>
-          <div className="workspace-preview-footer"><span><Check size={15} />{t.approved}</span><strong>{t.create}<ArrowRight size={14} /></strong></div>
-        </div>
+          <figcaption>{t.workspaceCaption}</figcaption>
+        </figure>
       </section>
 
       <section className="proof-strip" id="product" aria-label="Product principles">
@@ -150,6 +177,44 @@ export function LandingPage() {
           const Icon = proofIcons[index]
           return <article key={title}><Icon size={23} /><div><strong>{title}</strong><span>{body}</span></div></article>
         })}
+      </section>
+
+      <section className="workspace-showcase" aria-labelledby="workspace-showcase-title">
+        <header className="workspace-showcase-copy">
+          <p className="landing-eyebrow">{t.workspaceEyebrow}</p>
+          <h2 id="workspace-showcase-title">{t.workspaceTitle}</h2>
+          <p>{t.workspaceBody}</p>
+        </header>
+        <div className="workspace-tour-grid">
+          <article className="workspace-tour-card brief">
+            <div className="workspace-tour-copy"><span>{t.workspaceSteps[0][0]}</span><h3>{t.workspaceSteps[0][1]}</h3><p>{t.workspaceSteps[0][2]}</p></div>
+            <figure><img src={workspaceBrief} width="865" height="520" loading="lazy" decoding="async" alt={locale === 'zh-Hant' ? '實際商業資料與商品原圖輸入介面' : 'Actual commercial brief and product source input interface'} /><figcaption>{t.actualInterface}</figcaption></figure>
+          </article>
+          <article className="workspace-tour-card agent">
+            <div className="workspace-tour-copy"><span>{t.workspaceSteps[1][0]}</span><h3>{t.workspaceSteps[1][1]}</h3><p>{t.workspaceSteps[1][2]}</p></div>
+            <figure><img src={workspaceAgent} width="410" height="520" loading="lazy" decoding="async" alt={locale === 'zh-Hant' ? '實際 Campaign Agent 等待批准介面' : 'Actual Campaign Agent interface awaiting approval'} /><figcaption>{t.actualInterface}</figcaption></figure>
+          </article>
+          <article className="workspace-tour-card results">
+            <div className="workspace-tour-copy"><span>{t.workspaceSteps[2][0]}</span><h3>{t.workspaceSteps[2][1]}</h3><p>{t.workspaceSteps[2][2]}</p><ul>{t.featurePoints.map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul></div>
+            <figure><img src={workspaceResults} width="1290" height="530" loading="lazy" decoding="async" alt={locale === 'zh-Hant' ? '實際三比例素材包及繁體中文文案預覽介面' : 'Actual three-ratio Campaign Pack and Traditional Chinese copy preview interface'} /><figcaption>{t.actualInterface}</figcaption></figure>
+          </article>
+        </div>
+      </section>
+
+      <section className="use-cases-section" id="use-cases" aria-labelledby="use-cases-title">
+        <div className="use-cases-intro">
+          <p className="landing-eyebrow">{t.casesEyebrow}</p>
+          <h2 id="use-cases-title">{t.casesTitle}</h2>
+          <p>{t.casesBody}</p>
+        </div>
+        <div className="use-case-list">
+          {t.cases.map(([title, situation, action, outcome], index) => <article key={title}>
+            <header><span>{String(index + 1).padStart(2, '0')}</span><h3>{title}</h3></header>
+            <div className="use-case-stage"><strong>{t.caseLabels[0]}</strong><p>{situation}</p></div>
+            <div className="use-case-stage"><strong>{t.caseLabels[1]}</strong><p>{action}</p></div>
+            <div className="use-case-stage outcome"><strong>{t.caseLabels[2]}</strong><p>{outcome}</p></div>
+          </article>)}
+        </div>
       </section>
 
       <section className="workflow-section" id="workflow" aria-labelledby="workflow-title">
@@ -162,21 +227,6 @@ export function LandingPage() {
             const Icon = stepIcons[index]
             return <article key={number}><span className="step-number">{number}</span><div className="step-icon"><Icon size={28} /></div><h3>{title}</h3><p>{body}</p>{index < 2 ? <ArrowRight className="step-arrow" size={24} aria-hidden="true" /> : null}</article>
           })}
-        </div>
-      </section>
-
-      <section className="feature-section" aria-labelledby="feature-title">
-        <div className="feature-copy">
-          <p className="landing-eyebrow">{t.featureEyebrow}</p>
-          <h2 id="feature-title">{t.featureTitle}</h2>
-          <p>{t.featureBody}</p>
-          <ul>{t.featurePoints.map((item) => <li key={item}><Check size={16} />{item}</li>)}</ul>
-        </div>
-        <div className="feature-pack" aria-label="Three format Campaign Pack example">
-          <div className="feature-pack-head"><span>Campaign Pack · AisleBeat S1</span><strong><Check size={14} />{t.approved}</strong></div>
-          <div className="feature-pack-grid">
-            {(['1:1', '4:5', '9:16'] as const).map((ratio) => <article key={ratio}><span>{ratio}</span><div className={`feature-art feature-${ratio.replace(':', '-')}`}><img src={campaignScene} alt="" /><div><small>AisleBeat S1</small><strong>{locale === 'zh-Hant' ? '隨身好聲音' : 'Sound that travels'}</strong><b>HK$399</b></div></div></article>)}
-          </div>
         </div>
       </section>
 
