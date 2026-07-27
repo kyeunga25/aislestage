@@ -18,6 +18,8 @@
     "cf:invite": "node scripts/create-beta-invite.mjs",
     "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
     "cf:deploy": "npm run build && wrangler deploy --keep-vars --config wrangler.local.jsonc",
+    "cf:prepare:build": "node scripts/prepare-cloudflare-build.mjs",
+    "cf:deploy:build": "npm run cf:prepare:build && wrangler deploy --config wrangler.ci.generated.jsonc",
     "cf:secrets": "wrangler secret list --config wrangler.local.jsonc"
   },
   "dependencies": {
