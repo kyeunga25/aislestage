@@ -29,7 +29,7 @@ type AccessIdentity = { subject: string; email: string; name: string }
 type AccessFailureCode = 'authentication-required' | 'membership-required' | 'configuration-error'
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
-const SESSION_COOKIE = 'aislepack_session'
+const SESSION_COOKIE = 'aislestage_session'
 const SESSION_DAYS = 60
 const PASSWORD_ITERATIONS = 100_000
 const LOGIN_WINDOW_MINUTES = 15
@@ -444,7 +444,7 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
             INSERT INTO users (id, email, name, password_hash, password_salt, account_type, auth_mode, access_subject_hash)
             VALUES (?, ?, ?, ?, ?, 'beta', 'access', ?)
           `).bind(userId, identity.email, identity.name, passwordHash.hash, passwordHash.salt, subjectHash),
-          env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status, access_status) VALUES (?, ?, ?, ?, ?)').bind(workspaceId, userId, 'AislePack 工作區', 'active', 'active'),
+          env.DB.prepare('INSERT INTO workspaces (id, owner_user_id, name, plan_status, access_status) VALUES (?, ?, ?, ?, ?)').bind(workspaceId, userId, 'AisleStage 工作區', 'active', 'active'),
           env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
           env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialOutputAllowance(env))
         ])
@@ -459,7 +459,7 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
     }
   }
 
-  if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AislePack workspace.')
+  if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AisleStage workspace.')
   const workspaces = await workspacesForUser(env, user.id)
   if (!workspaces[0]) return accessError('membership-required', 403, 'This account has no active workspace membership.')
   return { user, currentWorkspace: workspaces[0] }
@@ -630,7 +630,7 @@ async function generationSourceAsset(env: Env, input: GenerationInput) {
 
 async function register(request: Request, env: Env) {
   const mode = registrationMode(env)
-  if (mode === 'closed') return json({ error: 'AislePack 現時只開放已有帳號登入。' }, { status: 403 })
+  if (mode === 'closed') return json({ error: 'AisleStage 現時只開放已有帳號登入。' }, { status: 403 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })

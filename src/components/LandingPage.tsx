@@ -10,7 +10,7 @@ const copy = {
   'zh-Hant': {
     navProduct: '產品', navFlow: '流程', navSecurity: '私隱與安全', login: '登入工作區',
     eyebrow: '由商品原圖到整套推廣素材', title: <>一張商品圖，<br />完成整套 <span>Campaign Pack</span></>,
-    intro: 'AislePack 先整理已核准的商品資料，讓 Agent 規劃三個常用比例；你確認後，系統才會建立可直接使用的素材與雙語文案。',
+    intro: 'AisleStage 先整理已核准的商品資料，讓 Agent 規劃三個常用比例；你確認後，系統才會建立可直接使用的素材與雙語文案。',
     how: '看看運作方式', trust: ['受邀測試', '私人素材', '可重複輸出'],
     source: '商品原圖', approved: '計劃已批准', create: '建立素材',
     proof: [
@@ -37,12 +37,12 @@ const copy = {
       ['可靠計量', 'Queue 與用量操作保持冪等']
     ],
     ctaTitle: '準備好整理下一個 Campaign？', ctaBody: '登入受邀工作區，從已核准的商品原圖與資料開始。',
-    footerLine: 'AislePack · AI 電商素材工作台', footerSecurity: '私隱與安全', footerFlow: '運作方式'
+    footerLine: 'AisleStage · AI 電商素材工作台', footerSecurity: '私隱與安全', footerFlow: '運作方式'
   },
   en: {
     navProduct: 'Product', navFlow: 'How it works', navSecurity: 'Privacy & security', login: 'Sign in to workspace',
     eyebrow: 'From one approved product image to a complete campaign set', title: <>One product image.<br />One coordinated <span>Campaign Pack.</span></>,
-    intro: 'AislePack organises approved product facts, lets the Agent plan three practical ratios, and creates bilingual assets only after you approve the plan.',
+    intro: 'AisleStage organises approved product facts, lets the Agent plan three practical ratios, and creates bilingual assets only after you approve the plan.',
     how: 'See how it works', trust: ['Invite-only beta', 'Private assets', 'Repeatable output'],
     source: 'Source image', approved: 'Plan approved', create: 'Create assets',
     proof: [
@@ -69,7 +69,7 @@ const copy = {
       ['Reliable accounting', 'Queue and usage operations stay idempotent']
     ],
     ctaTitle: 'Ready to organise your next campaign?', ctaBody: 'Sign in to an invited workspace and begin with approved product facts and imagery.',
-    footerLine: 'AislePack · Ecommerce campaign asset workspace', footerSecurity: 'Privacy & security', footerFlow: 'How it works'
+    footerLine: 'AisleStage · Ecommerce campaign asset workspace', footerSecurity: 'Privacy & security', footerFlow: 'How it works'
   }
 } as const
 
@@ -88,8 +88,8 @@ export function LandingPage() {
 
   return <div className="landing-page">
     <header className="landing-header">
-      <a className="landing-brand" href="#top" aria-label="AislePack">
-        <BrandMark /><span><strong>AislePack</strong><small>{locale === 'zh-Hant' ? 'AI 電商素材工作台' : 'Campaign asset workspace'}</small></span>
+      <a className="landing-brand" href="#top" aria-label="AisleStage">
+        <BrandMark /><span><strong>AisleStage</strong><small>{locale === 'zh-Hant' ? 'AI 電商素材工作台' : 'Campaign asset workspace'}</small></span>
       </a>
       <button className="landing-menu-button" type="button" aria-expanded={menuOpen} aria-controls="landing-nav" onClick={() => setMenuOpen((current) => !current)}>
         {menuOpen ? <X size={22} /> : <Menu size={22} />}<span className="visually-hidden">Menu</span>
@@ -124,7 +124,7 @@ export function LandingPage() {
 
         <div className="hero-workspace" aria-label="Campaign Pack product preview">
           <div className="workspace-preview-bar">
-            <span><BrandMark /><strong>AislePack</strong></span>
+            <span><BrandMark /><strong>AisleStage</strong></span>
             <span>{t.approved}</span>
           </div>
           <div className="workspace-preview-body">
@@ -195,13 +195,13 @@ export function LandingPage() {
       </section>
 
       <section className="landing-cta" aria-labelledby="cta-title">
-        <div><p className="landing-eyebrow">AislePack</p><h2 id="cta-title">{t.ctaTitle}</h2><p>{t.ctaBody}</p></div>
+        <div><p className="landing-eyebrow">AisleStage</p><h2 id="cta-title">{t.ctaTitle}</h2><p>{t.ctaBody}</p></div>
         <a className="landing-login" href="/app">{t.login}<ArrowRight size={17} /></a>
       </section>
     </main>
 
     <footer className="landing-footer">
-      <a className="landing-brand" href="#top"><BrandMark /><span><strong>AislePack</strong><small>{t.footerLine}</small></span></a>
+      <a className="landing-brand" href="#top"><BrandMark /><span><strong>AisleStage</strong><small>{t.footerLine}</small></span></a>
       <nav aria-label="Footer navigation"><a href="#workflow">{t.footerFlow}</a><a href="#security">{t.footerSecurity}</a><button type="button" onClick={() => setLocale((current) => current === 'zh-Hant' ? 'en' : 'zh-Hant')}>{locale === 'zh-Hant' ? 'English' : '繁體中文'}</button></nav>
     </footer>
   </div>

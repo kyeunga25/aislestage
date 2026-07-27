@@ -47,7 +47,7 @@ describe('restricted registration authentication', () => {
 
     expect(response.status).toBe(201)
     const setCookie = response.headers.get('set-cookie') || ''
-    expect(setCookie).toContain('aislepack_session=')
+    expect(setCookie).toContain('aislestage_session=')
     expect(setCookie).toContain('Path=/')
     expect(setCookie).toContain('HttpOnly')
     expect(setCookie).toContain('SameSite=Lax')

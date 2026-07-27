@@ -1,6 +1,6 @@
 # Cloudflare Access 登入 / Access sign-in
 
-AislePack 把公開產品主頁與私人工作區分開：`/` 可公開瀏覽，`/app*` 及受保護 API 先經 Cloudflare Access，再由 Worker 驗證 Access JWT 和 D1 workspace membership。
+AisleStage 把公開產品主頁與私人工作區分開：`/` 可公開瀏覽，`/app*` 及受保護 API 先經 Cloudflare Access，再由 Worker 驗證 Access JWT 和 D1 workspace membership。
 
 這份文件只記錄可公開的設定合約。Cloudflare account identifier、實際 hostname、team domain、Access application audience、D1 identifier、資源名稱及受邀電郵必須留在受保護設定，不可寫入 repository、PR、issue 或公開 log。
 
@@ -13,7 +13,7 @@ Cloudflare Zero Trust Free 適合 50 人以下的受邀測試團隊。Access 可
 - [Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)
 - [One-time PIN login](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/)
 
-Access 在邊緣拒絕未符合 policy 的請求，但 origin 仍不可只信任 header 存在。AislePack 會驗證 `Cf-Access-Jwt-Assertion` 的 RS256 簽章、issuer、audience、有效期、subject 及電郵格式：
+Access 在邊緣拒絕未符合 policy 的請求，但 origin 仍不可只信任 header 存在。AisleStage 會驗證 `Cf-Access-Jwt-Assertion` 的 RS256 簽章、issuer、audience、有效期、subject 及電郵格式：
 
 - [Validate Access JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
 - [Access application token](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/)

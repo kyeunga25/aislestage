@@ -62,7 +62,7 @@ export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGener
             <div className="result-meta">
               <span><strong>{output.ratio}</strong>{output.label}</span>
               {hasGeneratedImage
-                ? <a href={result!.imageUrl!} download={`aislepack-${output.ratio.replace(':', 'x')}.${extension}`}><ArrowDownToLine size={16} />下載</a>
+                ? <a href={result!.imageUrl!} download={`aislestage-${output.ratio.replace(':', 'x')}.${extension}`}><ArrowDownToLine size={16} />下載</a>
                 : <span className={`result-status ${result?.status || ''}`} title={result?.errorMessage || undefined}>{isGenerating && !result ? '處理中' : statusLabel}</span>}
             </div>
           </article>

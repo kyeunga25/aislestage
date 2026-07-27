@@ -50,9 +50,9 @@ export function AuthPage({ registrationMode, onAuthenticated }: Props) {
   }
 
   return <main className="auth-shell">
-    <section className="auth-copy" aria-label="AislePack 產品介紹">
-      <a className="app-brand auth-brand" href="/" aria-label="AislePack">
-        <BrandMark /><span><strong>AislePack</strong><small>AI 電商素材工作台</small></span>
+    <section className="auth-copy" aria-label="AisleStage 產品介紹">
+      <a className="app-brand auth-brand" href="/" aria-label="AisleStage">
+        <BrandMark /><span><strong>AisleStage</strong><small>AI 電商素材工作台</small></span>
       </a>
       <div>
         <h1>一張商品圖，完成整套推廣素材</h1>
@@ -69,7 +69,7 @@ export function AuthPage({ registrationMode, onAuthenticated }: Props) {
         {registrationAvailable ? <button className={mode === 'register' ? 'active' : ''} type="button" onClick={() => setMode('register')}>{inviteOnly ? '獲邀註冊' : '註冊'}</button> : null}
       </div>
       <form className="auth-form" onSubmit={handleSubmit}>
-        <div className="section-heading"><h2 id="auth-title">{isRegister ? '建立帳號' : '登入 AislePack'}</h2><p>{isRegister ? inviteOnly ? '使用受邀電郵及一次性邀請碼建立私人工作區。' : '建立你的私人工作區，開始第一套 Campaign Pack。' : '回到工作區，繼續建立推廣素材包。'}</p></div>
+        <div className="section-heading"><h2 id="auth-title">{isRegister ? '建立帳號' : '登入 AisleStage'}</h2><p>{isRegister ? inviteOnly ? '使用受邀電郵及一次性邀請碼建立私人工作區。' : '建立你的私人工作區，開始第一套 Campaign Pack。' : '回到工作區，繼續建立推廣素材包。'}</p></div>
         {!registrationAvailable ? <p className="registration-note"><strong>註冊目前未開放</strong><span>已有帳號仍可登入。</span></p> : null}
         {isRegister && <div className="form-row"><label>你的姓名<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>工作區名稱<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="例如 Example Store" required /></label></div>}
         <label>電郵地址<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
