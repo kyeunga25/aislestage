@@ -1,4 +1,4 @@
-# AislePack 統一產品規格 / Unified Product Specification
+# AisleStage 統一產品規格 / Unified Product Specification
 
 版本：v0.4 — Release Readiness
 
@@ -6,7 +6,7 @@
 
 ## 1. 產品定義
 
-AislePack 是一個 AI 電商素材工作台。它把一張有權使用的商品圖片，以及一份已核實的繁中／英文商業 brief，整理成一套協調一致的 Campaign Pack。
+AisleStage 是一個 AI 電商素材工作台。它把一張有權使用的商品圖片，以及一份已核實的繁中／英文商業 brief，整理成一套協調一致的 Campaign Pack。
 
 每套輸出固定包括：
 
@@ -64,7 +64,7 @@ AislePack 是一個 AI 電商素材工作台。它把一張有權使用的商品
 - 系統字體配合 Noto Sans TC fallback；
 - 動態只用於載入與狀態，並尊重 `prefers-reduced-motion`。
 
-已接受的 desktop 視覺依據：`docs/design/aislepack-agent-workspace-concept.png`。
+已接受的 desktop 視覺依據：`docs/design/aislestage-agent-workspace-concept.png`。
 
 ## 5. Agent 合約
 

@@ -374,7 +374,7 @@ function WorkspaceApp() {
     <Sidebar workspace={session.currentWorkspace} active={activeSection} onNavigate={setActiveSection} />
     <div className="app-body">
       <header className="topbar">
-        <a className="mobile-brand" href="#workspace" aria-label="AislePack"><BrandMark /><strong>AislePack</strong></a>
+        <a className="mobile-brand" href="#workspace" aria-label="AisleStage"><BrandMark /><strong>AisleStage</strong></a>
         <div className="topbar-spacer" />
         <span className="allowance-chip"><Sparkles size={15} />可用輸出 <strong>{session.currentWorkspace.availableOutputs}</strong></span>
         <span className="workspace-chip"><span>{session.currentWorkspace.name.charAt(0)}</span><strong>{session.currentWorkspace.name}</strong></span>

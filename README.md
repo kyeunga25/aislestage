@@ -1,8 +1,8 @@
-# AislePack — AI 電商素材工作台
+# AisleStage — AI 電商素材工作台
 
-AislePack 把一張有權使用的商品圖片、已核實的繁中／英文商業資料，以及人工批准，整理成一套 1:1、4:5、9:16 Campaign Pack。
+AisleStage 把一張有權使用的商品圖片、已核實的繁中／英文商業資料，以及人工批准，整理成一套 1:1、4:5、9:16 Campaign Pack。
 
-AislePack turns an approved product image, verified Traditional Chinese and English commercial copy, and explicit human approval into a coordinated three-format Campaign Pack.
+AisleStage turns an approved product image, verified Traditional Chinese and English commercial copy, and explicit human approval into a coordinated three-format Campaign Pack.
 
 目前版本以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只會檢查資料和規劃固定輸出，不會自行新增產品宣稱、發佈廣告或跳過批准。
 
@@ -102,8 +102,8 @@ GitHub Actions 只使用公開 placeholder 設定執行 check、test、audit、b
 建立一次性邀請時，從本機環境提供收件電郵和受保護 D1 名稱；程式只把 hash 寫入 D1，邀請碼只顯示一次：
 
 ```bash
-AISLEPACK_INVITE_EMAIL='<recipient>' \
-AISLEPACK_INVITE_DATABASE='<database>' \
+AISLESTAGE_INVITE_EMAIL='<recipient>' \
+AISLESTAGE_INVITE_DATABASE='<database>' \
 npm run cf:invite
 ```
 

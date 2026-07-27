@@ -1,6 +1,6 @@
 # 工程與部署 / Engineering and deployment
 
-這份文件描述 AislePack v0.5 的公開工程合約。實際帳戶、資源名稱、identifier、URL、secret、使用者資料及營運記錄不屬於 repository 內容。
+這份文件描述 AisleStage v0.5 的公開工程合約。實際帳戶、資源名稱、identifier、URL、secret、使用者資料及營運記錄不屬於 repository 內容。
 
 ## Runtime map
 

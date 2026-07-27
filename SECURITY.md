@@ -1,6 +1,6 @@
 # Security and privacy
 
-AislePack handles uploaded product images and commercial briefs as private workspace data. Do not include real customer data, credentials, deployment identifiers, private object URLs, or provider responses in issues, tests, screenshots, commits, or pull requests.
+AisleStage handles uploaded product images and commercial briefs as private workspace data. Do not include real customer data, credentials, deployment identifiers, private object URLs, or provider responses in issues, tests, screenshots, commits, or pull requests.
 
 ## Current controls
 

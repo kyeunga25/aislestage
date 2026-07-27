@@ -50,7 +50,7 @@ describe('Cloudflare Access authentication', () => {
 
   it('requires the signed Access assertion instead of trusting a browser session cookie', async () => {
     const fixture = await accessFixture()
-    const response = await dispatch('/api/session', { headers: { cookie: 'aislepack_session=untrusted' } }, fixture.accessEnv)
+    const response = await dispatch('/api/session', { headers: { cookie: 'aislestage_session=untrusted' } }, fixture.accessEnv)
 
     expect(response.status).toBe(401)
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })

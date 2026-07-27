@@ -175,7 +175,7 @@ export function composeCampaignSvg({ input, source, background }: CompositionOpt
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-labelledby="title description">
   <title id="title">${escapeXml(copy.name)} — ${escapeXml(copy.promotion)}</title>
-  <desc id="description">AislePack ${escapeXml(ratio)} Campaign Pack output</desc>
+  <desc id="description">AisleStage ${escapeXml(ratio)} Campaign Pack output</desc>
   <defs>
     <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f4f7fc"/></linearGradient>
     <linearGradient id="background-wash" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/><stop offset="0.55" stop-color="#ffffff" stop-opacity="0.42"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.94"/></linearGradient>
@@ -195,6 +195,6 @@ export function composeCampaignSvg({ input, source, background }: CompositionOpt
   <text x="${layout.padding}" y="${layout.priceY}" fill="#172033" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="${ratio === '9:16' ? 72 : 64}" font-weight="800" text-anchor="${layout.align}">${escapeXml(copy.price)}</text>
   <rect x="${layout.padding}" y="${layout.ctaY - (ratio === '9:16' ? 72 : 58)}" width="${Math.min(layout.textWidth, Math.max(210, Array.from(copy.cta).length * 34 + 84))}" height="${ratio === '9:16' ? 82 : 68}" rx="${ratio === '9:16' ? 16 : 13}" fill="${accent}"/>
   <text x="${layout.padding + 34}" y="${layout.ctaY - (ratio === '9:16' ? 20 : 16)}" fill="#ffffff" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="${ratio === '9:16' ? 31 : 26}" font-weight="700">${escapeXml(copy.cta)}</text>
-  <text x="${layout.width - layout.padding}" y="${layout.height - 42}" fill="#7c8799" font-family="Arial, sans-serif" font-size="18" text-anchor="end">AislePack · ${escapeXml(ratio)}</text>
+  <text x="${layout.width - layout.padding}" y="${layout.height - 42}" fill="#7c8799" font-family="Arial, sans-serif" font-size="18" text-anchor="end">AisleStage · ${escapeXml(ratio)}</text>
 </svg>`
 }
