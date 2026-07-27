@@ -134,13 +134,15 @@ npm audit --omit=dev
 npm run cf:dry-run
 ```
 
-它不持有 Cloudflare credential、帳戶 identifier 或資源映射。正式部署只使用被 Git 忽略、權限限制為目前使用者的 `wrangler.local.jsonc`：
+它不持有 Cloudflare credential、帳戶 identifier 或資源映射。本機正式部署只使用被 Git 忽略、權限限制為目前使用者的 `wrangler.local.jsonc`：
 
 ```bash
 npm run cf:migrate
 npm run cf:deploy
 ```
 
-公開 log、artifact、PR 或文件不得輸出該設定內容。公開 repository 不需要連接 Cloudflare Git Builds；若第三方 build check 會包含 dashboard、帳戶或資源路徑，必須保持斷開並使用經審核的本機 Wrangler 發佈。
+`main` push 會由 `aislestage` Worker 的 Cloudflare Workers Builds Git 連線觸發。Cloudflare 使用專用 build token、加密的資源映射變數、`npm run check && npm test && npm run build` build command，以及 `npm run cf:deploy:build` deploy command；非正式分支 build 停用。部署腳本只可產生被 Git 忽略的 `wrangler.ci.generated.jsonc`，並且不得把變數值寫入 log 或 artifact。
+
+公開 log、artifact、PR 或文件不得輸出本機或自動部署設定內容。GitHub Actions 保持純驗證，不取得 Cloudflare credential；Cloudflare Workers Builds 的 dashboard、token、資源路徑與 build 詳情也不可複製到公開 repository。D1 migration 不屬於 push 自動部署，仍需先由獲授權維護者核對目標再執行。
 
 任何部署都必須先把 D1 migration 套用到經核對的目標環境，再部署相容 Worker。部署後至少檢查公開主頁、Access 對 `/app` 的攔截、origin JWT 驗證、D1 membership、登出、私人資產 headers、Campaign Pack 三輸出及 Queue 完成狀態。完整 path/policy 合約見 [ACCESS_SETUP.md](ACCESS_SETUP.md)。

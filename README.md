@@ -89,7 +89,7 @@ ASSETS
 - `AGENT_MODE=deterministic`；
 - 每個新邀請 workspace 六個可用輸出（兩套完整素材包）。
 
-部署順序：
+本機手動部署順序：
 
 1. 核對被 Git 忽略的受保護資源映射；
 2. `npm run check && npm test && npm run build`；
@@ -97,7 +97,24 @@ ASSETS
 4. 對 `wrangler.local.jsonc` 指向的 `DB` 執行 `npm run cf:migrate`；
 5. 執行 `npm run cf:deploy`，再檢查 `/api/health`、未授權路徑、登入頁及一套隔離 Campaign Pack。
 
-GitHub Actions 只使用公開 placeholder 設定執行 check、test、audit、build 及 dry-run，不持有 Cloudflare 帳戶或資源映射。正式部署刻意與公開 PR check 分開，避免第三方 build 詳情連結公開基礎設施識別資料。
+GitHub Actions 只使用公開 placeholder 設定執行 check、test、audit、build 及 dry-run，不持有 Cloudflare 帳戶或資源映射。`main` push 的正式部署則由 `aislestage` Worker 內的 Cloudflare Workers Builds 連線處理：build command 是 `npm run check && npm test && npm run build`，deploy command 是 `npm run cf:deploy:build`，非正式分支 build 保持停用。
+
+Workers Builds 只在 Cloudflare 受保護設定中保存專用 build token 與下列加密變數；repo、GitHub Actions、公開 log 及 artifact 都不可保存或輸出其值：
+
+```text
+CLOUDFLARE_D1_DATABASE_NAME
+CLOUDFLARE_D1_DATABASE_ID
+CLOUDFLARE_R2_BUCKET_NAME
+CLOUDFLARE_QUEUE_NAME
+CLOUDFLARE_DEAD_LETTER_QUEUE_NAME
+CLOUDFLARE_APP_ORIGIN
+CLOUDFLARE_ACCESS_TEAM_DOMAIN
+CLOUDFLARE_ACCESS_AUD
+CLOUDFLARE_ACCESS_AUTO_PROVISION
+CLOUDFLARE_INITIAL_OUTPUT_ALLOWANCE
+```
+
+`WORKERS_CI=1` 是非敏感 build guard。部署前，`scripts/prepare-cloudflare-build.mjs` 會核對固定 Worker 名稱 `aislestage`、公開模板結構及受保護值格式，再寫出被 Git 忽略且權限限制為目前程序的 `wrangler.ci.generated.jsonc`。D1 migration 仍必須先由經授權的維護者獨立審核和套用；自動部署不會擅自執行 migration。
 
 建立一次性邀請時，從本機環境提供收件電郵和受保護 D1 名稱；程式只把 hash 寫入 D1，邀請碼只顯示一次：
 

@@ -25,7 +25,7 @@ Tracked Wrangler configuration contains placeholders and generic binding names o
 
 Local and automated tests must use synthetic records and isolated bindings. Do not connect tests to production resources or paid provider calls.
 
-GitHub CI uses only the public placeholder configuration and holds no Cloudflare credentials or resource mappings. Production deployment uses an ignored, user-restricted local Wrangler configuration and is kept separate from public pull-request checks. That configuration must never be uploaded as an artifact or copied into logs, pull requests, issues, or public documentation.
+GitHub CI uses only the public placeholder configuration and holds no Cloudflare credentials or resource mappings. Production deployment uses either an ignored, user-restricted local Wrangler configuration or the `aislestage` Worker's Cloudflare Workers Builds connection. Workers Builds keeps its dedicated token and resource mappings in protected Cloudflare settings, writes only an ignored permission-restricted generated configuration, and deploys production only from `main`. Neither deployment configuration may be uploaded as an artifact or copied into logs, pull requests, issues, or public documentation.
 
 ## Reporting
 
