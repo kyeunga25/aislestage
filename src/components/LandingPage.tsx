@@ -1,5 +1,5 @@
 import { ArrowRight, Check, FileCheck2, Image as ImageIcon, Layers3, LockKeyhole, Menu, ShieldCheck, Sparkles, Upload, UserCheck, X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import workspaceAgent from '../assets/workspace-agent.png'
 import workspaceBrief from '../assets/workspace-brief.png'
 import workspaceOverview from '../assets/workspace-overview.jpg'
@@ -10,10 +10,10 @@ type Locale = 'zh-Hant' | 'en'
 
 const copy = {
   'zh-Hant': {
-    navProduct: '產品', navCases: '使用情境', navFlow: '流程', navSecurity: '私隱與安全', login: '登入工作區',
+    navProduct: '產品', navCases: '使用情境', navFlow: '流程', navCollaboration: '合作方式', navSecurity: '私隱與安全', login: '受邀成員登入',
     eyebrow: '由商品原圖到整套推廣素材', title: <>一張商品圖，<br />完成整套 <span>Campaign Pack</span></>,
     intro: '如果你要為同一件商品準備網店主圖、社交廣告與限時動態，AisleStage 會把已核實的商品資料、私人原圖和雙語文案集中在一個批准流程。價格、優惠及 CTA 不必在不同版型重複輸入。',
-    how: '看看運作方式', trust: ['受邀測試', '私人素材', '可重複輸出'],
+    primary: '了解合作方式', how: '看看運作方式', trust: ['邀請制合作', '私人素材', '可重複輸出'],
     planStatus: '等待批准',
     proof: [
       ['原圖作為來源', '不重新繪製已上傳商品'],
@@ -46,6 +46,15 @@ const copy = {
       ['02', 'Agent 規劃', '系統檢查商業資料、來源圖及文字安全區，安排 1080 × 1080、1080 × 1350、1080 × 1920 三個輸出，不自行新增宣稱。'],
       ['03', '批准並建立', '你先核對目前 revision；修改任何資料都要重新規劃。只有批准後，系統才一次建立整套 Campaign Pack。']
     ],
+    collaborationEyebrow: 'Contact-first · Invite-only',
+    collaborationTitle: '先確認工作方式與適用範圍，再開設私人工作區',
+    collaborationBody: 'AisleStage 現階段不提供公開註冊、即時生成或 checkout。合作從一份不含私人素材的簡介開始，雙方確認範圍、資料處理及交付方式後，才由受控 Access policy 邀請成員。',
+    collaborationSteps: [
+      ['01', '提供非敏感簡介', '透過既有直接聯絡渠道說明商品類型、需要的三比例素材、語言及圖片使用權狀態；公開網站不收集商業 brief 或商品原圖。'],
+      ['02', '確認適用性與邊界', '核對 Campaign Pack 是否適合、哪些資料已獲核實，以及私隱、人工批准、輸出數量與 deterministic fallback。'],
+      ['03', '建立受邀工作區', '確認後才建立 active membership。Cloudflare Access 驗證身份，Worker 再核對 D1 membership；沒有公開帳戶或自助付款捷徑。']
+    ],
+    collaborationNote: '已有邀請？可直接登入私人工作區。尚未獲邀者不會在公開頁面輸入產品資料、圖片或付款資料。',
     featurePoints: ['1:1 · 1080 × 1080 商品主圖', '4:5 · 1080 × 1350 社交廣告', '9:16 · 1080 × 1920 限時動態', '附可複製的繁中／英文文案'],
     securityEyebrow: '私隱與安全，設計在每一步', securityBody: '公開主頁與私人工作區分開。登入由 Cloudflare Access 驗證，Worker 再核對簽章與 D1 成員關係；圖片與輸出只經授權路徑讀取。',
     securityItems: [
@@ -55,14 +64,14 @@ const copy = {
       ['私人素材', 'R2 物件不公開直連'],
       ['可靠計量', 'Queue 與用量操作保持冪等']
     ],
-    ctaTitle: '準備好整理下一個 Campaign？', ctaBody: '登入受邀工作區，從已核准的商品原圖與資料開始。',
+    ctaTitle: '已確認合作範圍？', ctaBody: '受邀成員可進入私人工作區，從已核准的商品原圖與資料開始。',
     footerLine: 'AisleStage · AI 電商素材工作台', footerSecurity: '私隱與安全', footerFlow: '運作方式'
   },
   en: {
-    navProduct: 'Product', navCases: 'Use cases', navFlow: 'How it works', navSecurity: 'Privacy & security', login: 'Sign in to workspace',
+    navProduct: 'Product', navCases: 'Use cases', navFlow: 'How it works', navCollaboration: 'Working together', navSecurity: 'Privacy & security', login: 'Invited member sign-in',
     eyebrow: 'From one approved product image to a complete campaign set', title: <>One product image.<br />One coordinated <span>Campaign Pack.</span></>,
     intro: 'When one product needs a storefront visual, a social ad and a story, AisleStage keeps verified facts, the private source image and bilingual copy inside one approval flow. Price, offer and CTA do not need to be re-entered for every format.',
-    how: 'See how it works', trust: ['Invite-only beta', 'Private assets', 'Repeatable output'],
+    primary: 'How collaboration starts', how: 'See how it works', trust: ['Invite-only engagement', 'Private assets', 'Repeatable output'],
     planStatus: 'Awaiting approval',
     proof: [
       ['Source-image fidelity', 'Your uploaded product remains the source'],
@@ -95,6 +104,15 @@ const copy = {
       ['02', 'Agent plans', 'The system checks the commercial facts, source and text-safe areas, then plans 1080 × 1080, 1080 × 1350 and 1080 × 1920 outputs without inventing claims.'],
       ['03', 'Approve and create', 'Review the current revision first. Editing any fact requires a new plan; only an approved revision can create the full Campaign Pack.']
     ],
+    collaborationEyebrow: 'Contact-first · Invite-only',
+    collaborationTitle: 'Confirm the fit and operating boundaries before opening a private workspace',
+    collaborationBody: 'AisleStage does not currently offer public registration, instant generation or checkout. An engagement begins with a non-sensitive introduction. Scope, data handling and delivery are confirmed before members are invited through a controlled Access policy.',
+    collaborationSteps: [
+      ['01', 'Share a non-sensitive introduction', 'Use an existing direct contact channel to outline the product category, required three-ratio assets, languages and image-rights status. The public site does not collect the commercial brief or source image.'],
+      ['02', 'Confirm fit and boundaries', 'Review whether Campaign Pack fits the job, which facts are verified, and the privacy, human approval, output allowance and deterministic fallback boundaries.'],
+      ['03', 'Open an invited workspace', 'Only then is an active membership created. Cloudflare Access verifies identity and the Worker checks D1 membership; there is no public account or self-service payment shortcut.']
+    ],
+    collaborationNote: 'Already invited? Sign in to the private workspace. Visitors without an invitation do not enter product data, imagery or payment details on the public site.',
     featurePoints: ['1:1 · 1080 × 1080 product visual', '4:5 · 1080 × 1350 social ad', '9:16 · 1080 × 1920 story', 'Copyable Traditional Chinese and English captions'],
     securityEyebrow: 'Privacy and security at every step', securityBody: 'The public site and private workspace are separate. Cloudflare Access verifies identity at the edge, the Worker validates the signed JWT and D1 membership, and private files are served only through authorised routes.',
     securityItems: [
@@ -104,19 +122,24 @@ const copy = {
       ['Private assets', 'No public R2 object links'],
       ['Reliable accounting', 'Queue and usage operations stay idempotent']
     ],
-    ctaTitle: 'Ready to organise your next campaign?', ctaBody: 'Sign in to an invited workspace and begin with approved product facts and imagery.',
+    ctaTitle: 'Scope confirmed?', ctaBody: 'Invited members can enter the private workspace and begin with approved product facts and imagery.',
     footerLine: 'AisleStage · Ecommerce campaign asset workspace', footerSecurity: 'Privacy & security', footerFlow: 'How it works'
   }
 } as const
 
 const proofIcons = [ImageIcon, FileCheck2, ShieldCheck, Layers3]
 const stepIcons = [Upload, Sparkles, Check]
+const collaborationIcons = [FileCheck2, UserCheck, LockKeyhole]
 const securityIcons = [ShieldCheck, UserCheck, LockKeyhole, ImageIcon, FileCheck2]
 
 export function LandingPage() {
   const [locale, setLocale] = useState<Locale>('zh-Hant')
   const [menuOpen, setMenuOpen] = useState(false)
   const t = copy[locale]
+
+  useEffect(() => {
+    document.documentElement.lang = locale
+  }, [locale])
 
   function closeMenu() {
     setMenuOpen(false)
@@ -135,6 +158,7 @@ export function LandingPage() {
           <a href="#product" onClick={closeMenu}>{t.navProduct}</a>
           <a href="#use-cases" onClick={closeMenu}>{t.navCases}</a>
           <a href="#workflow" onClick={closeMenu}>{t.navFlow}</a>
+          <a href="#collaboration" onClick={closeMenu}>{t.navCollaboration}</a>
           <a href="#security" onClick={closeMenu}>{t.navSecurity}</a>
         </nav>
         <button className="locale-switch" type="button" onClick={() => setLocale((current) => current === 'zh-Hant' ? 'en' : 'zh-Hant')} aria-label={locale === 'zh-Hant' ? 'Switch to English' : '切換至繁體中文'}>
@@ -151,7 +175,7 @@ export function LandingPage() {
           <h1 id="landing-title">{t.title}</h1>
           <p className="hero-intro">{t.intro}</p>
           <div className="hero-actions">
-            <a className="landing-login" href="/app">{t.login}<ArrowRight size={17} /></a>
+            <a className="landing-login" href="#collaboration">{t.primary}<ArrowRight size={17} /></a>
             <a className="landing-secondary" href="#workflow">{t.how}</a>
           </div>
           <ul className="hero-trust" aria-label="Product access summary">
@@ -228,6 +252,21 @@ export function LandingPage() {
             return <article key={number}><span className="step-number">{number}</span><div className="step-icon"><Icon size={28} /></div><h3>{title}</h3><p>{body}</p>{index < 2 ? <ArrowRight className="step-arrow" size={24} aria-hidden="true" /> : null}</article>
           })}
         </div>
+      </section>
+
+      <section className="collaboration-section" id="collaboration" aria-labelledby="collaboration-title">
+        <div className="collaboration-copy">
+          <p className="landing-eyebrow">{t.collaborationEyebrow}</p>
+          <h2 id="collaboration-title">{t.collaborationTitle}</h2>
+          <p>{t.collaborationBody}</p>
+        </div>
+        <div className="collaboration-grid">
+          {t.collaborationSteps.map(([number, title, body], index) => {
+            const Icon = collaborationIcons[index]
+            return <article key={number}><span>{number}</span><Icon size={25} /><h3>{title}</h3><p>{body}</p></article>
+          })}
+        </div>
+        <aside className="collaboration-note"><p>{t.collaborationNote}</p><a className="landing-secondary" href="/app">{t.login}<ArrowRight size={16} /></a></aside>
       </section>
 
       <section className="security-section" id="security" aria-labelledby="security-title">

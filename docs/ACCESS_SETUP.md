@@ -41,13 +41,13 @@ Access 在邊緣拒絕未符合 policy 的請求，但 origin 仍不可只信任
 AUTH_MODE=access
 ACCESS_TEAM_DOMAIN=https://replace-with-team.cloudflareaccess.com
 ACCESS_AUD=replace-with-application-audience
-ACCESS_AUTO_PROVISION=disabled|enabled
+ACCESS_AUTO_PROVISION=disabled
 ```
 
 - `ACCESS_TEAM_DOMAIN` 只接受 HTTPS `*.cloudflareaccess.com` origin；
 - `ACCESS_AUD` 必須與目前 self-hosted application 完全相同；
 - `ACCESS_AUTO_PROVISION=disabled`：只有既有 D1 帳戶可在首次 Access 登入時綁定 subject；
-- `ACCESS_AUTO_PROVISION=enabled`：通過 Access allow policy 的新身份會建立一個 beta user、active workspace、owner membership 及預設輸出額度。
+- `ACCESS_AUTO_PROVISION=enabled` 是保留能力，不屬於 restricted release；如日後另行批准，通過 Access allow policy 的新身份才可建立 beta user、active workspace、owner membership 及預設輸出額度。
 
 自動建立只應在 Access policy 已收窄至受邀身份後啟用。D1 只保存 Access subject 的 SHA-256 hash；原始 JWT、subject、PIN 及 Access cookie 不會寫入 log 或資料表。綁定後若同一帳戶出現不同 subject，請求會 fail closed。
 
@@ -55,7 +55,7 @@ ACCESS_AUTO_PROVISION=disabled|enabled
 
 1. 在受保護設定加入實際 team domain、audience 及 auth mode；
 2. 建立 path-scoped Access application 和受邀 allow policy；
-3. 執行 `npm run cf:migrate`，套用 Access identity migration；
+3. 如 exact reviewed SHA 含有尚未套用的 migration，核對目標後才執行 `npm run cf:migrate`；
 4. 執行完整 check、test、build 及 dry-run；
 5. 執行 `npm run cf:deploy`；
 6. 匿名檢查 `/` 可讀，`/app` 由 Access 攔截；

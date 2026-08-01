@@ -4,6 +4,7 @@ import { CampaignAgent } from './agents/CampaignAgent'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { sanitizeCampaignBrief } from './lib/campaign-agent'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
+import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
 import type { GenerationInput } from './lib/types'
 
@@ -17,13 +18,18 @@ export type Env = Omit<WorkerEnv, 'GENERATION_QUEUE'> & {
   ACCESS_TEAM_DOMAIN?: string
   ACCESS_AUD?: string
   ACCESS_AUTO_PROVISION?: string
+  ASSISTED_PROVIDER?: string
+  ASSISTED_DATA_POLICY?: string
+  ASSISTED_EVALUATION?: string
+  ASSISTED_BUDGET_MODE?: string
+  MAX_ACTIVE_GENERATIONS_PER_WORKSPACE?: string
 }
 
 export type GenerationMessage = { generationId: string; input: GenerationInput }
 type AccountStatus = 'active' | 'suspended' | 'deactivated'
 type AccountType = 'standard' | 'beta' | 'test'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
-type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'paused'; availableOutputs: number; reservedOutputs: number }
+type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 type AccessIdentity = { subject: string; email: string; name: string }
 type AccessFailureCode = 'authentication-required' | 'membership-required' | 'configuration-error'
@@ -266,12 +272,6 @@ async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessI
   } catch {
     return accessError('authentication-required', 401, 'Cloudflare Access authentication is invalid.')
   }
-}
-
-function generationMode(env: Env): 'disabled' | 'deterministic' | 'assisted' {
-  if (env.GENERATION_MODE === 'deterministic') return 'deterministic'
-  if ((env.GENERATION_MODE === 'assisted' || env.GENERATION_MODE === 'enabled') && env.OPENAI_API_KEY) return 'assisted'
-  return 'disabled'
 }
 
 function validInput(value: unknown): value is GenerationInput {
@@ -742,21 +742,29 @@ async function logout(request: Request, env: Env) {
 }
 
 async function reserveOutput(env: Env, workspaceId: string, generationId: string) {
+  const activeLimit = maxActiveGenerations(env)
   const [ledger, balance] = await env.DB.batch([
     env.DB.prepare(`
       INSERT INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'reservation', ?, 'Output allowance reservation'
       WHERE EXISTS (
-        SELECT 1 FROM output_allowances WHERE workspace_id = ? AND available >= ?
+        SELECT 1 FROM output_allowances
+        WHERE workspace_id = ? AND available >= ? AND reserved + ? <= ?
       )
-    `).bind(crypto.randomUUID(), workspaceId, generationId, -OUTPUT_COST, workspaceId, OUTPUT_COST),
+    `).bind(crypto.randomUUID(), workspaceId, generationId, -OUTPUT_COST, workspaceId, OUTPUT_COST, OUTPUT_COST, activeLimit),
     env.DB.prepare(`
       UPDATE output_allowances
       SET available = available - ?, reserved = reserved + ?, updated_at = CURRENT_TIMESTAMP
-      WHERE workspace_id = ? AND available >= ? AND changes() = 1
-    `).bind(OUTPUT_COST, OUTPUT_COST, workspaceId, OUTPUT_COST)
+      WHERE workspace_id = ? AND available >= ? AND reserved + ? <= ? AND changes() = 1
+    `).bind(OUTPUT_COST, OUTPUT_COST, workspaceId, OUTPUT_COST, OUTPUT_COST, activeLimit)
   ])
-  if (!ledger.meta.changes || !balance.meta.changes) throw new Error('INSUFFICIENT_OUTPUT_ALLOWANCE')
+  if (!ledger.meta.changes || !balance.meta.changes) {
+    const current = await env.DB.prepare('SELECT available, reserved FROM output_allowances WHERE workspace_id = ?')
+      .bind(workspaceId)
+      .first<{ available: number; reserved: number }>()
+    if (current && current.reserved + OUTPUT_COST > activeLimit) throw new Error('ACTIVE_GENERATION_LIMIT')
+    throw new Error('INSUFFICIENT_OUTPUT_ALLOWANCE')
+  }
 }
 
 async function releaseOrphanReservation(env: Env, workspaceId: string, generationId: string, reason: string) {
@@ -934,13 +942,14 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   const campaignPackId = crypto.randomUUID()
   const queued = inputs.map((input) => ({ generationId: crypto.randomUUID(), input }))
   const outputCount = queued.length * OUTPUT_COST
+  const activeLimit = maxActiveGenerations(env)
   try {
     const statements = [
       env.DB.prepare(`
         UPDATE output_allowances
         SET available = available - ?, reserved = reserved + ?, updated_at = CURRENT_TIMESTAMP
-        WHERE workspace_id = ? AND available >= ?
-      `).bind(outputCount, outputCount, workspace.id, outputCount),
+        WHERE workspace_id = ? AND available >= ? AND reserved + ? <= ?
+      `).bind(outputCount, outputCount, workspace.id, outputCount, outputCount, activeLimit),
       env.DB.prepare(`
         INSERT INTO campaign_packs (id, workspace_id, idempotency_key, approved_revision)
         SELECT ?, ?, ?, ? WHERE changes() = 1
@@ -966,6 +975,12 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
         .bind(workspace.id, parsedPack.request.idempotencyKey)
         .first<{ id: string }>()
       if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
+      const current = await env.DB.prepare('SELECT available, reserved FROM output_allowances WHERE workspace_id = ?')
+        .bind(workspace.id)
+        .first<{ available: number; reserved: number }>()
+      if (current && current.reserved + outputCount > activeLimit) {
+        return json({ error: `同一工作區最多可同時處理 ${activeLimit} 個輸出。` }, { status: 429 })
+      }
       return json({ error: `至少需要 ${outputCount} 個可用輸出。` }, { status: 409 })
     }
   } catch {
@@ -1018,6 +1033,9 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
     await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
     return json({ id, status: 'queued', reservedOutputs: OUTPUT_COST }, { status: 202 })
   } catch (error) {
+    if (error instanceof Error && error.message === 'ACTIVE_GENERATION_LIMIT') {
+      return json({ error: `同一工作區最多可同時處理 ${maxActiveGenerations(env)} 個輸出。` }, { status: 429 })
+    }
     if (error instanceof Error && error.message === 'INSUFFICIENT_OUTPUT_ALLOWANCE') return json({ error: '可用輸出數不足。' }, { status: 409 })
     if (reservationCreated) {
       if (generationCreated) await failGenerationAndRelease(env, workspace.id, id, 'Unable to enqueue generation.').catch(() => null)
@@ -1101,7 +1119,7 @@ export default {
       registrationOpen: activeAuthMode === 'password' && registrationMode(env) !== 'closed',
       generationEnabled: generationMode(env) !== 'disabled',
       generationMode: generationMode(env),
-      agentMode: env.AGENT_MODE === 'assisted' && Boolean(env.OPENAI_API_KEY) ? 'assisted' : 'deterministic'
+      agentMode: agentMode(env)
     })
     if (url.pathname === '/api/workflows' && request.method === 'GET') return json({ workflows: ['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'] })
     if (url.pathname === '/api/auth/register' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password registration is disabled.' }, { status: 404 }) : register(request, env)

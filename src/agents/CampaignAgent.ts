@@ -1,12 +1,10 @@
 import { Agent, callable, type Connection } from 'agents'
 import { buildCampaignPlan, initialCampaignAgentState, sanitizeCampaignBrief } from '../lib/campaign-agent'
 import { OpenAICampaignPlanningProvider } from '../lib/providers'
+import { agentMode, type RuntimePolicyEnv } from '../lib/runtime-policy'
 import type { CampaignAgentState, CampaignBrief } from '../lib/types'
 
-type CampaignAgentEnv = {
-  OPENAI_API_KEY?: string
-  AGENT_MODE?: 'deterministic' | 'assisted'
-}
+type CampaignAgentEnv = RuntimePolicyEnv & { OPENAI_API_KEY?: string }
 
 function validState(state: CampaignAgentState) {
   return Number.isSafeInteger(state.revision)
@@ -39,7 +37,7 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
     let next = buildCampaignPlan(brief, revision, 'deterministic')
 
     const bindings = this.env as CampaignAgentEnv
-    if (bindings.AGENT_MODE === 'assisted' && bindings.OPENAI_API_KEY && next.stage === 'awaiting-approval') {
+    if (agentMode(bindings) === 'assisted' && bindings.OPENAI_API_KEY && next.stage === 'awaiting-approval') {
       const assisted = await new OpenAICampaignPlanningProvider(bindings.OPENAI_API_KEY).createPlan(brief)
       const rationaleById = new Map(assisted.recommendations.map((item) => [item.id, item.rationale.slice(0, 500)]))
       next = {

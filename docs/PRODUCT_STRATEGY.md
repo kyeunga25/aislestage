@@ -6,6 +6,8 @@
 
 This project explores a focused workflow for turning one approved product image and a verified commercial brief into a coordinated Campaign Pack. It is intended for ecommerce teams that need consistent assets across common channel formats without repeatedly entering the same facts.
 
+AisleStage is contact-first and invite-only. A public visitor may understand the product and collaboration process without creating an account; workspace access follows a separate qualification and invitation step. Public self-service generation, open registration, and checkout are outside the current product contract.
+
 The product emphasizes:
 
 - fidelity to the supplied product;
@@ -51,6 +53,8 @@ The source product should remain unchanged wherever practical. Generative models
 The repository focuses on the Campaign Pack workflow. A general design canvas, bulk catalog import, direct ad publishing, broad social automation, and complex organization workflows are outside the core scope unless they become independently justified.
 
 Campaign Agent is a bounded planning and approval layer inside this workflow. It is not an autonomous publishing agent and cannot bypass verified facts, workspace authorization, approval revisions, generation gates, or output allowance accounting.
+
+External AI remains an optional, evaluated assistant for background direction, image understanding, and bounded bilingual suggestions. Deterministic composition remains the delivery system of record. Payment and subscription are not required to validate product fidelity or the Campaign Pack workflow.
 
 ## Public repository boundary
 

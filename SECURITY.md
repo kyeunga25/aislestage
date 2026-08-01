@@ -18,12 +18,17 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - Deterministic mode does not contact an external model provider. Assisted modes require an explicit server-side gate and never send the private asset identifier to the provider.
 - Browser assets are same-origin and do not use third-party analytics or font requests.
 - User-facing errors and persisted observability events exclude commercial brief contents, provider payloads, deployment mappings, database diagnostics, queue details, and private object keys.
+- Workers invocation logs are disabled for protected path privacy; custom error logs use bounded event names without user, workspace, asset, brief, prompt, response, or object-key values.
+- AI Gateway or another proxy may record metadata only after approval. Raw request and response payload collection remains disabled for private commercial work.
+- Payment is disabled in this repository. A future payment boundary must use authenticated server-to-server or Service Binding calls, verified events, replay protection, and provider-neutral domain types; the browser never receives privileged credentials.
 
 ## Public repository boundary
 
 Tracked Wrangler configuration contains placeholders and generic binding names only. Keep account IDs, database IDs, resource names, deployment URLs, secrets, private operational data, and non-public business material in protected deployment configuration.
 
 Local and automated tests must use synthetic records and isolated bindings. Do not connect tests to production resources or paid provider calls.
+
+Before a public commit, push, pull request, release, or deployment, run `npm run release:check`. Confidential custom terms are supplied through a protected local input and are never embedded in the repository or printed by the scanner. GitHub secret scanning is defence in depth rather than release proof.
 
 GitHub CI uses only the public placeholder configuration and holds no Cloudflare credentials or resource mappings. Production deployment uses either an ignored, user-restricted local Wrangler configuration or the `aislestage` Worker's Cloudflare Workers Builds connection. Workers Builds keeps its dedicated token and resource mappings in protected Cloudflare settings, writes only an ignored permission-restricted generated configuration, and deploys production only from `main`. Neither deployment configuration may be uploaded as an artifact or copied into logs, pull requests, issues, or public documentation.
 

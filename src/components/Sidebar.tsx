@@ -24,7 +24,7 @@ export function Sidebar({ workspace, active, onNavigate }: Props) {
     </div>
     <div className="sidebar-footer">
       <a className="help-link" href="#support"><CircleHelp size={18} /> 幫助中心</a>
-      <div className="workspace-switcher" aria-label={`目前工作區：${workspace.name}`}><span className="workspace-avatar">{initial}</span><span><strong>{workspace.name}</strong><small>{workspace.accessStatus === 'active' ? '使用中' : '已暫停'} · {workspace.role}</small></span></div>
+      <div className="workspace-switcher" aria-label={`目前工作區：${workspace.name}`}><span className="workspace-avatar">{initial}</span><span><strong>{workspace.name}</strong><small>{workspace.accessStatus === 'active' ? '使用中' : workspace.accessStatus === 'suspended' ? '已暫停' : '已關閉'} · {workspace.role}</small></span></div>
     </div>
   </aside>
 }

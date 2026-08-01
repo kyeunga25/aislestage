@@ -80,7 +80,7 @@ export type WorkspaceSummary = {
   id: string
   name: string
   role: 'owner' | 'admin' | 'member'
-  accessStatus: 'active' | 'paused'
+  accessStatus: 'active' | 'suspended' | 'closed'
   availableOutputs: number
   reservedOutputs: number
 }
