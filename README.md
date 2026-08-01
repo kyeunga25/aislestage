@@ -1,12 +1,14 @@
 # AisleStage — AI 電商素材工作台
 
-AisleStage 把一張有權使用的商品圖片、已核實的繁中／英文商業資料，以及人工批准，整理成一套 1:1、4:5、9:16 Campaign Pack。
+AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一張有權使用的商品圖片、已核實的繁中／英文商業資料，以及人工批准，整理成一套 1:1、4:5、9:16 Campaign Pack。
 
-AisleStage turns an approved product image, verified Traditional Chinese and English commercial copy, and explicit human approval into a coordinated three-format Campaign Pack.
+AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns an approved product image, verified Traditional Chinese and English commercial copy, and explicit human approval into a coordinated three-format Campaign Pack.
 
 目前版本以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只會檢查資料和規劃固定輸出，不會自行新增產品宣稱、發佈廣告或跳過批准。
 
 公開主頁位於 `/`，介紹產品、流程及私隱邊界；私人工作區位於 `/app`。正式登入以 Cloudflare Access 作邊緣身份驗證，Worker 仍會驗證簽章並核對 D1 workspace membership。
+
+公開流程不提供自助註冊、公開生成或付款。合作先由產品簡介與適用性確認開始，再由受控 Access policy 邀請進入私人 workspace。
 
 ## 已完成能力
 
@@ -33,6 +35,8 @@ AisleStage turns an approved product image, verified Traditional Chinese and Eng
 - Queues：非同步輸出與重試；
 - Agents SDK Durable Object：workspace-scoped 規劃與批准狀態；
 - Cron Trigger：過期 session 與短期驗證記錄清理。
+
+外部 AI 只可位於可替換 provider boundary 後方。它不能取代確定性商品／文字合成、D1 output ledger 或人工批准。付款能力不屬於目前執行中的產品合約；public repository 只保留 disabled、provider-neutral 的架構邊界。
 
 Static Assets 只在 `/api/*` 先執行 Worker；其餘 SPA 檔案由資產層提供。確定性模式不需要付費模型呼叫。D1、R2、Queues、Durable Objects 與 Workers 的實際免費用量及限制以 Cloudflare 目前文件和帳戶方案為準：
 
@@ -62,6 +66,7 @@ npm test
 npm run build
 npm run cf:dry-run
 npm audit --omit=dev
+npm run release:check
 ```
 
 `npm run check` 亦會核對由 `wrangler types` 產生的 `worker-env.d.ts`，避免 bindings 與程式型別漂移。
@@ -78,14 +83,14 @@ CAMPAIGN_AGENT
 ASSETS
 ```
 
-追蹤的 `wrangler.jsonc` 只包含明確 placeholder，並保持 `AUTH_MODE=access`、`ACCESS_AUTO_PROVISION=disabled`、`REGISTRATION_MODE=closed`、`GENERATION_MODE=disabled`。正式映射只可放在被忽略且限制權限的 `wrangler.local.jsonc`；不可把帳戶識別碼、Access audience、team domain、D1 identifier、實際資源名稱、部署 URL 或 secret 寫入 Git。
+追蹤的 `wrangler.jsonc` 只包含明確 placeholder，並保持 `AUTH_MODE=access`、`ACCESS_AUTO_PROVISION=disabled`、`REGISTRATION_MODE=closed`、`GENERATION_MODE=disabled`、`ASSISTED_PROVIDER=disabled`。正式映射只可放在被忽略且限制權限的 `wrangler.local.jsonc`；不可把帳戶識別碼、Access audience、team domain、D1 identifier、實際資源名稱、部署 URL 或 secret 寫入 Git。
 
 正式環境使用：
 
 - `AUTH_MODE=access`，以及受保護的 Access team domain 與 audience；
-- Access policy 收窄至受邀身份後，才按需要設定 `ACCESS_AUTO_PROVISION=enabled`；
+- restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`，身份必須先對應既有 active account 與 workspace membership；
 - `REGISTRATION_MODE=closed`，停用公開密碼註冊與登入；
-- `GENERATION_MODE=deterministic`；
+- 未取得明確發佈批准前保持 `GENERATION_MODE=disabled`；獲批准的 deterministic release 才使用 `GENERATION_MODE=deterministic`；
 - `AGENT_MODE=deterministic`；
 - 每個新邀請 workspace 六個可用輸出（兩套完整素材包）。
 
@@ -110,7 +115,6 @@ CLOUDFLARE_DEAD_LETTER_QUEUE_NAME
 CLOUDFLARE_APP_ORIGIN
 CLOUDFLARE_ACCESS_TEAM_DOMAIN
 CLOUDFLARE_ACCESS_AUD
-CLOUDFLARE_ACCESS_AUTO_PROVISION
 CLOUDFLARE_INITIAL_OUTPUT_ALLOWANCE
 ```
 
@@ -124,7 +128,7 @@ AISLESTAGE_INVITE_DATABASE='<database>' \
 npm run cf:invite
 ```
 
-provider secret 只可透過 Wrangler secret 或同等受保護設定加入。`assisted` 模式可生成背景，但商品原圖與商業文字仍由確定性合成層處理。正式支援下載格式是 SVG；PNG／JPEG 不在目前輸出合約內。
+provider secret 只可透過 Wrangler secret、Secrets Store 或同等受保護設定加入。`assisted` 模式必須同時通過 provider、資料處理、固定評估與成本閘門；商品原圖與商業文字仍由確定性合成層處理。正式支援下載格式是 SVG；PNG／JPEG 不在目前輸出合約內。
 
 ## 文件
 
@@ -133,6 +137,9 @@ provider secret 只可透過 Wrangler secret 或同等受保護設定加入。`a
 - [Beta access 合約](docs/BETA_ACCESS.md)
 - [Cloudflare Access 設定](docs/ACCESS_SETUP.md)
 - [發佈狀態](docs/RELEASE_STATUS.md)
+- [AI 評估與成本閘門](docs/AI_EVALUATION.md)
+- [Provider-neutral 付款邊界](docs/PAYMENT_BOUNDARY.md)
+- [公開發佈外流閘門](docs/PUBLIC_RELEASE_GATE.md)
 - [安全與私隱](SECURITY.md)
 
 所有公開測試、截圖、commit、PR 及文件只可使用合成資料；不得包含真實使用者資料、非公開背景、內部商業資料或部署識別資訊。

@@ -1,12 +1,12 @@
 # AisleStage 統一產品規格 / Unified Product Specification
 
-版本：v0.4 — Release Readiness
+版本：v0.6 — Restricted Release Foundation
 
 本文件是產品定位、介面、Agent、資料及輸出行為的單一公開依據。
 
 ## 1. 產品定義
 
-AisleStage 是一個 AI 電商素材工作台。它把一張有權使用的商品圖片，以及一份已核實的繁中／英文商業 brief，整理成一套協調一致的 Campaign Pack。
+AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一張有權使用的商品圖片，以及一份已核實的繁中／英文商業 brief，整理成一套協調一致的 Campaign Pack。
 
 每套輸出固定包括：
 
@@ -17,6 +17,8 @@ AisleStage 是一個 AI 電商素材工作台。它把一張有權使用的商�
 - 可核對的商品名稱、價格、優惠、賣點與 CTA。
 
 產品不是自由 prompt 圖片工具，也不是通用設計編輯器。Agent 不可以新增未提供的產品宣稱、替使用者批准、發佈廣告或繞過 workspace 授權。
+
+公開主頁只解釋產品、合作流程與私隱邊界，不讀取私人 session，也不提供公開註冊、公開生成或 checkout。只有已通過營運確認及 Access policy 的受邀身份才可進入 `/app`。
 
 ## 2. 核心工作流
 
@@ -35,7 +37,7 @@ AisleStage 是一個 AI 電商素材工作台。它把一張有權使用的商�
 - 正式環境使用邀請註冊，不提供匿名自助註冊；
 - 一次性邀請同時綁定標準化電郵，D1 只保存 token hash 與組合 hash；
 - 帳號狀態為 `active`、`suspended` 或 `deactivated`；
-- workspace 狀態為 `active` 或 `paused`；
+- workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；
 - 現階段角色表示 workspace membership，所有受保護操作仍採相同 server-side workspace scope；
 - 新邀請 workspace 取得六個技術性可用輸出，足以建立兩套 Campaign Pack。
@@ -120,6 +122,8 @@ Cron Trigger -> expired session and auth-attempt cleanup
 
 公開 repository 只保存 generic binding 名稱與 placeholder。實際帳戶、D1 identifier、資源名稱、URL、secret 及營運資料留在受保護部署設定。
 
+外部 AI 不屬於預設資料路徑。只有 provider、資料處理、品質及成本閘門全部明確開啟時，`assisted` provider 才可提出背景方向或受限建議；商品原圖、準確文字、批准、output ledger 與正式交付仍由本地合約控制。付款則保持 disabled、provider-neutral，並與 Campaign Pack domain 分離。
+
 ## 9. 驗收標準
 
 - 真實使用者不會預填 demo 商業資料；
@@ -133,3 +137,5 @@ Cron Trigger -> expired session and auth-attempt cleanup
 - desktop、mobile、keyboard focus、無水平溢出及破圖檢查通過；
 - type check、Workers integration tests、production build、Wrangler dry-run 及 dependency audit 通過；
 - migration、部署版本、live routes 與 Git main 對應同一個已驗證 SHA。
+- public release gate 對 tracked／staged／擬加入檔案、生成 bundle 及 Git metadata 完成掃描，而且只報告 path 與問題類別；
+- 任何 assisted 評估都使用合成 fixture、固定限制、人工評分與 deterministic fallback，不直接成為正式交付證據。

@@ -2,6 +2,18 @@
 
 本頁只記錄可由 repository 或正式環境核對的公開狀態，不記錄私有基礎設施映射、使用者資料、營運資料或商業規劃。
 
+## v0.6.0 development status
+
+- [x] contact-first、invite-only 產品合約與 public/private route 邊界完成；
+- [x] assisted provider、資料處理、固定評估、預算與全域 kill switch 採 fail-closed 設定；
+- [x] provider-neutral payment boundary 保持 disabled，沒有 checkout 或付款狀態宣稱；
+- [x] public repository egress gate 納入本機及 CI；
+- [x] workspace status、Queue、allowance、provider 與 observability 合約經測試核對；
+- [x] feature branch 的完整 repository checks，以及 390–1280px browser／visual QA 完成；
+- [ ] fixed-SHA PR、正式 deployment 及 live acceptance 完成。
+
+本段是開發清單，不是 preview 或 production 完成聲明。只有所有證據對應同一已審核 SHA 後才可改為 verified release。
+
 ## v0.5.1 verified release
 
 - [x] 1280px 原生 desktop viewport 的 Hero 預覽卡密度與概念稿重新對照；
@@ -51,6 +63,7 @@
 - production frontend build；
 - Wrangler dry-run；
 - production dependency audit；
+- public repository egress check；
 - D1 migrations 已套用；
 - GitHub CI 對應準確 head SHA；
 - active Cloudflare deployment 對應同一已審核 commit；
