@@ -16,6 +16,8 @@ The project is a React and Cloudflare Workers application for creating coordinat
 
 Keep the workflow focused on product fidelity, exact text, private assets, and repeatable multi-format output. Avoid turning the project into an unrestricted prompt tool or a general-purpose design editor.
 
+The service is contact-first and invite-only. Public pages explain the product and qualification flow; they do not offer self-service registration, generation, checkout, or subscription. The private workspace remains behind Cloudflare Access and D1 membership checks.
+
 ## Architecture
 
 - Frontend: React, Vite, and TypeScript.
@@ -36,6 +38,8 @@ Generic binding names and interfaces may be committed. Account identifiers, reso
 - Keep provider keys and webhook verification material out of frontend code and Git.
 - Make asynchronous processing and usage accounting idempotent.
 - Keep provider implementations swappable and provide local mocks for tests and demos.
+- Keep external AI execution disabled unless the deployment has an explicit provider, data-handling, evaluation, and budget approval.
+- Keep payment code provider-neutral and disabled in this public repository. Provider-specific credentials, signatures, endpoints, filenames, and mappings belong outside the public source boundary.
 
 ## Repository map
 
@@ -43,6 +47,9 @@ Generic binding names and interfaces may be committed. Account identifiers, reso
 - `docs/PRODUCT_SPEC.md` — unified product, dashboard, Agent, architecture, and release contract.
 - `docs/ENGINEERING.md` — public engineering overview and deployment contract.
 - `docs/RELEASE_STATUS.md` — public release and verification status.
+- `docs/AI_EVALUATION.md` — model-neutral evaluation gates and current official references.
+- `docs/PAYMENT_BOUNDARY.md` — provider-neutral payment and settlement boundary.
+- `docs/PUBLIC_RELEASE_GATE.md` — public repository egress and release checks.
 - `SECURITY.md` — public security, privacy, and reporting boundary.
 - `README.md` — project setup and verification commands.
 - `wrangler.jsonc` — Wrangler binding structure; do not commit account-specific values to a public branch.
@@ -56,6 +63,7 @@ npm run check
 npm test
 npm run build
 npm run cf:dry-run
+npm run release:check
 ```
 
 Before handing off work, run the checks that match the change, inspect `git diff --check`, and explain any deployment assumptions without printing protected values.

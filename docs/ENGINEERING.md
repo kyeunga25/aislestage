@@ -1,6 +1,6 @@
 # 工程與部署 / Engineering and deployment
 
-這份文件描述 AisleStage v0.5 的公開工程合約。實際帳戶、資源名稱、identifier、URL、secret、使用者資料及營運記錄不屬於 repository 內容。
+這份文件描述 AisleStage v0.6 restricted release foundation 的公開工程合約。實際帳戶、資源名稱、identifier、URL、secret、使用者資料及營運記錄不屬於 repository 內容。
 
 ## Runtime map
 
@@ -40,11 +40,16 @@ npm run cf:types:check
 |  | `open` | 只供受控本機／隔離環境 |
 | `GENERATION_MODE` | `disabled` | 不接受建立輸出 |
 |  | `deterministic` | 不接觸模型，建立確定性 SVG |
-|  | `assisted` | provider 只供背景方向，商品與文字仍確定性合成 |
+|  | `assisted` | 只有其餘 approval gates 全部通過時才可使用外部 provider |
 | `AGENT_MODE` | `deterministic` | 固定規則規劃三個輸出 |
-|  | `assisted` | 模型只可更新摘要與理由，仍需人工批准 |
+|  | `assisted` | 只有全域 assisted policy 通過時，模型才可更新摘要與理由；仍需人工批准 |
+| `ASSISTED_PROVIDER` | `disabled` | 不選擇外部 AI provider |
+| `ASSISTED_DATA_POLICY` | `disabled` | 私人資料不可離開確定性路徑 |
+| `ASSISTED_EVALUATION` | `disabled` | assisted 評估未批准 |
+| `ASSISTED_BUDGET_MODE` | `disabled` | 付費推理與相關預算未批准 |
+| `MAX_ACTIVE_GENERATIONS_PER_WORKSPACE` | `3` | 每個 workspace 最多三個 reserved Queue outputs |
 
-`OPENAI_API_KEY` 是 Worker-side secret。只有同時設置 `assisted` gate 與 secret 時才會使用。Responses API 使用結構化輸出，程式從 raw `output[].content[]` 驗證及擷取 `output_text`，再以本機 validator 核對完整 schema；拒絕、缺漏或無效 JSON 會 fail closed。
+目前 adapter 的 credential 是 Worker-side secret。只有 `GENERATION_MODE=assisted`、provider allowlist、資料政策、固定評估、預算及 secret 六項全部通過時才會使用。結構化回應會再由本機 validator 核對完整 schema；拒絕、缺漏或無效 JSON 會 fail closed。
 
 ## Authentication and workspace boundary
 
@@ -80,7 +85,7 @@ idle -> needs-input -> awaiting-approval -> approved
 
 D1 batch 會在同一交易內：
 
-1. 確認足夠可用輸出數；
+1. 確認足夠可用輸出數，且新增 reservation 不超過 workspace active-output 上限；
 2. 建立一個 `campaign_packs` 記錄；
 3. 為每個輸出建立 reservation ledger；
 4. 建立三個 queued generation 記錄。
@@ -110,6 +115,7 @@ npm test
 npm run build
 npm run cf:dry-run
 npm audit --omit=dev
+npm run release:check
 ```
 
 Integration tests 會套用所有 D1 migrations，並覆蓋：
@@ -118,9 +124,11 @@ Integration tests 會套用所有 D1 migrations，並覆蓋：
 - workspace isolation、private uploads 及 response headers；
 - Agent revision 與 exact brief matching；
 - Campaign Pack atomicity、idempotency、Queue failure rollback；
+- workspace active-output cap 及 assisted multi-gate fail-closed policy；
 - duplicate Queue delivery、retry recovery、settlement 與 release；
 - deterministic SVG 不呼叫外部 provider；
-- raw Responses API structured output parsing。
+- synthetic assisted quality／latency／budget evaluation；
+- structured provider output parsing。
 
 ## Protected deployment
 
@@ -132,6 +140,7 @@ npm run check
 npm test
 npm audit --omit=dev
 npm run cf:dry-run
+npm run release:check
 ```
 
 它不持有 Cloudflare credential、帳戶 identifier 或資源映射。本機正式部署只使用被 Git 忽略、權限限制為目前使用者的 `wrangler.local.jsonc`：
@@ -141,7 +150,7 @@ npm run cf:migrate
 npm run cf:deploy
 ```
 
-`main` push 會由 `aislestage` Worker 的 Cloudflare Workers Builds Git 連線觸發。Cloudflare 使用專用 build token、加密的資源映射變數、`npm run check && npm test && npm run build` build command，以及 `npm run cf:deploy:build` deploy command；非正式分支 build 停用。部署腳本只可產生被 Git 忽略的 `wrangler.ci.generated.jsonc`，並且不得把變數值寫入 log 或 artifact。
+`main` push 會由 `aislestage` Worker 的 Cloudflare Workers Builds Git 連線觸發。Cloudflare 使用專用 build token、加密的資源映射變數、`npm run check && npm test && npm run build && npm run release:check` build command，以及 `npm run cf:deploy:build` deploy command；非正式分支 build 停用。restricted release 的生成設定固定為 disabled，Access auto-provision 亦固定關閉。部署腳本只可產生被 Git 忽略的 `wrangler.ci.generated.jsonc`，並且不得把變數值寫入 log 或 artifact。
 
 公開 log、artifact、PR 或文件不得輸出本機或自動部署設定內容。GitHub Actions 保持純驗證，不取得 Cloudflare credential；Cloudflare Workers Builds 的 dashboard、token、資源路徑與 build 詳情也不可複製到公開 repository。D1 migration 不屬於 push 自動部署，仍需先由獲授權維護者核對目標再執行。
 

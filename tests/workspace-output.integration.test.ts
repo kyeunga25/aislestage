@@ -4,6 +4,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker, { type Env, type GenerationMessage } from '../src/worker'
 import { dispatch, generationInput, registerAccount } from './helpers'
 
+function approvedAssistedEnv(envOverride: Env = env): Env {
+  return {
+    ...envOverride,
+    GENERATION_MODE: 'assisted',
+    AGENT_MODE: 'deterministic',
+    ASSISTED_PROVIDER: 'openai',
+    ASSISTED_DATA_POLICY: 'approved',
+    ASSISTED_EVALUATION: 'approved',
+    ASSISTED_BUDGET_MODE: 'approved',
+    OPENAI_API_KEY: 'test-openai-key'
+  }
+}
+
 async function createGeneration(cookie: string, input: ReturnType<typeof generationInput>, envOverride: Env = env) {
   return dispatch('/api/generations', {
     method: 'POST',
@@ -120,6 +133,18 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
   })
 
+  it('creates no partial pack when it would exceed the workspace active-output limit', async () => {
+    const account = await registerAccount('Pack Active Limit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const limitedEnv = { ...env, MAX_ACTIVE_GENERATIONS_PER_WORKSPACE: '2' }
+
+    const response = await createCampaignPack(account.cookie, input, crypto.randomUUID(), limitedEnv)
+    expect(response.status).toBe(429)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
   it('creates only one pack when the same idempotency key arrives concurrently', async () => {
     const account = await registerAccount('Concurrent Pack')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
@@ -190,6 +215,15 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first<{ count: number }>()).toEqual({ count: 0 })
   })
 
+  it('fails closed when an assisted release gate is missing', async () => {
+    const account = await registerAccount('Closed Assisted Gate')
+    const incompleteEnv = { ...approvedAssistedEnv(), ASSISTED_EVALUATION: 'disabled' }
+
+    const response = await createGeneration(account.cookie, generationInput(account.currentWorkspace.id), incompleteEnv)
+    expect(response.status).toBe(503)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+  })
+
   it('releases a reservation exactly once when enqueueing fails', async () => {
     const account = await registerAccount('Queue Failure')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
@@ -213,7 +247,8 @@ describe('workspace authorization and output allowance integrity', () => {
   it('settles one successful generation once under duplicate queue delivery', async () => {
     const account = await registerAccount('Successful Queue')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    const queued = await createGeneration(account.cookie, input)
+    const assistedEnv = approvedAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
 
@@ -231,10 +266,10 @@ describe('workspace authorization and output allowance integrity', () => {
 
     const message = { generationId: id, input }
     const messageId = crypto.randomUUID()
-    const first = await deliver(message, 1, messageId)
+    const first = await deliver(message, 1, messageId, assistedEnv)
     expect(first.explicitAcks).toContain(messageId)
 
-    const duplicate = await deliver(message, 2, messageId)
+    const duplicate = await deliver(message, 2, messageId, assistedEnv)
     expect(duplicate.explicitAcks).toContain(messageId)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
@@ -309,7 +344,7 @@ describe('workspace authorization and output allowance integrity', () => {
 
     const result = await deliver({ generationId: id, input }, 2)
     expect(result.explicitAcks).toHaveLength(1)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).not.toHaveBeenCalled()
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
     expect(await ledgerCount(id, 'settlement')).toBe(1)
     expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
@@ -320,7 +355,8 @@ describe('workspace authorization and output allowance integrity', () => {
   it('releases one failed generation once under duplicate queue delivery', async () => {
     const account = await registerAccount('Failed Queue')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    const queued = await createGeneration(account.cookie, input)
+    const assistedEnv = approvedAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
 
@@ -329,10 +365,10 @@ describe('workspace authorization and output allowance integrity', () => {
 
     const message = { generationId: id, input }
     const messageId = crypto.randomUUID()
-    const first = await deliver(message, 4, messageId)
+    const first = await deliver(message, 4, messageId, assistedEnv)
     expect(first.explicitAcks).toContain(messageId)
 
-    const duplicate = await deliver(message, 5, messageId)
+    const duplicate = await deliver(message, 5, messageId, assistedEnv)
     expect(duplicate.explicitAcks).toContain(messageId)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })

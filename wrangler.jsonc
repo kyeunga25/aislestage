@@ -3,12 +3,12 @@
   // Public-safe template. Use an ignored private config or protected CI mappings for deployment.
   "name": "replace-with-worker-name",
   "main": "src/worker.ts",
-  "compatibility_date": "2026-07-24",
+  "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
-    "logs": { "enabled": true, "head_sampling_rate": 1, "invocation_logs": true },
-    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+    "logs": { "enabled": true, "head_sampling_rate": 0.1, "invocation_logs": false },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
   },
   "assets": {
     "directory": "./dist",
@@ -48,6 +48,11 @@
     "ACCESS_AUTO_PROVISION": "disabled",
     "REGISTRATION_MODE": "closed",
     "GENERATION_MODE": "disabled",
-    "AGENT_MODE": "deterministic"
+    "AGENT_MODE": "deterministic",
+    "ASSISTED_PROVIDER": "disabled",
+    "ASSISTED_DATA_POLICY": "disabled",
+    "ASSISTED_EVALUATION": "disabled",
+    "ASSISTED_BUDGET_MODE": "disabled",
+    "MAX_ACTIVE_GENERATIONS_PER_WORKSPACE": "3"
   }
 }

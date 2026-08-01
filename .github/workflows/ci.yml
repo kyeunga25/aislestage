@@ -23,3 +23,4 @@ jobs:
       - run: npm test
       - run: npm audit --omit=dev
       - run: npm run cf:dry-run
+      - run: npm run release:check

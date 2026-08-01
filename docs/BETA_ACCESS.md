@@ -17,7 +17,7 @@
 
 `AUTH_MODE=access` 是正式主流程。`/app*` 與受保護 API 由 Access path policy 攔截；Worker 只接受通過 RS256 簽章、issuer 及 application audience 核對的 `Cf-Access-Jwt-Assertion`。Access subject 只以 SHA-256 hash 保存，並與單一 user 綁定。
 
-`ACCESS_AUTO_PROVISION=enabled` 只可在 Access allow policy 已收窄至受邀電郵或 group 後使用。通過 policy 的第一個請求會建立 beta account 與私人 workspace；若關閉自動建立，身份必須先對應既有 active account。密碼登入及註冊 endpoint 在 Access 模式返回 not found。
+restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`：身份必須先對應既有 active account 與 workspace membership。未來若另行批准自動建立，仍必須先把 Access allow policy 收窄至受邀電郵或 group。密碼登入及註冊 endpoint 在 Access 模式返回 not found。
 
 `AUTH_MODE=password` 只保留給本機、隔離測試及遷移相容；以下舊式邀請合約仍由 integration tests 覆蓋，但不會出現在新的公開登入路徑。
 
@@ -26,7 +26,7 @@
 `REGISTRATION_MODE` 有三個 server-side 模式：
 
 - `closed`：不建立新帳號；已有 active 帳號仍可登入。公開 template 使用此模式。
-- `invite`：顯示「獲邀註冊」，電郵及一次性邀請碼必須同時符合未過期邀請。正式 release 使用此模式。
+- `invite`：顯示「獲邀註冊」，電郵及一次性邀請碼必須同時符合未過期邀請；只保留作 password-mode 相容流程。
 - `open`：供受控本機或指定環境測試公開註冊；不應因前端顯示狀態而自行啟用。
 
 邀請資料只保存邀請碼 hash，以及「標準化電郵＋高熵邀請碼」的組合 hash，不保存明文邀請碼或邀請電郵，也不留下可單獨枚舉電郵的 hash。成功註冊會在同一個 D1 batch 建立 user、active workspace、owner membership、六個初始可用輸出並消耗邀請。

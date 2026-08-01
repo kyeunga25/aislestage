@@ -77,10 +77,15 @@ template.vars = {
   AUTH_MODE: 'access',
   ACCESS_TEAM_DOMAIN: required('CLOUDFLARE_ACCESS_TEAM_DOMAIN', httpsOrigin),
   ACCESS_AUD: required('CLOUDFLARE_ACCESS_AUD', accessAudience),
-  ACCESS_AUTO_PROVISION: required('CLOUDFLARE_ACCESS_AUTO_PROVISION', (value) => ['enabled', 'disabled'].includes(value)),
+  ACCESS_AUTO_PROVISION: 'disabled',
   REGISTRATION_MODE: 'closed',
-  GENERATION_MODE: 'deterministic',
+  GENERATION_MODE: 'disabled',
   AGENT_MODE: 'deterministic',
+  ASSISTED_PROVIDER: 'disabled',
+  ASSISTED_DATA_POLICY: 'disabled',
+  ASSISTED_EVALUATION: 'disabled',
+  ASSISTED_BUDGET_MODE: 'disabled',
+  MAX_ACTIVE_GENERATIONS_PER_WORKSPACE: '3',
   INITIAL_OUTPUT_ALLOWANCE: required('CLOUDFLARE_INITIAL_OUTPUT_ALLOWANCE', outputAllowance)
 }
 
