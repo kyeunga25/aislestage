@@ -35,6 +35,17 @@ async function accessFixture(options: { autoProvision?: boolean; email?: string;
   return { accessEnv, audience, email, subject, teamDomain, token }
 }
 
+function withWorkspaceShell(baseEnv: Env) {
+  const fetchAsset = vi.fn(async () => new Response('<!doctype html><title>AisleStage workspace</title>', {
+    headers: { 'content-type': 'text/html; charset=utf-8' }
+  }))
+  const assetEnv = {
+    ...baseEnv,
+    ASSETS: { ...baseEnv.ASSETS, fetch: fetchAsset }
+  } as Env
+  return { assetEnv, fetchAsset }
+}
+
 describe('Cloudflare Access authentication', () => {
   it('fails closed when protected Access configuration is missing', async () => {
     const response = await dispatch('/api/session', {}, {
@@ -54,6 +65,48 @@ describe('Cloudflare Access authentication', () => {
 
     expect(response.status).toBe(401)
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })
+  })
+
+  it('keeps the workspace shell behind Access JWT and D1 membership checks', async () => {
+    const fixture = await accessFixture()
+    const provisioned = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)
+    expect(provisioned.status).toBe(200)
+
+    const restrictedEnv = { ...fixture.accessEnv, ACCESS_AUTO_PROVISION: 'disabled' } as Env
+    const { assetEnv, fetchAsset } = withWorkspaceShell(restrictedEnv)
+
+    const denied = await dispatch('/app', {}, assetEnv)
+    expect(denied.status).toBe(401)
+    expect(fetchAsset).not.toHaveBeenCalled()
+
+    const allowed = await dispatch('/app/campaign-packs', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, assetEnv)
+    expect(allowed.status).toBe(200)
+    expect(allowed.headers.get('cache-control')).toBe('private, no-store')
+    expect(allowed.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(await allowed.text()).toContain('AisleStage workspace')
+    expect(fetchAsset).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the local password-mode shell available before sign-in', async () => {
+    const { assetEnv, fetchAsset } = withWorkspaceShell({ ...env, AUTH_MODE: 'password' } as Env)
+    const response = await dispatch('/app', {}, assetEnv)
+
+    expect(response.status).toBe(200)
+    expect(fetchAsset).toHaveBeenCalledOnce()
+  })
+
+  it('rejects state-changing requests to the workspace shell route', async () => {
+    const fixture = await accessFixture()
+    const { assetEnv, fetchAsset } = withWorkspaceShell(fixture.accessEnv)
+    const response = await dispatch('/app', { method: 'POST' }, assetEnv)
+
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('GET, HEAD')
+    expect(fetchAsset).not.toHaveBeenCalled()
   })
 
   it('provisions one private beta workspace from a verified, policy-approved identity', async () => {
@@ -86,6 +139,11 @@ describe('Cloudflare Access authentication', () => {
 
     expect(response.status).toBe(403)
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'membership-required' })
+
+    const { assetEnv, fetchAsset } = withWorkspaceShell(fixture.accessEnv)
+    const appResponse = await dispatch('/app', { headers: { 'cf-access-jwt-assertion': fixture.token } }, assetEnv)
+    expect(appResponse.status).toBe(403)
+    expect(fetchAsset).not.toHaveBeenCalled()
   })
 
   it('rejects a correctly signed assertion issued for another Access application', async () => {

@@ -94,7 +94,7 @@ async function hashPassword(password: string, salt = crypto.getRandomValues(new 
 function constantTimeEqual(left: string, right: string) {
   const leftBytes = textEncoder.encode(left)
   const rightBytes = textEncoder.encode(right)
-  const subtle = crypto.subtle as unknown as SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }
+  const subtle = crypto.subtle as SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }
   return leftBytes.length === rightBytes.length && subtle.timingSafeEqual(leftBytes, rightBytes)
 }
 
@@ -220,6 +220,10 @@ function registrationMode(env: Env) {
 
 function authMode(env: Env): 'access' | 'password' {
   return env.AUTH_MODE === 'access' ? 'access' : 'password'
+}
+
+function isWorkspaceAppPath(pathname: string) {
+  return pathname === '/app' || pathname.startsWith('/app/')
 }
 
 function accessError(code: AccessFailureCode, status: 401 | 403 | 503, message: string) {
@@ -479,6 +483,31 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
   const session = await loadSessionByHash(env, await sha256(token))
   if (!session) return json({ error: 'Authentication required.' }, { status: 401, headers: { 'set-cookie': expiredSessionCookie(request) } })
   return session
+}
+
+async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access' | 'password') {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, HEAD' } })
+  }
+
+  if (activeAuthMode === 'access') {
+    const session = await requireSession(request, env)
+    if (session instanceof Response) return session
+  }
+
+  try {
+    const assetResponse = await env.ASSETS.fetch(request)
+    const headers = new Headers(assetResponse.headers)
+    headers.set('cache-control', 'private, no-store')
+    headers.set('x-content-type-options', 'nosniff')
+    return new Response(assetResponse.body, {
+      status: assetResponse.status,
+      statusText: assetResponse.statusText,
+      headers
+    })
+  } catch {
+    return json({ error: 'Workspace application is unavailable.' }, { status: 503 })
+  }
 }
 
 async function getWorkspace(env: Env, userId: string, workspaceId: string) {
@@ -1106,6 +1135,7 @@ export default {
   async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url)
     const activeAuthMode = authMode(env)
+    if (isWorkspaceAppPath(url.pathname)) return workspaceApp(request, env, activeAuthMode)
     if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !isAllowedOrigin(request, env)) {
       return json({ error: 'Request origin is not allowed.' }, { status: 403 })
     }
