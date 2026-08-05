@@ -278,6 +278,7 @@ describe('Cloudflare Access authentication', () => {
 
   it('returns the Access logout endpoint without creating a password session', async () => {
     const fixture = await accessFixture({ autoProvision: false })
+    await seedAccessOwner(fixture.email)
     const response = await dispatch('/api/auth/logout', {
       method: 'POST',
       headers: { origin: 'https://app.test', 'cf-access-jwt-assertion': fixture.token }
@@ -286,6 +287,31 @@ describe('Cloudflare Access authentication', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ ok: true, logoutUrl: '/cdn-cgi/access/logout' })
     expect(response.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('requires Access JWT and active membership for private API fallbacks and preflight', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    await seedAccessOwner(fixture.email)
+
+    const anonymousUnknown = await dispatch('/api/not-a-public-endpoint', {}, fixture.accessEnv)
+    expect(anonymousUnknown.status).toBe(401)
+
+    const headers = { 'cf-access-jwt-assertion': fixture.token }
+    const invitedUnknown = await dispatch('/api/not-a-public-endpoint', { headers }, fixture.accessEnv)
+    expect(invitedUnknown.status).toBe(404)
+
+    const anonymousPreflight = await dispatch('/api/generations', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://app.test' }
+    }, fixture.accessEnv)
+    expect(anonymousPreflight.status).toBe(401)
+
+    const invitedPreflight = await dispatch('/api/generations', {
+      method: 'OPTIONS',
+      headers: { ...headers, origin: 'https://app.test' }
+    }, fixture.accessEnv)
+    expect(invitedPreflight.status).toBe(204)
+    expect(invitedPreflight.headers.get('cache-control')).toBe('no-store')
   })
 
   it('disables password login and registration in Access mode', async () => {

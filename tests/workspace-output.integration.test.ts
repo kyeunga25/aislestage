@@ -121,6 +121,88 @@ describe('workspace authorization and output allowance integrity', () => {
       .first<{ count: number }>()).toEqual({ count: 3 })
   })
 
+  it('completes, privately reads, and explicitly deletes a synthetic three-ratio deterministic Campaign Pack', async () => {
+    const account = await registerAccount('Synthetic Campaign Pack')
+    const otherOwner = await registerAccount('Synthetic Other Owner')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const deterministicEnv = {
+      ...env,
+      GENERATION_MODE: 'deterministic' as const,
+      AGENT_MODE: 'deterministic' as const,
+      ASSISTED_PROVIDER: 'disabled',
+      OPENAI_API_KEY: undefined
+    }
+
+    const created = await createCampaignPack(account.cookie, input, crypto.randomUUID(), deterministicEnv)
+    expect(created.status).toBe(202)
+    const payload = await created.json() as {
+      generations: Array<{
+        id: string
+        workflowId: ReturnType<typeof generationInput>['workflowId']
+        aspectRatio: ReturnType<typeof generationInput>['aspectRatio']
+      }>
+    }
+    expect(payload.generations.map((item) => item.aspectRatio).sort()).toEqual(['1:1', '4:5', '9:16'])
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+
+    const fetchMock = vi.fn(async () => { throw new Error('External providers must remain disabled.') })
+    vi.stubGlobal('fetch', fetchMock)
+    for (const generation of payload.generations) {
+      const result = await deliver({
+        generationId: generation.id,
+        input: { ...input, workflowId: generation.workflowId, aspectRatio: generation.aspectRatio }
+      }, 1, crypto.randomUUID(), deterministicEnv)
+      expect(result.explicitAcks).toHaveLength(1)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
+
+    const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    }, deterministicEnv)
+    expect(listed.status).toBe(200)
+    const listedPayload = await listed.json() as { generations: Array<{ id: string; status: string; imageUrl: string }> }
+    expect(listedPayload.generations).toHaveLength(3)
+    expect(listedPayload.generations.every((item) => item.status === 'completed' && item.imageUrl)).toBe(true)
+
+    const stored = await env.DB.prepare(`
+      SELECT id, output_key AS outputKey
+      FROM generations
+      WHERE workspace_id = ?
+    `).bind(account.currentWorkspace.id).all<{ id: string; outputKey: string }>()
+    expect(stored.results).toHaveLength(3)
+
+    for (const generation of listedPayload.generations) {
+      const preview = await dispatch(generation.imageUrl, { headers: { cookie: account.cookie } }, deterministicEnv)
+      expect(preview.status).toBe(200)
+      expect(preview.headers.get('content-type')).toBe('image/svg+xml')
+      expect(preview.headers.get('cache-control')).toBe('private, max-age=300')
+      expect(await preview.text()).toContain('data:image/png;base64,')
+
+      const crossWorkspace = await dispatch(generation.imageUrl, { headers: { cookie: otherOwner.cookie } }, deterministicEnv)
+      expect(crossWorkspace.status).toBe(404)
+
+      const deleted = await dispatch(`/api/generations/${generation.id}`, {
+        method: 'DELETE',
+        headers: { cookie: account.cookie, origin: 'https://app.test' }
+      }, deterministicEnv)
+      expect(deleted.status).toBe(204)
+    }
+
+    for (const output of stored.results) expect(await env.MEDIA_BUCKET.get(output.outputKey)).toBeNull()
+    expect((await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    }, deterministicEnv).then((response) => response.json()) as { generations: unknown[] }).generations).toHaveLength(0)
+
+    const assetId = input.referenceAssetIds[0]
+    const deletedAsset = await dispatch(`/api/assets/${assetId}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, deterministicEnv)
+    expect(deletedAsset.status).toBe(204)
+    expect(await dispatch(`/api/assets/${assetId}`, { headers: { cookie: account.cookie } }, deterministicEnv).then((response) => response.status)).toBe(404)
+  })
+
   it('creates no partial pack when the output allowance is too low', async () => {
     const account = await registerAccount('Pack Allowance')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

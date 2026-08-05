@@ -109,6 +109,27 @@ describe('restricted registration authentication', () => {
     expect(await response.json()).toMatchObject({ registrationMode: 'invite', registrationOpen: true })
   })
 
+  it('keeps only the fixed public API endpoints anonymously readable', async () => {
+    for (const path of ['/api/health', '/api/workflows']) {
+      expect((await dispatch(path)).status, path).toBe(200)
+      expect((await dispatch(path, { method: 'HEAD' })).status, `${path} HEAD`).toBe(200)
+
+      for (const method of ['POST', 'OPTIONS']) {
+        const response = await dispatch(path, { method, headers: { origin: 'https://app.test' } })
+        expect(response.status, `${method} ${path}`).toBe(405)
+        expect(response.headers.get('allow')).toBe('GET, HEAD')
+      }
+    }
+
+    const unknown = await dispatch('/api/not-a-public-endpoint')
+    expect(unknown.status).toBe(401)
+    const privatePreflight = await dispatch('/api/generations', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://app.test' }
+    })
+    expect(privatePreflight.status).toBe(401)
+  })
+
   it('logs in, logs out and invalidates the stored session', async () => {
     const account = await registerAccount('Login User')
     const logout = await dispatch('/api/auth/logout', {
