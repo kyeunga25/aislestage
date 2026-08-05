@@ -1138,25 +1138,49 @@ export default {
     const url = new URL(request.url)
     const activeAuthMode = authMode(env)
     if (isWorkspaceAppPath(url.pathname)) return workspaceApp(request, env, activeAuthMode)
+
+    if (url.pathname === '/api/health') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, HEAD' } })
+      }
+      return json({
+        status: 'ok',
+        service: 'campaign-asset-worker',
+        releaseMode: 'restricted',
+        authMode: activeAuthMode,
+        registrationMode: activeAuthMode === 'access' ? 'closed' : registrationMode(env),
+        registrationOpen: activeAuthMode === 'password' && registrationMode(env) !== 'closed',
+        generationEnabled: generationMode(env) !== 'disabled',
+        generationMode: generationMode(env),
+        agentMode: agentMode(env)
+      })
+    }
+    if (url.pathname === '/api/workflows') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, HEAD' } })
+      }
+      return json({ workflows: ['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'] })
+    }
+
     if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !isAllowedOrigin(request, env)) {
       return json({ error: 'Request origin is not allowed.' }, { status: 403 })
     }
-    if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/')) return new Response(null, { status: 204 })
-    if (url.pathname === '/api/health') return json({
-      status: 'ok',
-      service: 'campaign-asset-worker',
-      releaseMode: 'restricted',
-      authMode: activeAuthMode,
-      registrationMode: activeAuthMode === 'access' ? 'closed' : registrationMode(env),
-      registrationOpen: activeAuthMode === 'password' && registrationMode(env) !== 'closed',
-      generationEnabled: generationMode(env) !== 'disabled',
-      generationMode: generationMode(env),
-      agentMode: agentMode(env)
-    })
-    if (url.pathname === '/api/workflows' && request.method === 'GET') return json({ workflows: ['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'] })
+    if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
+      if (!isAllowedOrigin(request, env)) return json({ error: 'Request origin is not allowed.' }, { status: 403 })
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+    }
     if (url.pathname === '/api/auth/register' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password registration is disabled.' }, { status: 404 }) : register(request, env)
     if (url.pathname === '/api/auth/login' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password login is disabled.' }, { status: 404 }) : login(request, env)
-    if (url.pathname === '/api/auth/logout' && request.method === 'POST') return activeAuthMode === 'access' ? json({ ok: true, logoutUrl: '/cdn-cgi/access/logout' }) : logout(request, env)
+    if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
+      if (activeAuthMode === 'access') {
+        const session = await requireSession(request, env)
+        if (session instanceof Response) return session
+        return json({ ok: true, logoutUrl: '/cdn-cgi/access/logout' })
+      }
+      return logout(request, env)
+    }
     if (url.pathname === '/api/session' && request.method === 'GET') {
       const session = await requireSession(request, env)
       if (session instanceof Response) return activeAuthMode === 'access' ? session : json({ authenticated: false }, { headers: session.headers })
@@ -1215,6 +1239,10 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       return createCampaignPack(request, env, session)
+    }
+    if (url.pathname.startsWith('/api/')) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
     }
     return json({ error: 'Not found.' }, { status: 404 })
   },
