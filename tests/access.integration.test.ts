@@ -4,7 +4,14 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../src/worker'
 import { dispatch } from './helpers'
 
-async function accessFixture(options: { autoProvision?: boolean; email?: string; subject?: string } = {}) {
+async function accessFixture(options: {
+  autoProvision?: boolean
+  email?: string
+  subject?: string
+  issuer?: string
+  expirationTime?: string | number
+  issuedAt?: number
+} = {}) {
   const keyId = crypto.randomUUID()
   const audience = `aud-${crypto.randomUUID()}`
   const teamDomain = `https://team-${crypto.randomUUID()}.cloudflareaccess.com`
@@ -17,14 +24,14 @@ async function accessFixture(options: { autoProvision?: boolean; email?: string;
     if (url !== `${teamDomain}/cdn-cgi/access/certs`) return new Response('not found', { status: 404 })
     return Response.json({ keys: [{ ...jwk, kid: keyId, alg: 'RS256', use: 'sig' }] })
   }))
-  const token = await new SignJWT({ email, name: 'Access Tester' })
+  const signer = new SignJWT({ email, name: 'Access Tester' })
     .setProtectedHeader({ alg: 'RS256', kid: keyId })
-    .setIssuer(teamDomain)
+    .setIssuer(options.issuer || teamDomain)
     .setAudience(audience)
     .setSubject(subject)
-    .setIssuedAt()
-    .setExpirationTime('5m')
-    .sign(privateKey)
+    .setIssuedAt(options.issuedAt)
+    .setExpirationTime(options.expirationTime ?? '5m')
+  const token = await signer.sign(privateKey)
   const accessEnv = {
     ...env,
     AUTH_MODE: 'access',
@@ -33,6 +40,24 @@ async function accessFixture(options: { autoProvision?: boolean; email?: string;
     ACCESS_AUTO_PROVISION: options.autoProvision === false ? 'disabled' : 'enabled'
   } as Env
   return { accessEnv, audience, email, subject, teamDomain, token }
+}
+
+async function seedAccessOwner(email: string, availableOutputs = 6) {
+  const userId = crypto.randomUUID()
+  const workspaceId = crypto.randomUUID()
+  await env.DB.batch([
+    env.DB.prepare(`
+      INSERT INTO users (id, email, name, password_hash, password_salt, account_type, account_status, auth_mode)
+      VALUES (?, ?, 'Access Owner', 'disabled', 'disabled', 'beta', 'active', 'access')
+    `).bind(userId, email),
+    env.DB.prepare(`
+      INSERT INTO workspaces (id, owner_user_id, name, plan_status, access_status)
+      VALUES (?, ?, 'AisleStage Workspace', 'active', 'active')
+    `).bind(workspaceId, userId),
+    env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(workspaceId, userId, 'owner'),
+    env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, availableOutputs)
+  ])
+  return { userId, workspaceId }
 }
 
 function withWorkspaceShell(baseEnv: Env) {
@@ -153,6 +178,114 @@ describe('Cloudflare Access authentication', () => {
 
     expect(response.status).toBe(401)
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })
+  })
+
+  it('rejects assertions with the wrong issuer or an expired lifetime', async () => {
+    const wrongIssuer = await accessFixture({ issuer: 'https://other-team.cloudflareaccess.com' })
+    const wrongIssuerResponse = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': wrongIssuer.token }
+    }, wrongIssuer.accessEnv)
+    expect(wrongIssuerResponse.status).toBe(401)
+
+    const now = Math.floor(Date.now() / 1000)
+    const expired = await accessFixture({ issuedAt: now - 600, expirationTime: now - 60 })
+    const expiredResponse = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': expired.token }
+    }, expired.accessEnv)
+    expect(expiredResponse.status).toBe(401)
+    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })
+  })
+
+  it('binds a protected pre-onboarded identity to one active owner workspace', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const seeded = await seedAccessOwner(fixture.email)
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      authenticated: true,
+      user: { accountStatus: 'active', accountType: 'beta' },
+      currentWorkspace: { role: 'owner', accessStatus: 'active', availableOutputs: 6, reservedOutputs: 0 }
+    })
+    const stored = await env.DB.prepare('SELECT access_subject_hash AS subjectHash FROM users WHERE id = ?')
+      .bind(seeded.userId)
+      .first<{ subjectHash: string | null }>()
+    expect(stored?.subjectHash).toBeTruthy()
+    expect(stored?.subjectHash).not.toBe(fixture.subject)
+  })
+
+  it('denies a bound identity when its account or workspace is disabled', async () => {
+    const accountFixture = await accessFixture({ autoProvision: false })
+    await seedAccessOwner(accountFixture.email)
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': accountFixture.token }
+    }, accountFixture.accessEnv)).status).toBe(200)
+    await env.DB.prepare("UPDATE users SET account_status = 'suspended' WHERE email = ?").bind(accountFixture.email).run()
+    const disabledAccount = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': accountFixture.token }
+    }, accountFixture.accessEnv)
+    expect(disabledAccount.status).toBe(403)
+
+    const workspaceFixture = await accessFixture({ autoProvision: false })
+    const workspace = await seedAccessOwner(workspaceFixture.email)
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': workspaceFixture.token }
+    }, workspaceFixture.accessEnv)).status).toBe(200)
+    await env.DB.prepare("UPDATE workspaces SET access_status = 'suspended' WHERE id = ?").bind(workspace.workspaceId).run()
+    const disabledWorkspace = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': workspaceFixture.token }
+    }, workspaceFixture.accessEnv)
+    expect(disabledWorkspace.status).toBe(403)
+  })
+
+  it('keeps every protected operation fixed to the selected owner workspace', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const owner = await seedAccessOwner(fixture.email)
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)).status).toBe(200)
+
+    const otherUserId = crypto.randomUUID()
+    const otherWorkspaceId = crypto.randomUUID()
+    const generationId = crypto.randomUUID()
+    const outputKey = `workspaces/${otherWorkspaceId}/generations/${generationId}.svg`
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO users (id, email, name, password_hash, password_salt)
+        VALUES (?, ?, 'Other Owner', 'disabled', 'disabled')
+      `).bind(otherUserId, `other-${crypto.randomUUID()}@example.test`),
+      env.DB.prepare(`
+        INSERT INTO workspaces (id, owner_user_id, name, plan_status, access_status)
+        VALUES (?, ?, 'Other Workspace', 'active', 'active')
+      `).bind(otherWorkspaceId, otherUserId),
+      env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(otherWorkspaceId, owner.userId, 'member'),
+      env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, 1, 0)').bind(otherWorkspaceId),
+      env.DB.prepare(`
+        INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, output_key, output_content_type)
+        VALUES (?, ?, 'store-main', '1:1', 'completed', 1, 1, '{}', ?, 'image/svg+xml')
+      `).bind(generationId, otherWorkspaceId, outputKey)
+    ])
+    await env.MEDIA_BUCKET.put(outputKey, '<svg xmlns="http://www.w3.org/2000/svg"/>', { httpMetadata: { contentType: 'image/svg+xml' } })
+
+    const headers = { 'cf-access-jwt-assertion': fixture.token }
+    const list = await dispatch(`/api/generations?workspaceId=${otherWorkspaceId}`, { headers }, fixture.accessEnv)
+    expect(list.status).toBe(404)
+    const image = await dispatch(`/api/generations/${generationId}/image`, { headers }, fixture.accessEnv)
+    expect(image.status).toBe(404)
+  })
+
+  it('returns the Access logout endpoint without creating a password session', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const response = await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { origin: 'https://app.test', 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, logoutUrl: '/cdn-cgi/access/logout' })
+    expect(response.headers.get('set-cookie')).toBeNull()
   })
 
   it('disables password login and registration in Access mode', async () => {
