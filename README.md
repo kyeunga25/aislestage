@@ -38,7 +38,7 @@ AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns a
 
 外部 AI 只可位於可替換 provider boundary 後方。它不能取代確定性商品／文字合成、D1 output ledger 或人工批准。付款能力不屬於目前執行中的產品合約；public repository 只保留 disabled、provider-neutral 的架構邊界。
 
-Static Assets 只在 `/api/*` 先執行 Worker；其餘 SPA 檔案由資產層提供。確定性模式不需要付費模型呼叫。D1、R2、Queues、Durable Objects 與 Workers 的實際免費用量及限制以 Cloudflare 目前文件和帳戶方案為準：
+Static Assets 對 `/api/*`、`/app` 與 `/app/*` 先執行 Worker。正式 Access 模式只有在 Worker 再次驗證 Access JWT 及 active D1 membership 後，才會透過 `ASSETS` binding 返回私人工作區 shell；公開 `/` 與 hashed frontend assets 保持 asset-first。本機 password 模式仍可先載入 `/app` 登入頁。確定性模式不需要付費模型呼叫。D1、R2、Queues、Durable Objects 與 Workers 的實際免費用量及限制以 Cloudflare 目前文件和帳戶方案為準：
 
 - [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
 - [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)

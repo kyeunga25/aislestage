@@ -94,7 +94,7 @@ async function hashPassword(password: string, salt = crypto.getRandomValues(new 
 function constantTimeEqual(left: string, right: string) {
   const leftBytes = textEncoder.encode(left)
   const rightBytes = textEncoder.encode(right)
-  const subtle = crypto.subtle as unknown as SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }
+  const subtle = crypto.subtle as SubtleCrypto & { timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean }
   return leftBytes.length === rightBytes.length && subtle.timingSafeEqual(leftBytes, rightBytes)
 }
 
@@ -220,6 +220,10 @@ function registrationMode(env: Env) {
 
 function authMode(env: Env): 'access' | 'password' {
   return env.AUTH_MODE === 'access' ? 'access' : 'password'
+}
+
+function isWorkspaceAppPath(pathname: string) {
+  return pathname === '/app' || pathname.startsWith('/app/')
 }
 
 function accessError(code: AccessFailureCode, status: 401 | 403 | 503, message: string) {
@@ -378,7 +382,8 @@ async function workspacesForUser(env: Env, userId: string) {
     JOIN workspaces w ON w.id = wm.workspace_id
     LEFT JOIN output_allowances oa ON oa.workspace_id = w.id
     WHERE wm.user_id = ? AND w.access_status = 'active'
-    ORDER BY wm.created_at ASC
+    ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+      wm.created_at ASC, w.created_at ASC, w.id ASC
   `).bind(userId).all<Workspace>()
   return result.results
 }
@@ -481,6 +486,31 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
   return session
 }
 
+async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access' | 'password') {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, HEAD' } })
+  }
+
+  if (activeAuthMode === 'access') {
+    const session = await requireSession(request, env)
+    if (session instanceof Response) return session
+  }
+
+  try {
+    const assetResponse = await env.ASSETS.fetch(request)
+    const headers = new Headers(assetResponse.headers)
+    headers.set('cache-control', 'private, no-store')
+    headers.set('x-content-type-options', 'nosniff')
+    return new Response(assetResponse.body, {
+      status: assetResponse.status,
+      statusText: assetResponse.statusText,
+      headers
+    })
+  } catch {
+    return json({ error: 'Workspace application is unavailable.' }, { status: 503 })
+  }
+}
+
 async function getWorkspace(env: Env, userId: string, workspaceId: string) {
   return env.DB.prepare(`
     SELECT w.id, w.name, w.access_status AS accessStatus, wm.role, COALESCE(oa.available, 0) AS availableOutputs, COALESCE(oa.reserved, 0) AS reservedOutputs
@@ -539,9 +569,9 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
   const asset = await env.DB.prepare(`
     SELECT a.object_key AS objectKey, a.content_type AS contentType
     FROM media_assets a
-    JOIN workspace_memberships wm ON wm.workspace_id = a.workspace_id
-    WHERE a.id = ? AND wm.user_id = ? AND a.kind = 'product-source'
-  `).bind(assetId, session.user.id).first<{ objectKey: string; contentType: string }>()
+    JOIN workspaces w ON w.id = a.workspace_id
+    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
+  `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; contentType: string }>()
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
@@ -552,10 +582,9 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
   const asset = await env.DB.prepare(`
     SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId
     FROM media_assets a
-    JOIN workspace_memberships wm ON wm.workspace_id = a.workspace_id
     JOIN workspaces w ON w.id = a.workspace_id
-    WHERE a.id = ? AND wm.user_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
-  `).bind(assetId, session.user.id).first<{ objectKey: string; workspaceId: string }>()
+    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
+  `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; workspaceId: string }>()
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
   try {
     const agent = await getAgentByName(env.CAMPAIGN_AGENT, asset.workspaceId)
@@ -904,6 +933,7 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   if (parsed.tooLarge) return json({ error: 'Campaign Pack payload is too large.' }, { status: 413 })
   const parsedPack = campaignPackInputs(parsed.body)
   if (!parsedPack) return json({ error: 'Invalid Campaign Pack payload.' }, { status: 400 })
+  if (parsedPack.request.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
   const workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
 
@@ -1008,6 +1038,7 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   if (contentLength > MAX_GENERATION_BODY_BYTES) return json({ error: 'Generation payload is too large.' }, { status: 413 })
   const input = await request.json().catch(() => null)
   if (!validInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
+  if (input.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
   const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const brief = sanitizeCampaignBrief({ assetId: input.referenceAssetIds[0], intent: input.intent, brand: input.brand, product: input.product })
@@ -1048,6 +1079,7 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
 async function listGenerations(request: Request, env: Env, session: SessionContext) {
   const url = new URL(request.url)
   const workspaceId = url.searchParams.get('workspaceId') || session.currentWorkspace.id
+  if (workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
   const workspace = await getWorkspace(env, session.user.id, workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const result = await env.DB.prepare(`
@@ -1066,9 +1098,9 @@ async function generationImage(request: Request, env: Env, session: SessionConte
   const row = await env.DB.prepare(`
     SELECT g.output_key AS outputKey
     FROM generations g
-    JOIN workspace_memberships wm ON wm.workspace_id = g.workspace_id
-    WHERE g.id = ? AND wm.user_id = ? AND g.status = 'completed'
-  `).bind(generationId, session.user.id).first<{ outputKey: string | null }>()
+    JOIN workspaces w ON w.id = g.workspace_id
+    WHERE g.id = ? AND g.workspace_id = ? AND g.status = 'completed' AND w.access_status = 'active'
+  `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null }>()
   if (!row?.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
   const object = await env.MEDIA_BUCKET.get(row.outputKey)
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
@@ -1087,10 +1119,9 @@ async function deleteGeneration(env: Env, session: SessionContext, generationId:
   const row = await env.DB.prepare(`
     SELECT g.output_key AS outputKey, g.status
     FROM generations g
-    JOIN workspace_memberships wm ON wm.workspace_id = g.workspace_id
     JOIN workspaces w ON w.id = g.workspace_id
-    WHERE g.id = ? AND wm.user_id = ? AND w.access_status = 'active'
-  `).bind(generationId, session.user.id).first<{ outputKey: string | null; status: string }>()
+    WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
+  `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null; status: string }>()
   if (!row) return json({ error: 'Output not found.' }, { status: 404 })
   if (row.status === 'queued' || row.status === 'processing') return json({ error: '仍在處理的輸出不可刪除。' }, { status: 409 })
   try {
@@ -1106,6 +1137,7 @@ export default {
   async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url)
     const activeAuthMode = authMode(env)
+    if (isWorkspaceAppPath(url.pathname)) return workspaceApp(request, env, activeAuthMode)
     if (url.pathname.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !isAllowedOrigin(request, env)) {
       return json({ error: 'Request origin is not allowed.' }, { status: 403 })
     }

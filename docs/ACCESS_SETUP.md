@@ -29,6 +29,8 @@ Access 在邊緣拒絕未符合 policy 的請求，但 origin 仍不可只信任
 
 `/` 是公開產品主頁。若營運監測需要匿名讀取 `/api/health`，可建立更精確的 public exception；該 endpoint 只返回模式與健康狀態，不返回帳戶、資源或使用者資料。`/api/workflows` 亦只有固定公開 workflow identifier。
 
+Tracked Wrangler template 亦把 `/app` 與 `/app/*` 設為 Worker-first。這是 origin 的第二層 fail-closed 防線：正式 Access 模式只有在 Worker 驗證 assertion 及 active D1 membership 後才會返回工作區 shell；它不取代 edge Access application、受邀 allow policy 或匿名攔截驗收。
+
 正式 allow policy 應只包括受邀電郵或受控 identity group。不要使用 `Everyone`。對純瀏覽器工作區，可在 Access application 的 advanced cookie settings 啟用 HttpOnly，並在相容性確認後採用 Binding Cookie；登出使用同一應用網域的 `/cdn-cgi/access/logout`。
 
 一次性 PIN 適合不在 Cloudflare account 內的受邀測試者。PIN policy 必須使用明確電郵 allowlist；Access policy 同時是第一層邀請邊界。

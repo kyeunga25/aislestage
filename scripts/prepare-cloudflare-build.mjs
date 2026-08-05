@@ -64,6 +64,9 @@ assertTemplate(template.r2_buckets?.length === 1 && template.r2_buckets[0].bindi
 assertTemplate(template.queues?.producers?.length === 1 && template.queues.producers[0].binding === 'GENERATION_QUEUE', 'GENERATION_QUEUE producer')
 assertTemplate(template.queues?.consumers?.length === 1, 'GENERATION_QUEUE consumer')
 assertTemplate(template.durable_objects?.bindings?.length === 1 && template.durable_objects.bindings[0].name === 'CAMPAIGN_AGENT', 'CAMPAIGN_AGENT binding')
+assertTemplate(template.assets?.binding === 'ASSETS', 'ASSETS binding')
+const workerFirstRoutes = new Set(Array.isArray(template.assets?.run_worker_first) ? template.assets.run_worker_first : [])
+assertTemplate(['/api/*', '/app', '/app/*'].every((route) => workerFirstRoutes.has(route)), 'protected Worker-first routes')
 
 template.name = 'aislestage'
 template.d1_databases[0].database_name = required('CLOUDFLARE_D1_DATABASE_NAME', resourceName)

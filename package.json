@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "check": "npm run cf:types:check && tsc -b --pretty false",
+    "check": "npm run cf:onboard-owner:check && npm run cf:types:check && tsc -b --pretty false",
     "cf:types": "wrangler types worker-env.d.ts --include-runtime false --env-interface WorkerEnv --strict-vars false --config wrangler.jsonc",
     "cf:types:check": "wrangler types worker-env.d.ts --include-runtime false --env-interface WorkerEnv --strict-vars false --check --config wrangler.jsonc",
     "test": "vitest run",
@@ -16,6 +16,8 @@
     "cf:whoami": "wrangler whoami",
     "cf:migrate": "wrangler d1 migrations apply DB --remote --config wrangler.local.jsonc",
     "cf:invite": "node scripts/create-beta-invite.mjs",
+    "cf:onboard-owner": "node scripts/onboard-access-owner.mjs",
+    "cf:onboard-owner:check": "node scripts/onboard-access-owner.mjs --self-test",
     "cf:dry-run": "npm run build && wrangler deploy --dry-run --config wrangler.jsonc",
     "cf:deploy": "npm run build && wrangler deploy --keep-vars --config wrangler.local.jsonc",
     "cf:prepare:build": "node scripts/prepare-cloudflare-build.mjs",
@@ -43,6 +45,10 @@
     "wrangler": "^4.114.0"
   },
   "overrides": {
-    "@hono/node-server": "^2.0.11"
+    "@hono/node-server": "^2.0.11",
+    "fast-uri": "3.1.5",
+    "hono": "^4.12.34",
+    "ip-address": "^10.3.1",
+    "undici": "7.29.0"
   }
 }

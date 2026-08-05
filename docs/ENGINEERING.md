@@ -54,6 +54,7 @@ npm run cf:types:check
 ## Authentication and workspace boundary
 
 - 公開 `/` 與私人 `/app` 分開；正式 Access policy 亦保護受保護 API；
+- Static Assets 對 `/app` 及 `/app/*` 採 Worker-first；Access 模式先完成 JWT 與 active D1 membership 驗證，才經 `ASSETS` binding 返回 no-store 的 SPA shell；
 - Worker 以 remote JWKS 驗證 RS256、issuer、audience、有效期、subject 與電郵；
 - Access subject 只保存單向 hash，身份與帳戶不符時 fail closed；
 - password endpoint 在 Access 模式停用，避免雙重登入或繞過 edge identity；
