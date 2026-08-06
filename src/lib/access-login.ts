@@ -1,6 +1,10 @@
 export type AccessFailureReason =
   | 'authentication-required'
   | 'authentication-invalid'
+  | 'authentication-expired'
+  | 'authentication-audience-mismatch'
+  | 'authentication-issuer-mismatch'
+  | 'authentication-signature-invalid'
   | 'identity-incomplete'
   | 'membership-required'
   | 'configuration-error'
@@ -11,6 +15,10 @@ export type AccessFailureReason =
 const supportedReasons = new Set<AccessFailureReason>([
   'authentication-required',
   'authentication-invalid',
+  'authentication-expired',
+  'authentication-audience-mismatch',
+  'authentication-issuer-mismatch',
+  'authentication-signature-invalid',
   'identity-incomplete',
   'membership-required',
   'configuration-error',

@@ -1,5 +1,5 @@
 import { getAgentByName } from 'agents'
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
+import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
@@ -270,6 +270,23 @@ function identityFromPayload(payload: JWTPayload): AccessIdentity | null {
   return { subject, email, name }
 }
 
+function accessVerificationError(error: unknown) {
+  if (error instanceof errors.JWTExpired) {
+    return accessError('authentication-expired', 401, 'Cloudflare Access authentication has expired.')
+  }
+  if (error instanceof errors.JWTClaimValidationFailed) {
+    if (error.claim === 'aud') return accessError('authentication-audience-mismatch', 401, 'Cloudflare Access audience validation failed.')
+    if (error.claim === 'iss') return accessError('authentication-issuer-mismatch', 401, 'Cloudflare Access issuer validation failed.')
+  }
+  if (error instanceof errors.JWKSNoMatchingKey || error instanceof errors.JWSSignatureVerificationFailed) {
+    return accessError('authentication-signature-invalid', 401, 'Cloudflare Access signature validation failed.')
+  }
+  if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid) {
+    return accessError('configuration-error', 503, 'Cloudflare Access verification keys are unavailable.')
+  }
+  return accessError('authentication-invalid', 401, 'Cloudflare Access authentication is invalid.')
+}
+
 async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessIdentity | Response> {
   const configuration = accessConfiguration(env)
   if (!configuration) return accessError('configuration-error', 503, 'Access configuration is unavailable.')
@@ -288,8 +305,8 @@ async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessI
     })
     const identity = identityFromPayload(payload)
     return identity || accessError('identity-incomplete', 401, 'Cloudflare Access identity claims are incomplete.')
-  } catch {
-    return accessError('authentication-invalid', 401, 'Cloudflare Access authentication is invalid.')
+  } catch (error) {
+    return accessVerificationError(error)
   }
 }
 
