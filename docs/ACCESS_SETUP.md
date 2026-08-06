@@ -1,12 +1,12 @@
 # Cloudflare Access 登入 / Access sign-in
 
-AisleStage 把公開產品主頁與私人工作區分開：`/` 可公開瀏覽，`/app*` 及受保護 API 先經 Cloudflare Access，再由 Worker 驗證 Access JWT 和 D1 workspace membership。
+AisleStage 把公開產品主頁與私人工作區分開：`/` 可公開瀏覽，`/app`、`/app/*` 及受保護 API 先經 Cloudflare Access，再由 Worker 驗證 Access JWT 和 D1 workspace membership。
 
 這份文件只記錄可公開的設定合約。Cloudflare account identifier、實際 hostname、team domain、Access application audience、D1 identifier、資源名稱及受邀電郵必須留在受保護設定，不可寫入 repository、PR、issue 或公開 log。
 
 ## 為何採用 Access
 
-Cloudflare Zero Trust Free 適合 50 人以下的受邀測試團隊。Access 可只保護指定 hostname/path，並以 Cloudflare identity provider、外部 IdP 或一次性電郵 PIN 驗證身份：
+Access 可只保護指定 hostname/path，並以 Cloudflare identity provider、外部 IdP 或一次性電郵 PIN 驗證身份。方案、人數及功能限制會變動，應在設定當日重新核對官方資料：
 
 - [Zero Trust plans](https://www.cloudflare.com/plans/zero-trust-services/)
 - [Self-hosted applications](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/)
@@ -20,16 +20,21 @@ Access 在邊緣拒絕未符合 policy 的請求，但 origin 仍不可只信任
 
 ## 路徑與 policy
 
-在正式 hostname 建立 self-hosted Access application，保護：
+在正式 hostname 建立 self-hosted Access application，明確保護：
 
 ```text
-/app*
+/app
+/app/*
 /api/*
 ```
 
+Cloudflare 的 path wildcard 不會涵蓋父路徑：`/app/*` 可涵蓋深層 route，但不涵蓋 `/app` 本身。因此兩個 path 都必須存在並使用同一個受邀 Allow policy。不要只以 SPA fallback 或前端導向判斷路徑已受保護：
+
+- [Application paths and wildcards](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)
+
 `/` 是公開產品主頁。若營運監測需要匿名讀取 `/api/health`，可建立更精確的 public exception；該 endpoint 只返回模式與健康狀態，不返回帳戶、資源或使用者資料。`/api/workflows` 亦只有固定公開 workflow identifier。
 
-Tracked Wrangler template 亦把 `/app` 與 `/app/*` 設為 Worker-first。這是 origin 的第二層 fail-closed 防線：正式 Access 模式只有在 Worker 驗證 assertion 及 active D1 membership 後才會返回工作區 shell；它不取代 edge Access application、受邀 allow policy 或匿名攔截驗收。
+Tracked Wrangler template 亦把 `/api/*`、`/app` 與 `/app/*` 設為 Worker-first。這是 origin 的第二層 fail-closed 防線：正式 Access 模式只有在 Worker 驗證 assertion 及 active D1 membership 後才會返回工作區 shell；它不取代 edge Access application、受邀 allow policy 或匿名攔截驗收。
 
 正式 allow policy 應只包括受邀電郵或受控 identity group。不要使用 `Everyone`。對純瀏覽器工作區，可在 Access application 的 advanced cookie settings 啟用 HttpOnly，並在相容性確認後採用 Binding Cookie；登出使用同一應用網域的 `/cdn-cgi/access/logout`。
 
@@ -56,11 +61,11 @@ ACCESS_AUTO_PROVISION=disabled
 ## 發佈順序
 
 1. 在受保護設定加入實際 team domain、audience 及 auth mode；
-2. 建立 path-scoped Access application 和受邀 allow policy；
+2. 建立同時涵蓋 `/app`、`/app/*`、`/api/*` 的 path-scoped Access application 和受邀 allow policy；
 3. 如 exact reviewed SHA 含有尚未套用的 migration，核對目標後才執行 `npm run cf:migrate`；
 4. 執行完整 check、test、build 及 dry-run；
 5. 執行 `npm run cf:deploy`；
-6. 匿名檢查 `/` 可讀，`/app` 由 Access 攔截；
+6. 匿名檢查 `/` 可讀，而 `/app` 及至少一個深層 workspace route 都由 Access 攔截；
 7. 以受邀測試身份登入，確認 `/api/session`、workspace membership、私人 R2 讀取、登出及重新驗證；
 8. 核對公開 log、PR 及 deployment output 沒有受保護 identifier 或身份資料。
 

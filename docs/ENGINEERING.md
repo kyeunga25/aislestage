@@ -151,8 +151,8 @@ npm run cf:migrate
 npm run cf:deploy
 ```
 
-`main` push 會由 `aislestage` Worker 的 Cloudflare Workers Builds Git 連線觸發。Cloudflare 使用專用 build token、加密的資源映射變數、`npm run check && npm test && npm run build && npm run release:check` build command，以及 `npm run cf:deploy:build` deploy command；非正式分支 build 停用。restricted release 的生成設定固定為 disabled，Access auto-provision 亦固定關閉。部署腳本只可產生被 Git 忽略的 `wrangler.ci.generated.jsonc`，並且不得把變數值寫入 log 或 artifact。
+Repository 不公開 maintainer-specific Worker 名稱、account mapping、build token、部署 hostname、protected variable inventory 或 dashboard 設定。若營運者使用 Cloudflare Workers Builds 或其他 CI/CD，所有 mapping 必須只存在於受保護平台設定；generated config 必須被 Git 忽略、限制檔案權限，而且不可作為 artifact 上傳。
 
-公開 log、artifact、PR 或文件不得輸出本機或自動部署設定內容。GitHub Actions 保持純驗證，不取得 Cloudflare credential；Cloudflare Workers Builds 的 dashboard、token、資源路徑與 build 詳情也不可複製到公開 repository。D1 migration 不屬於 push 自動部署，仍需先由獲授權維護者核對目標再執行。
+公開 log、artifact、PR 或文件不得輸出本機或自動部署設定內容。GitHub Actions 保持純驗證，不取得 Cloudflare credential；任何 deployment dashboard、token、資源路徑與 build 詳情也不可複製到公開 repository。D1 migration 不屬於一般 push 自動部署，仍需先由獲授權維護者核對目標再執行。
 
-任何部署都必須先把 D1 migration 套用到經核對的目標環境，再部署相容 Worker。部署後至少檢查公開主頁、Access 對 `/app` 的攔截、origin JWT 驗證、D1 membership、登出、私人資產 headers、Campaign Pack 三輸出及 Queue 完成狀態。完整 path/policy 合約見 [ACCESS_SETUP.md](ACCESS_SETUP.md)。
+任何部署都必須先把 D1 migration 套用到經核對的目標環境，再部署相容 Worker。部署後至少檢查公開主頁、Access 對 `/app` 及 deep route 的攔截、origin JWT 驗證、D1 membership、登出、私人資產 headers、generation kill switch 及 Queue 狀態。完整自部署流程見 [SELF_HOSTING.md](SELF_HOSTING.md)，path／policy 合約見 [ACCESS_SETUP.md](ACCESS_SETUP.md)。
