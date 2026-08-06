@@ -2,7 +2,7 @@ import { CircleHelp, LogOut, Sparkles } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import demoSpeaker from './assets/demo-speaker.png'
 import campaignScene from './assets/campaign-speaker-scene.png'
-import { AccessGate } from './components/AccessGate'
+import { AccessLoginPage } from './components/AccessGate'
 import { AuthPage } from './components/AuthPage'
 import { BrandMark } from './components/BrandMark'
 import { CampaignWorkspace, type ImageState } from './components/CampaignWorkspace'
@@ -14,6 +14,7 @@ import { Sidebar } from './components/Sidebar'
 import { buildCampaignPlan, initialCampaignAgentState } from './lib/campaign-agent'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
+import { normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { workflowById } from './lib/workflows'
 import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkflowId, WorkspaceSummary } from './lib/types'
 
@@ -27,8 +28,6 @@ const demoSession: AuthedSession = {
   currentWorkspace: { id: 'demo-workspace', name: 'Example Store', role: 'owner', accessStatus: 'active', availableOutputs: 6, reservedOutputs: 0 }
 }
 
-type AccessFailure = 'membership-required' | 'authentication-required' | 'configuration-error' | 'unavailable'
-
 const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', authMode: 'access', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
 const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', registrationMode: 'open', registrationOpen: true, generationEnabled: true, generationMode: 'deterministic' }
 const demoPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', generationEnabled: true, generationMode: 'deterministic' }
@@ -37,7 +36,7 @@ async function loadSession() {
   const response = await fetch('/api/session', { credentials: 'same-origin' })
   const data = await response.json() as SessionPayload
   if (!response.ok || !data.authenticated || !data.user || !data.currentWorkspace) {
-    return { session: null, failure: (data.code || 'authentication-required') as AccessFailure }
+    return { session: null, failure: normalizeAccessFailureReason(data.code) || 'authentication-required' }
   }
   return { session: { user: data.user, currentWorkspace: data.currentWorkspace }, failure: null }
 }
@@ -70,7 +69,7 @@ async function agentAction(path: string, body?: unknown) {
 function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const previewMode = import.meta.env.DEV || demoMode
   const [session, setSession] = useState<AuthedSession | null>(demoMode ? demoSession : null)
-  const [accessFailure, setAccessFailure] = useState<AccessFailure>('authentication-required')
+  const [accessFailure, setAccessFailure] = useState<AccessFailureReason>('authentication-required')
   const [isLoadingSession, setIsLoadingSession] = useState(!demoMode)
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(demoMode ? demoPlatformStatus : import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
   const [activeSection, setActiveSection] = useState<NavigationSection>('workspace')
@@ -377,7 +376,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   if (isLoadingSession) return <div className="loading-screen"><Sparkles size={24} /><span>正在載入工作區…</span></div>
-  if (!session && platformStatus.authMode === 'access') return <AccessGate reason={accessFailure} />
+  if (!session && platformStatus.authMode === 'access') {
+    return <AccessLoginPage reason={accessFailure} returnTo={`${window.location.pathname}${window.location.search}${window.location.hash}`} />
+  }
   if (!session) return <AuthPage registrationMode={platformStatus.registrationMode} onAuthenticated={(nextSession) => {
     setSession(nextSession)
     void Promise.all([loadGenerations(nextSession.currentWorkspace.id), agentAction('').catch(() => initialCampaignAgentState())]).then(([results, campaignAgent]) => { setServerResults(results); applyCampaignState(campaignAgent) })
@@ -418,6 +419,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
 
 export default function App() {
   const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  if (path === '/login') return <AccessLoginPage />
   if (isPublicDemoPath(path)) return <WorkspaceApp demoMode />
   if (path === '/app' || path.startsWith('/app/')) return <WorkspaceApp />
   return <LandingPage />
