@@ -46,6 +46,7 @@ Generic binding names and interfaces may be committed. Account identifiers, reso
 - `docs/PRODUCT_STRATEGY.md` — public product and design principles.
 - `docs/PRODUCT_SPEC.md` — unified product, dashboard, Agent, architecture, and release contract.
 - `docs/ENGINEERING.md` — public engineering overview and deployment contract.
+- `docs/SELF_HOSTING.md` — public-safe Cloudflare self-hosting, bootstrap, verification, and update guide.
 - `docs/RELEASE_STATUS.md` — public release and verification status.
 - `docs/AI_EVALUATION.md` — model-neutral evaluation gates and current official references.
 - `docs/PAYMENT_BOUNDARY.md` — provider-neutral payment and settlement boundary.

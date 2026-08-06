@@ -4,47 +4,41 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns an approved product image, verified Traditional Chinese and English commercial copy, and explicit human approval into a coordinated three-format Campaign Pack.
 
-目前版本以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只會檢查資料和規劃固定輸出，不會自行新增產品宣稱、發佈廣告或跳過批准。
+> **部署方式 / Deployment**：本專案以一個 **Cloudflare Worker** 部署。Worker 提供 API、Queue、Scheduled handler 及存取控制；Vite 建置的 React SPA 則以 **Workers Static Assets** 隨同一版本一併部署。它不是只部署前端的 Cloudflare Pages 專案。
 
-公開主頁位於 `/`，介紹產品、流程及私隱邊界；私人工作區位於 `/app`。正式登入以 Cloudflare Access 作邊緣身份驗證，Worker 仍會驗證簽章並核對 D1 workspace membership。
+公開主頁位於 `/`，私人工作區位於 `/app`。正式環境先以 Cloudflare Access 驗證身份，Worker 再驗證簽章及 workspace membership。公開流程不提供自助註冊、公開生成或付款。
 
-公開流程不提供自助註冊、公開生成或付款。合作先由產品簡介與適用性確認開始，再由受控 Access policy 邀請進入私人 workspace。
+目前預設以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只檢查資料、規劃固定輸出並等待人工批准，不會自行新增產品宣稱、發佈廣告或跳過批准。
+
+## 技術棧 / Technology stack
+
+| 層面 | 使用技術 | 用途 |
+| --- | --- | --- |
+| 前端 | React 19、TypeScript 7、Vite 8 | 雙語 SPA、建置與靜態資產 |
+| Edge runtime | Cloudflare Workers、Workers Static Assets、Wrangler 4 | API、SPA、Queue consumer、Cron 與部署 |
+| 身份與授權 | Cloudflare Access、`jose` | Edge identity、JWT 驗證及 workspace 授權 |
+| 受保護資料 | Cloudflare D1 | 應用資料；實際內容及內部組織不在公開概覽記錄 |
+| 私人檔案 | Cloudflare R2 | 只經授權 Worker route 讀取的來源及輸出檔案 |
+| 非同步處理 | Cloudflare Queues | Campaign Pack 輸出、重試及 dead-letter 隔離 |
+| 有狀態 Agent | Cloudflare Agents SDK、Durable Objects | Workspace-scoped 計劃與批准狀態 |
+| 測試 | Vitest、Cloudflare Vitest integration | 隔離的 Worker、D1、R2、Queue 與 Durable Object 測試 |
+| 可選 AI | OpenAI Responses API、Image API | 受閘門控制的 assisted adapter；預設停用 |
+
+版本以 [`package.json`](package.json) 與 lockfile 為準。Cloudflare 方案、限制、模型可用性及價格會變動，部署前應重新核對官方文件。
 
 ## 已完成能力
 
 - Session、帳號狀態及 workspace 授權；
-- 公開雙語產品主頁與獨立 `/app` 工作區路由；
-- Cloudflare Access JWT 驗證、subject hash 綁定及受控 beta workspace 建立；
-- 電郵綁定的一次性邀請註冊；
+- 公開雙語產品主頁與獨立 `/app` 工作區；
+- Cloudflare Access JWT 驗證及受控 workspace membership；
 - 私人 R2 商品圖上傳、格式／大小檢查及授權預覽；
-- 每個 workspace 一個 SQLite-backed Campaign Agent；
-- 批准 revision 與提交 brief 完整比對；
-- 一次、原子、具冪等鍵的三比例 Campaign Pack 建立；
-- Queue 重送安全、失敗退回可用輸出數；
+- Workspace-scoped Campaign Agent 與人工批准 revision；
+- 原子、具冪等鍵的三比例 Campaign Pack 建立；
+- Queue 重送安全、失敗回復及輸出額度核算；
 - 私人 SVG 輸出、下載及繁中／英文文案；
-- 桌面及手機介面、真實素材包／商品／品牌／素材視圖；
-- 本機 demo 與隔離 Workers integration tests。
+- 本機合成 demo 與隔離 Workers integration tests。
 
-## 架構
-
-- React 19、Vite 8、TypeScript 7；
-- Cloudflare Worker API + Static Assets；
-- Cloudflare Access：`/app*` 與受保護 API 的第一層身份及 policy gate；
-- D1：帳號、workspace、邀請、素材 metadata、Campaign Pack 與輸出記錄；
-- private R2：商品來源圖與衍生素材；
-- Queues：非同步輸出與重試；
-- Agents SDK Durable Object：workspace-scoped 規劃與批准狀態；
-- Cron Trigger：過期 session 與短期驗證記錄清理。
-
-外部 AI 只可位於可替換 provider boundary 後方。它不能取代確定性商品／文字合成、D1 output ledger 或人工批准。付款能力不屬於目前執行中的產品合約；public repository 只保留 disabled、provider-neutral 的架構邊界。
-
-Static Assets 對 `/api/*`、`/app` 與 `/app/*` 先執行 Worker。正式 Access 模式只有在 Worker 再次驗證 Access JWT 及 active D1 membership 後，才會透過 `ASSETS` binding 返回私人工作區 shell；公開 `/` 與 hashed frontend assets 保持 asset-first。本機 password 模式仍可先載入 `/app` 登入頁。確定性模式不需要付費模型呼叫。D1、R2、Queues、Durable Objects 與 Workers 的實際免費用量及限制以 Cloudflare 目前文件和帳戶方案為準：
-
-- [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
-- [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)
-- [R2 pricing](https://developers.cloudflare.com/r2/pricing/)
-- [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/)
-- [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+詳細產品、資料及執行合約見 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) 與 [`docs/ENGINEERING.md`](docs/ENGINEERING.md)。公開文件只描述必要的技術界面，不記錄真實帳戶、資源拓撲、資料表內容、營運資料或內部部署映射。
 
 ## 本機開發
 
@@ -55,9 +49,9 @@ npm ci
 npm run dev
 ```
 
-開發介面使用合成 demo 資料；整合測試使用隔離 D1、R2、Queue 及 Durable Object，不連接正式資源或付費 provider。
+開發介面使用合成 demo 資料；整合測試使用隔離 bindings，不連接正式資源或付費 provider。
 
-## 完整檢查
+完整檢查：
 
 ```bash
 git diff --check
@@ -71,9 +65,24 @@ npm run release:check
 
 `npm run check` 亦會核對由 `wrangler types` 產生的 `worker-env.d.ts`，避免 bindings 與程式型別漂移。
 
-## Cloudflare 設定
+## 自部署快速步驟 / Self-hosting quick start
 
-程式依賴以下穩定 binding 名稱：
+自部署會在你的 Cloudflare 帳戶建立一套全新的 Worker、D1、R2、Queues、Durable Object 及 Access 設定；它不會連接 AisleStage 的任何既有環境或資料。開始前請確認你有權使用 repository、示範素材、網域與相關服務。Repository 可公開讀取不代表已取得軟件、媒體、品牌或商標授權；本指南只提供技術步驟。
+
+1. Fork／clone repository，在 Node.js 22+ 執行 `npm ci`。
+2. 執行 `npm run check`、`npm test`、`npm run build`、`npm run cf:dry-run` 及 `npm run release:check`。
+3. 使用 `npx wrangler login --use-keyring` 登入你自己的 Cloudflare 帳戶；不要把 `whoami` 或 dashboard 輸出貼到公開 issue／CI log。
+4. 在自己的帳戶建立一個 D1 database、一個 private R2 bucket、一個 generation Queue 及一個 dead-letter Queue。
+5. 把公開 placeholder 模板複製成被 Git 忽略的 `wrangler.local.jsonc`，限制檔案權限，並只在該檔填入自己的資源映射與 Access 設定。
+6. 建立 Cloudflare Access self-hosted application，明確保護 `/app`、`/app/*` 與 `/api/*`。Allow policy 只加入獲批准身份，不可使用 `Everyone`。
+7. 先核對目標，再執行 `npm run cf:migrate`；之後執行 `npm run cf:deploy`。新環境保持 `GENERATION_MODE=disabled` 及 `ASSISTED_PROVIDER=disabled`。
+8. 匿名及已授權地檢查根路由、`/app`、深層 workspace route、session、私人檔案 headers 與 generation kill switch。
+
+完整命令、設定欄位、首次 owner 建立、驗收、更新與 AI 選配界線見 **[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)**。Cloudflare Access 的 path／JWT 細節見 [`docs/ACCESS_SETUP.md`](docs/ACCESS_SETUP.md)。
+
+## Cloudflare 公開設定合約
+
+程式依賴下列穩定、通用的 binding 名稱：
 
 ```text
 DB
@@ -83,55 +92,31 @@ CAMPAIGN_AGENT
 ASSETS
 ```
 
-追蹤的 `wrangler.jsonc` 只包含明確 placeholder，並保持 `AUTH_MODE=access`、`ACCESS_AUTO_PROVISION=disabled`、`REGISTRATION_MODE=closed`、`GENERATION_MODE=disabled`、`ASSISTED_PROVIDER=disabled`。正式映射只可放在被忽略且限制權限的 `wrangler.local.jsonc`；不可把帳戶識別碼、Access audience、team domain、D1 identifier、實際資源名稱、部署 URL 或 secret 寫入 Git。
+Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 binding 名稱及 fail-closed 預設值。它不是可直接連接正式環境的設定檔。
 
-正式環境使用：
+| 可進 Git | 必須留在受保護設定 |
+| --- | --- |
+| 通用 binding 名稱、placeholder、公開模式說明 | Account／database identifier、實際資源名稱及 deployment URL |
+| 合成 fixture、公開測試、一般錯誤類別 | 真實使用者、商品、campaign、brief、營運及資料庫內容 |
+| 空白 secret 名稱示例 | API key、Access audience、team domain、cookie、JWT 及邀請碼 |
+| 官方文件 URL | Dashboard 截圖、CLI inventory、private object URL 及 provider payload |
 
-- `AUTH_MODE=access`，以及受保護的 Access team domain 與 audience；
-- restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`，身份必須先對應既有 active account 與 workspace membership；
-- `REGISTRATION_MODE=closed`，停用公開密碼註冊與登入；
-- 未取得明確發佈批准前保持 `GENERATION_MODE=disabled`；獲批准的 deterministic release 才使用 `GENERATION_MODE=deterministic`；
+正式值只可放在被忽略且限制權限的本機設定、Wrangler secret、Cloudflare Secrets Store 或同等受保護系統。不要把 secret 放進 `VITE_*` 變數、前端 bundle、`.env`、文件、commit、PR、issue、artifact 或 log。
+
+預設安全模式為：
+
+- `AUTH_MODE=access`；
+- `ACCESS_AUTO_PROVISION=disabled`；
+- `REGISTRATION_MODE=closed`；
+- `GENERATION_MODE=disabled`；
 - `AGENT_MODE=deterministic`；
-- 每個新邀請 workspace 六個可用輸出（兩套完整素材包）。
+- `ASSISTED_PROVIDER=disabled`。
 
-本機手動部署順序：
+確定性輸出不需要外部 AI key。任何 assisted 模式都必須先完成 provider、資料處理、固定評估、成本及 secret 五類批准；正式商品圖、準確文字、授權與伺服器端核算控制仍不可交由模型決定。
 
-1. 核對被 Git 忽略的受保護資源映射；
-2. `npm run check && npm test && npm run build`；
-3. 執行 `npm run cf:dry-run`；
-4. 對 `wrangler.local.jsonc` 指向的 `DB` 執行 `npm run cf:migrate`；
-5. 執行 `npm run cf:deploy`，再檢查 `/api/health`、未授權路徑、登入頁及一套隔離 Campaign Pack。
+## 文件索引
 
-GitHub Actions 只使用公開 placeholder 設定執行 check、test、audit、build 及 dry-run，不持有 Cloudflare 帳戶或資源映射。`main` push 的正式部署則由 `aislestage` Worker 內的 Cloudflare Workers Builds 連線處理：build command 是 `npm run check && npm test && npm run build`，deploy command 是 `npm run cf:deploy:build`，非正式分支 build 保持停用。
-
-Workers Builds 只在 Cloudflare 受保護設定中保存專用 build token 與下列加密變數；repo、GitHub Actions、公開 log 及 artifact 都不可保存或輸出其值：
-
-```text
-CLOUDFLARE_D1_DATABASE_NAME
-CLOUDFLARE_D1_DATABASE_ID
-CLOUDFLARE_R2_BUCKET_NAME
-CLOUDFLARE_QUEUE_NAME
-CLOUDFLARE_DEAD_LETTER_QUEUE_NAME
-CLOUDFLARE_APP_ORIGIN
-CLOUDFLARE_ACCESS_TEAM_DOMAIN
-CLOUDFLARE_ACCESS_AUD
-CLOUDFLARE_INITIAL_OUTPUT_ALLOWANCE
-```
-
-`WORKERS_CI=1` 是非敏感 build guard。部署前，`scripts/prepare-cloudflare-build.mjs` 會核對固定 Worker 名稱 `aislestage`、公開模板結構及受保護值格式，再寫出被 Git 忽略且權限限制為目前程序的 `wrangler.ci.generated.jsonc`。D1 migration 仍必須先由經授權的維護者獨立審核和套用；自動部署不會擅自執行 migration。
-
-建立一次性邀請時，從本機環境提供收件電郵和受保護 D1 名稱；程式只把 hash 寫入 D1，邀請碼只顯示一次：
-
-```bash
-AISLESTAGE_INVITE_EMAIL='<recipient>' \
-AISLESTAGE_INVITE_DATABASE='<database>' \
-npm run cf:invite
-```
-
-provider secret 只可透過 Wrangler secret、Secrets Store 或同等受保護設定加入。`assisted` 模式必須同時通過 provider、資料處理、固定評估與成本閘門；商品原圖與商業文字仍由確定性合成層處理。正式支援下載格式是 SVG；PNG／JPEG 不在目前輸出合約內。
-
-## 文件
-
+- [自部署指南](docs/SELF_HOSTING.md)
 - [統一產品規格](docs/PRODUCT_SPEC.md)
 - [工程與部署](docs/ENGINEERING.md)
 - [Beta access 合約](docs/BETA_ACCESS.md)
@@ -142,4 +127,26 @@ provider secret 只可透過 Wrangler secret、Secrets Store 或同等受保護�
 - [公開發佈外流閘門](docs/PUBLIC_RELEASE_GATE.md)
 - [安全與私隱](SECURITY.md)
 
-所有公開測試、截圖、commit、PR 及文件只可使用合成資料；不得包含真實使用者資料、非公開背景、內部商業資料或部署識別資訊。
+所有公開測試、截圖、commit、PR 及文件只可使用合成資料。執行 `npm run release:check` 只是其中一道閘門；發佈前仍需人工檢查 staged diff、commit／PR 文字及擬上傳 artifact。本次文件核對不代表任何實際部署狀態。
+
+## 技術、AI 模型與參考資料 / Technology, AI models and references
+
+以下是本 repository 實際使用或明確參考的公開技術資料；核對日期為 **2026-08-07**。
+
+### 實際使用的技術
+
+- [React](https://react.dev/)、[TypeScript](https://www.typescriptlang.org/docs/) 及 [Vite](https://vite.dev/guide/)：前端與建置；
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/)、[Static Assets](https://developers.cloudflare.com/workers/static-assets/) 及 [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/)：edge runtime、SPA 與部署；
+- [Cloudflare D1](https://developers.cloudflare.com/d1/)、[R2](https://developers.cloudflare.com/r2/)、[Queues](https://developers.cloudflare.com/queues/) 及 [Durable Objects](https://developers.cloudflare.com/durable-objects/)：關聯資料、私人檔案、非同步工作及 workspace-scoped state；
+- [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/)：Campaign Agent 的 Durable Object 基礎；
+- [Cloudflare Access application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) 及 [JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)：私人 route 與 origin 驗證；
+- [`jose`](https://github.com/panva/jose)、[Vitest](https://vitest.dev/) 及 [Cloudflare Vitest integration](https://developers.cloudflare.com/workers/testing/vitest-integration/)：JWT 與隔離測試。
+
+### AI 模型與 API 狀態
+
+- **預設及自部署基線不使用 AI 模型**：`deterministic` compositor 直接組合已批准商品圖與文字；新部署保持 generation／assisted 功能停用。
+- Repository 包含一個**可選但預設停用**的 OpenAI adapter：[`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra) 經 [Responses API／Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) 提供受限規劃與文案結構；[`gpt-image-2`](https://developers.openai.com/api/docs/models/gpt-image-2) 經 [Image generation API](https://developers.openai.com/api/docs/guides/image-generation) 產生背景候選。
+- [Workers AI model catalog](https://developers.cloudflare.com/workers-ai/models/) 及 [AI Gateway](https://developers.cloudflare.com/ai-gateway/) 只作評估與治理參考，**不是目前已接駁的 production provider**。
+- 模型名稱、輸入資料、價格、可用地區及保留政策會變動。啟用前必須重新做合成資料評估、人工保真檢查、法律／資料處理核對及成本上限；不得把真實 prompt、response、商品圖、brief 或 key 寫入 repository 或 log。
+
+本 repository 不包含客戶資料集、正式資料庫 dump、provider response corpus 或模型訓練資料。示例與測試只應使用合成內容；上述連結是實作與安全界線的主要公開參考，並不代表第三方服務背書或授權。

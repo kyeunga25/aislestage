@@ -16,6 +16,8 @@ npm run release:check
 - commit subject／body、PR／issue／release text；
 - private-key marker、常見 credential 形態、client-exposed secret、非 placeholder Cloudflare mapping；
 - 真實客戶、商品、campaign、訂單、付款資料及 confidential provider terms。
+- 非公開 deployment topology、Access inventory、dashboard 截圖、database dump／query result、object key、Queue payload 及 provider request／response；
+- 為了說明技術棧而不必要地複製完整資源映射、資料庫組織或 maintainer-specific CI/CD 設定。
 
 公開 scanner 只包含一般規則。Confidential terms 由被 Git 忽略、限制權限的本機檔案提供：
 
