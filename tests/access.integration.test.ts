@@ -11,6 +11,7 @@ async function accessFixture(options: {
   issuer?: string
   expirationTime?: string | number
   issuedAt?: number
+  omitEmail?: boolean
 } = {}) {
   const keyId = crypto.randomUUID()
   const audience = `aud-${crypto.randomUUID()}`
@@ -24,7 +25,7 @@ async function accessFixture(options: {
     if (url !== `${teamDomain}/cdn-cgi/access/certs`) return new Response('not found', { status: 404 })
     return Response.json({ keys: [{ ...jwk, kid: keyId, alg: 'RS256', use: 'sig' }] })
   }))
-  const signer = new SignJWT({ email, name: 'Access Tester' })
+  const signer = new SignJWT(options.omitEmail ? { name: 'Access Tester' } : { email, name: 'Access Tester' })
     .setProtectedHeader({ alg: 'RS256', kid: keyId })
     .setIssuer(options.issuer || teamDomain)
     .setAudience(audience)
@@ -82,6 +83,17 @@ describe('Cloudflare Access authentication', () => {
 
     expect(response.status).toBe(503)
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'configuration-error' })
+
+    const { assetEnv, fetchAsset } = withWorkspaceShell({
+      ...env,
+      AUTH_MODE: 'access',
+      ACCESS_TEAM_DOMAIN: '',
+      ACCESS_AUD: ''
+    } as Env)
+    const appResponse = await dispatch('/app', {}, assetEnv)
+    expect(appResponse.status).toBe(302)
+    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=configuration-error&returnTo=%2Fapp')
+    expect(fetchAsset).not.toHaveBeenCalled()
   })
 
   it('requires the signed Access assertion instead of trusting a browser session cookie', async () => {
@@ -89,6 +101,8 @@ describe('Cloudflare Access authentication', () => {
     const response = await dispatch('/api/session', { headers: { cookie: 'aislestage_session=untrusted' } }, fixture.accessEnv)
 
     expect(response.status).toBe(401)
+    expect(response.headers.get('location')).toBeNull()
+    expect(response.headers.get('content-type')).toContain('application/json')
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })
   })
 
@@ -103,7 +117,10 @@ describe('Cloudflare Access authentication', () => {
     const { assetEnv, fetchAsset } = withWorkspaceShell(restrictedEnv)
 
     const denied = await dispatch('/app', {}, assetEnv)
-    expect(denied.status).toBe(401)
+    expect(denied.status).toBe(302)
+    expect(denied.headers.get('location')).toBe('https://app.test/login?reason=authentication-required&returnTo=%2Fapp')
+    expect(denied.headers.get('cache-control')).toBe('no-store')
+    expect(denied.headers.get('content-type')).toBeNull()
     expect(fetchAsset).not.toHaveBeenCalled()
 
     const allowed = await dispatch('/app/campaign-packs', {
@@ -166,8 +183,9 @@ describe('Cloudflare Access authentication', () => {
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'membership-required' })
 
     const { assetEnv, fetchAsset } = withWorkspaceShell(fixture.accessEnv)
-    const appResponse = await dispatch('/app', { headers: { 'cf-access-jwt-assertion': fixture.token } }, assetEnv)
-    expect(appResponse.status).toBe(403)
+    const appResponse = await dispatch('/app/campaign-packs?view=latest', { headers: { 'cf-access-jwt-assertion': fixture.token } }, assetEnv)
+    expect(appResponse.status).toBe(302)
+    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=membership-required&returnTo=%2Fapp%2Fcampaign-packs%3Fview%3Dlatest')
     expect(fetchAsset).not.toHaveBeenCalled()
   })
 
@@ -177,7 +195,15 @@ describe('Cloudflare Access authentication', () => {
     const response = await dispatch('/api/session', { headers: { 'cf-access-jwt-assertion': fixture.token } }, wrongAudienceEnv)
 
     expect(response.status).toBe(401)
-    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-invalid' })
+
+    const { assetEnv, fetchAsset } = withWorkspaceShell(wrongAudienceEnv)
+    const appResponse = await dispatch('/app', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, assetEnv)
+    expect(appResponse.status).toBe(302)
+    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=authentication-invalid&returnTo=%2Fapp')
+    expect(fetchAsset).not.toHaveBeenCalled()
   })
 
   it('rejects assertions with the wrong issuer or an expired lifetime', async () => {
@@ -193,7 +219,17 @@ describe('Cloudflare Access authentication', () => {
       headers: { 'cf-access-jwt-assertion': expired.token }
     }, expired.accessEnv)
     expect(expiredResponse.status).toBe(401)
-    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-required' })
+    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-invalid' })
+  })
+
+  it('rejects a verified assertion that omits the required identity claim', async () => {
+    const fixture = await accessFixture({ omitEmail: true })
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)
+
+    expect(response.status).toBe(401)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'identity-incomplete' })
   })
 
   it('binds a protected pre-onboarded identity to one active owner workspace', async () => {

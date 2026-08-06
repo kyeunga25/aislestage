@@ -4,6 +4,7 @@ import workspaceAgent from '../assets/workspace-agent.png'
 import workspaceBrief from '../assets/workspace-brief.png'
 import workspaceOverview from '../assets/workspace-overview.jpg'
 import workspaceResults from '../assets/workspace-results.png'
+import { accessLoginPath } from '../lib/access-login'
 import { BrandMark } from './BrandMark'
 
 type Locale = 'zh-Hant' | 'en'
@@ -131,6 +132,7 @@ const proofIcons = [ImageIcon, FileCheck2, ShieldCheck, Layers3]
 const stepIcons = [Upload, Sparkles, Check]
 const collaborationIcons = [FileCheck2, UserCheck, LockKeyhole]
 const securityIcons = [ShieldCheck, UserCheck, LockKeyhole, ImageIcon, FileCheck2]
+const invitedLoginPath = accessLoginPath('/app')
 
 export function LandingPage() {
   const [locale, setLocale] = useState<Locale>('zh-Hant')
@@ -164,7 +166,7 @@ export function LandingPage() {
         <button className="locale-switch" type="button" onClick={() => setLocale((current) => current === 'zh-Hant' ? 'en' : 'zh-Hant')} aria-label={locale === 'zh-Hant' ? 'Switch to English' : '切換至繁體中文'}>
           {locale === 'zh-Hant' ? '繁中 / EN' : 'EN / 繁中'}
         </button>
-        <a className="landing-login compact" href="/app">{t.login}<ArrowRight size={15} /></a>
+        <a className="landing-login compact" href={invitedLoginPath}>{t.login}<ArrowRight size={15} /></a>
       </div>
     </header>
 
@@ -266,7 +268,7 @@ export function LandingPage() {
             return <article key={number}><span>{number}</span><Icon size={25} /><h3>{title}</h3><p>{body}</p></article>
           })}
         </div>
-        <aside className="collaboration-note"><p>{t.collaborationNote}</p><a className="landing-secondary" href="/app">{t.login}<ArrowRight size={16} /></a></aside>
+        <aside className="collaboration-note"><p>{t.collaborationNote}</p><a className="landing-secondary" href={invitedLoginPath}>{t.login}<ArrowRight size={16} /></a></aside>
       </section>
 
       <section className="security-section" id="security" aria-labelledby="security-title">
@@ -285,7 +287,7 @@ export function LandingPage() {
 
       <section className="landing-cta" aria-labelledby="cta-title">
         <div><p className="landing-eyebrow">AisleStage</p><h2 id="cta-title">{t.ctaTitle}</h2><p>{t.ctaBody}</p></div>
-        <a className="landing-login" href="/app">{t.login}<ArrowRight size={17} /></a>
+        <a className="landing-login" href={invitedLoginPath}>{t.login}<ArrowRight size={17} /></a>
       </section>
     </main>
 

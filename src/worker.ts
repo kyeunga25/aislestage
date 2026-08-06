@@ -1,6 +1,7 @@
 import { getAgentByName } from 'agents'
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
+import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { sanitizeCampaignBrief } from './lib/campaign-agent'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
@@ -32,7 +33,6 @@ type AuthUser = { id: string; email: string; name: string; accountStatus: Accoun
 type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 type AccessIdentity = { subject: string; email: string; name: string }
-type AccessFailureCode = 'authentication-required' | 'membership-required' | 'configuration-error'
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislestage_session'
@@ -53,6 +53,7 @@ const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會�
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
 const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
 const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
+const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
 const accessJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
 
 const json = (body: unknown, init: ResponseInit = {}) => {
@@ -226,8 +227,22 @@ function isWorkspaceAppPath(pathname: string) {
   return pathname === '/app' || pathname.startsWith('/app/')
 }
 
-function accessError(code: AccessFailureCode, status: 401 | 403 | 503, message: string) {
-  return json({ authenticated: false, code, error: message }, { status })
+function accessError(code: AccessFailureReason, status: 401 | 403 | 503, message: string) {
+  return json({ authenticated: false, code, error: message }, { status, headers: { [ACCESS_FAILURE_HEADER]: code } })
+}
+
+function loginRedirect(request: Request, reason: AccessFailureReason) {
+  const requestUrl = new URL(request.url)
+  const location = new URL(accessLoginPath(`${requestUrl.pathname}${requestUrl.search}`, reason), requestUrl.origin)
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: location.toString(),
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff'
+    }
+  })
 }
 
 function accessConfiguration(env: Env) {
@@ -272,9 +287,9 @@ async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessI
       algorithms: ['RS256']
     })
     const identity = identityFromPayload(payload)
-    return identity || accessError('authentication-required', 401, 'Cloudflare Access identity is incomplete.')
+    return identity || accessError('identity-incomplete', 401, 'Cloudflare Access identity claims are incomplete.')
   } catch {
-    return accessError('authentication-required', 401, 'Cloudflare Access authentication is invalid.')
+    return accessError('authentication-invalid', 401, 'Cloudflare Access authentication is invalid.')
   }
 }
 
@@ -493,7 +508,9 @@ async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access'
 
   if (activeAuthMode === 'access') {
     const session = await requireSession(request, env)
-    if (session instanceof Response) return session
+    if (session instanceof Response) {
+      return loginRedirect(request, normalizeAccessFailureReason(session.headers.get(ACCESS_FAILURE_HEADER)) || 'authentication-required')
+    }
   }
 
   try {
@@ -507,7 +524,9 @@ async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access'
       headers
     })
   } catch {
-    return json({ error: 'Workspace application is unavailable.' }, { status: 503 })
+    return activeAuthMode === 'access'
+      ? loginRedirect(request, 'unavailable')
+      : json({ error: 'Workspace application is unavailable.' }, { status: 503 })
   }
 }
 

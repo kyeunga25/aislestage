@@ -61,6 +61,7 @@ export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: Campa
   const missingFacts = [
     !brief.brand.name && '品牌名稱',
     !brief.product.name && '商品名稱',
+    !brief.product.category && '商品類別',
     !brief.product.price && '價格',
     !brief.product.promotion && '推廣內容',
     brief.product.benefits.filter(Boolean).length < 2 && '至少兩個賣點',
