@@ -15,6 +15,8 @@ describe('Access login routing', () => {
   it('builds a public login URL without accepting arbitrary reason values', () => {
     expect(accessLoginPath('/app/campaign-packs', 'authentication-required'))
       .toBe('/login?reason=authentication-required&returnTo=%2Fapp%2Fcampaign-packs')
+    expect(normalizeAccessFailureReason('authentication-invalid')).toBe('authentication-invalid')
+    expect(normalizeAccessFailureReason('identity-incomplete')).toBe('identity-incomplete')
     expect(normalizeAccessFailureReason('membership-required')).toBe('membership-required')
     expect(normalizeAccessFailureReason('unexpected')).toBeNull()
   })
