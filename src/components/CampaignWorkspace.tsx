@@ -43,6 +43,7 @@ export function CampaignWorkspace(props: Props) {
   const factsReady = Boolean(
     brand.name
     && product.name
+    && product.category
     && product.price
     && product.promotion
     && product.benefits.filter(Boolean).length >= 2
@@ -90,6 +91,7 @@ export function CampaignWorkspace(props: Props) {
         <div className="compact-fields">
           <label><span>品牌名稱</span><input value={brand.name} onChange={(event) => setBrand('name', event.target.value)} /></label>
           <label><span>商品名稱</span><input value={product.name} onChange={(event) => setProduct('name', event.target.value)} /></label>
+          <label><span>商品類別</span><input value={product.category} onChange={(event) => setProduct('category', event.target.value)} /></label>
           <div className="field-row"><label><span>價格（HKD）</span><input value={product.price} onChange={(event) => setProduct('price', event.target.value)} /></label><label><span>推廣目的</span><select value={intent} onChange={(event) => onIntentChange(event.target.value)}><option>限時優惠</option><option>新品推廣</option><option>日常銷售</option><option>節日活動</option></select></label></div>
           <label><span>促銷資訊</span><input value={product.promotion} maxLength={240} onChange={(event) => setProduct('promotion', event.target.value)} /></label>
           <fieldset className="selling-points"><legend>產品賣點（最多 3 點）</legend>{[0, 1, 2].map((index) => <label key={index}><b>{index + 1}</b><input value={product.benefits[index] || ''} onChange={(event) => updateBenefit(index, event.target.value)} placeholder={`賣點 ${index + 1}`} />{product.benefits[index] ? <X size={13} /> : <Plus size={13} />}</label>)}</fieldset>
