@@ -13,6 +13,7 @@ import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { buildCampaignPlan, initialCampaignAgentState } from './lib/campaign-agent'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
+import { isPublicDemoPath } from './lib/demo-mode'
 import { workflowById } from './lib/workflows'
 import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkflowId, WorkspaceSummary } from './lib/types'
 
@@ -30,6 +31,7 @@ type AccessFailure = 'membership-required' | 'authentication-required' | 'config
 
 const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', authMode: 'access', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
 const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', registrationMode: 'open', registrationOpen: true, generationEnabled: true, generationMode: 'deterministic' }
+const demoPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', generationEnabled: true, generationMode: 'deterministic' }
 
 async function loadSession() {
   const response = await fetch('/api/session', { credentials: 'same-origin' })
@@ -65,16 +67,17 @@ async function agentAction(path: string, body?: unknown) {
   return data.state
 }
 
-function WorkspaceApp() {
-  const [session, setSession] = useState<AuthedSession | null>(null)
+function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
+  const previewMode = import.meta.env.DEV || demoMode
+  const [session, setSession] = useState<AuthedSession | null>(demoMode ? demoSession : null)
   const [accessFailure, setAccessFailure] = useState<AccessFailure>('authentication-required')
-  const [isLoadingSession, setIsLoadingSession] = useState(true)
-  const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
+  const [isLoadingSession, setIsLoadingSession] = useState(!demoMode)
+  const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(demoMode ? demoPlatformStatus : import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
   const [activeSection, setActiveSection] = useState<NavigationSection>('workspace')
-  const [brand, setBrand] = useState<BrandPack>(import.meta.env.DEV ? starterBrand : emptyBrand)
-  const [product, setProduct] = useState<Product>(import.meta.env.DEV ? starterProduct : emptyProduct)
+  const [brand, setBrand] = useState<BrandPack>(previewMode ? starterBrand : emptyBrand)
+  const [product, setProduct] = useState<Product>(previewMode ? starterProduct : emptyProduct)
   const [intent, setIntent] = useState('限時優惠')
-  const [image, setImage] = useState<ImageState>(import.meta.env.DEV
+  const [image, setImage] = useState<ImageState>(previewMode
     ? { name: 'minibeat_speaker_black.png', url: demoSpeaker, asset: null, status: 'demo', error: '' }
     : { name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
   const [agentState, setAgentState] = useState<CampaignAgentState>(initialCampaignAgentState())
@@ -109,6 +112,8 @@ function WorkspaceApp() {
   }
 
   useEffect(() => {
+    if (demoMode) return
+
     Promise.all([loadSession(), loadPlatformStatus()]).then(async ([sessionResult, nextPlatformStatus]) => {
       const nextSession = sessionResult.session
       setSession(nextSession)
@@ -127,7 +132,7 @@ function WorkspaceApp() {
       setPlatformStatus(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
       if (!import.meta.env.DEV) setAccessFailure('unavailable')
     }).finally(() => setIsLoadingSession(false))
-  }, [])
+  }, [demoMode])
 
   function campaignBrief() {
     return {
@@ -209,6 +214,11 @@ function WorkspaceApp() {
       if (current.url.startsWith('blob:')) URL.revokeObjectURL(current.url)
       return { name: file.name, url: localUrl, asset: null, status: 'uploading', error: '' }
     })
+    if (session?.user.id === 'demo-user') {
+      setImage({ name: file.name, url: localUrl, asset: null, status: 'demo', error: '' })
+      setAgentState(initialCampaignAgentState())
+      return
+    }
     const form = new FormData()
     form.set('file', file)
     try {
@@ -229,7 +239,7 @@ function WorkspaceApp() {
   }
 
   async function deleteProductImage() {
-    if (!window.confirm('刪除這張私人商品圖片？現有 Agent 計劃亦會重設。')) return
+    if (!window.confirm(demoMode ? '移除這張本機 Demo 圖片？現有 Agent 計劃亦會重設。' : '刪除這張私人商品圖片？現有 Agent 計劃亦會重設。')) return
     setNotice('')
     try {
       if (image.asset) {
@@ -347,6 +357,11 @@ function WorkspaceApp() {
   }
 
   async function logout() {
+    if (demoMode) {
+      if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
+      window.location.assign('/')
+      return
+    }
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => null)
     if (platformStatus.authMode === 'access') {
       window.location.assign('/cdn-cgi/access/logout')
@@ -384,8 +399,10 @@ function WorkspaceApp() {
 
       <main className="main-content">
         {activeSection === 'workspace' ? <>
-          <div className="page-title"><div><h1>建立 Campaign Pack</h1><p>一張商品圖，完成整套推廣素材；Agent 先規劃，你批准後才生成。</p></div><a className="help-link-inline" href="#support"><CircleHelp size={16} />使用指引</a></div>
-          {!platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
+          <div className="page-title"><div><h1>建立 Campaign Pack{demoMode ? ' · Demo' : ''}</h1><p>一張商品圖，完成整套推廣素材；Agent 先規劃，你批准後才生成。</p></div><a className="help-link-inline" href="#support"><CircleHelp size={16} />使用指引</a></div>
+          {demoMode
+            ? <p className="preview-notice" role="status"><strong>公開互動 Demo</strong><span>只在目前瀏覽器記憶體處理合成資料；不會上傳、保存或呼叫外部 AI。</span></p>
+            : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
           <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
           {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} onGenerate={() => void generatePack()} /> : null}
@@ -401,6 +418,7 @@ function WorkspaceApp() {
 
 export default function App() {
   const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  if (isPublicDemoPath(path)) return <WorkspaceApp demoMode />
   if (path === '/app' || path.startsWith('/app/')) return <WorkspaceApp />
   return <LandingPage />
 }

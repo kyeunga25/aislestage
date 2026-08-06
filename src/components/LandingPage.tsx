@@ -13,7 +13,7 @@ const copy = {
     navProduct: '產品', navCases: '使用情境', navFlow: '流程', navCollaboration: '合作方式', navSecurity: '私隱與安全', login: '受邀成員登入',
     eyebrow: '由商品原圖到整套推廣素材', title: <>一張商品圖，<br />完成整套 <span>Campaign Pack</span></>,
     intro: '如果你要為同一件商品準備網店主圖、社交廣告與限時動態，AisleStage 會把已核實的商品資料、私人原圖和雙語文案集中在一個批准流程。價格、優惠及 CTA 不必在不同版型重複輸入。',
-    primary: '了解合作方式', how: '看看運作方式', trust: ['邀請制合作', '私人素材', '可重複輸出'],
+    primary: '試用互動 Demo', how: '看看運作方式', trust: ['合成資料 Demo', '不會上傳資料', '可重複輸出'],
     planStatus: '等待批准',
     proof: [
       ['原圖作為來源', '不重新繪製已上傳商品'],
@@ -48,13 +48,13 @@ const copy = {
     ],
     collaborationEyebrow: 'Contact-first · Invite-only',
     collaborationTitle: '先確認工作方式與適用範圍，再開設私人工作區',
-    collaborationBody: 'AisleStage 現階段不提供公開註冊、即時生成或 checkout。合作從一份不含私人素材的簡介開始，雙方確認範圍、資料處理及交付方式後，才由受控 Access policy 邀請成員。',
+    collaborationBody: 'AisleStage 現階段不提供公開註冊或 checkout。公開 Demo 只供合成資料及本機記憶體測試；正式合作從一份不含私人素材的簡介開始，確認範圍、資料處理及交付方式後，才由受控 Access policy 邀請成員。',
     collaborationSteps: [
       ['01', '提供非敏感簡介', '透過既有直接聯絡渠道說明商品類型、需要的三比例素材、語言及圖片使用權狀態；公開網站不收集商業 brief 或商品原圖。'],
       ['02', '確認適用性與邊界', '核對 Campaign Pack 是否適合、哪些資料已獲核實，以及私隱、人工批准、輸出數量與 deterministic fallback。'],
       ['03', '建立受邀工作區', '確認後才建立 active membership。Cloudflare Access 驗證身份，Worker 再核對 D1 membership；沒有公開帳戶或自助付款捷徑。']
     ],
-    collaborationNote: '已有邀請？可直接登入私人工作區。尚未獲邀者不會在公開頁面輸入產品資料、圖片或付款資料。',
+    collaborationNote: '已有邀請？可直接登入私人工作區。尚未獲邀者可試用合成 Demo，但不要輸入真實產品、客戶、付款或未公開資料。',
     featurePoints: ['1:1 · 1080 × 1080 商品主圖', '4:5 · 1080 × 1350 社交廣告', '9:16 · 1080 × 1920 限時動態', '附可複製的繁中／英文文案'],
     securityEyebrow: '私隱與安全，設計在每一步', securityBody: '公開主頁與私人工作區分開。登入由 Cloudflare Access 驗證，Worker 再核對簽章與 D1 成員關係；圖片與輸出只經授權路徑讀取。',
     securityItems: [
@@ -71,7 +71,7 @@ const copy = {
     navProduct: 'Product', navCases: 'Use cases', navFlow: 'How it works', navCollaboration: 'Working together', navSecurity: 'Privacy & security', login: 'Invited member sign-in',
     eyebrow: 'From one approved product image to a complete campaign set', title: <>One product image.<br />One coordinated <span>Campaign Pack.</span></>,
     intro: 'When one product needs a storefront visual, a social ad and a story, AisleStage keeps verified facts, the private source image and bilingual copy inside one approval flow. Price, offer and CTA do not need to be re-entered for every format.',
-    primary: 'How collaboration starts', how: 'See how it works', trust: ['Invite-only engagement', 'Private assets', 'Repeatable output'],
+    primary: 'Try the interactive demo', how: 'See how it works', trust: ['Synthetic demo data', 'No data upload', 'Repeatable output'],
     planStatus: 'Awaiting approval',
     proof: [
       ['Source-image fidelity', 'Your uploaded product remains the source'],
@@ -106,13 +106,13 @@ const copy = {
     ],
     collaborationEyebrow: 'Contact-first · Invite-only',
     collaborationTitle: 'Confirm the fit and operating boundaries before opening a private workspace',
-    collaborationBody: 'AisleStage does not currently offer public registration, instant generation or checkout. An engagement begins with a non-sensitive introduction. Scope, data handling and delivery are confirmed before members are invited through a controlled Access policy.',
+    collaborationBody: 'AisleStage does not currently offer public registration or checkout. The public demo uses synthetic data in browser memory only. A formal engagement begins with a non-sensitive introduction, followed by scope and data-handling agreement before members are invited through a controlled Access policy.',
     collaborationSteps: [
       ['01', 'Share a non-sensitive introduction', 'Use an existing direct contact channel to outline the product category, required three-ratio assets, languages and image-rights status. The public site does not collect the commercial brief or source image.'],
       ['02', 'Confirm fit and boundaries', 'Review whether Campaign Pack fits the job, which facts are verified, and the privacy, human approval, output allowance and deterministic fallback boundaries.'],
       ['03', 'Open an invited workspace', 'Only then is an active membership created. Cloudflare Access verifies identity and the Worker checks D1 membership; there is no public account or self-service payment shortcut.']
     ],
-    collaborationNote: 'Already invited? Sign in to the private workspace. Visitors without an invitation do not enter product data, imagery or payment details on the public site.',
+    collaborationNote: 'Already invited? Sign in to the private workspace. Visitors may use the synthetic demo, but must not enter real product, customer, payment or non-public information.',
     featurePoints: ['1:1 · 1080 × 1080 product visual', '4:5 · 1080 × 1350 social ad', '9:16 · 1080 × 1920 story', 'Copyable Traditional Chinese and English captions'],
     securityEyebrow: 'Privacy and security at every step', securityBody: 'The public site and private workspace are separate. Cloudflare Access verifies identity at the edge, the Worker validates the signed JWT and D1 membership, and private files are served only through authorised routes.',
     securityItems: [
@@ -175,7 +175,7 @@ export function LandingPage() {
           <h1 id="landing-title">{t.title}</h1>
           <p className="hero-intro">{t.intro}</p>
           <div className="hero-actions">
-            <a className="landing-login" href="#collaboration">{t.primary}<ArrowRight size={17} /></a>
+            <a className="landing-login" href="/demo">{t.primary}<ArrowRight size={17} /></a>
             <a className="landing-secondary" href="#workflow">{t.how}</a>
           </div>
           <ul className="hero-trust" aria-label="Product access summary">
