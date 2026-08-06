@@ -195,14 +195,14 @@ describe('Cloudflare Access authentication', () => {
     const response = await dispatch('/api/session', { headers: { 'cf-access-jwt-assertion': fixture.token } }, wrongAudienceEnv)
 
     expect(response.status).toBe(401)
-    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-invalid' })
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-audience-mismatch' })
 
     const { assetEnv, fetchAsset } = withWorkspaceShell(wrongAudienceEnv)
     const appResponse = await dispatch('/app', {
       headers: { 'cf-access-jwt-assertion': fixture.token }
     }, assetEnv)
     expect(appResponse.status).toBe(302)
-    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=authentication-invalid&returnTo=%2Fapp')
+    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=authentication-audience-mismatch&returnTo=%2Fapp')
     expect(fetchAsset).not.toHaveBeenCalled()
   })
 
@@ -212,6 +212,7 @@ describe('Cloudflare Access authentication', () => {
       headers: { 'cf-access-jwt-assertion': wrongIssuer.token }
     }, wrongIssuer.accessEnv)
     expect(wrongIssuerResponse.status).toBe(401)
+    expect(await wrongIssuerResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-issuer-mismatch' })
 
     const now = Math.floor(Date.now() / 1000)
     const expired = await accessFixture({ issuedAt: now - 600, expirationTime: now - 60 })
@@ -219,7 +220,20 @@ describe('Cloudflare Access authentication', () => {
       headers: { 'cf-access-jwt-assertion': expired.token }
     }, expired.accessEnv)
     expect(expiredResponse.status).toBe(401)
-    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-invalid' })
+    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-expired' })
+  })
+
+  it('rejects a tampered assertion with a signature-specific failure', async () => {
+    const fixture = await accessFixture()
+    const parts = fixture.token.split('.')
+    const replacement = parts[2].startsWith('a') ? 'b' : 'a'
+    const tampered = `${parts[0]}.${parts[1]}.${replacement}${parts[2].slice(1)}`
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': tampered }
+    }, fixture.accessEnv)
+
+    expect(response.status).toBe(401)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-signature-invalid' })
   })
 
   it('rejects a verified assertion that omits the required identity claim', async () => {

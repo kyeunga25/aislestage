@@ -89,7 +89,7 @@ export type SessionPayload = {
   authenticated: boolean
   user?: AuthUser
   currentWorkspace?: WorkspaceSummary
-  code?: 'authentication-required' | 'membership-required' | 'configuration-error' | 'unavailable'
+  code?: 'authentication-required' | 'authentication-invalid' | 'authentication-expired' | 'authentication-audience-mismatch' | 'authentication-issuer-mismatch' | 'authentication-signature-invalid' | 'identity-incomplete' | 'membership-required' | 'configuration-error' | 'unavailable'
   error?: string
 }
 
