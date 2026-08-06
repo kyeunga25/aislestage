@@ -48,7 +48,7 @@
 7. `ASSISTED_BUDGET_MODE=approved`，而且 provider credential 只存在於 server-side secret；
 8. `GENERATION_MODE=disabled` 可立即停止新請求，既有 Queue message 亦會 fail closed 並退回 reservation。
 
-Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 workspace 的商業保證。AI Gateway analytics 不能取代 D1 output ledger。
+Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 workspace 的商業保證。AI Gateway analytics 不能取代應用層的用量與一致性控制。
 
 ## 官方資料核對
 
