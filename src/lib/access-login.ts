@@ -1,5 +1,7 @@
 export type AccessFailureReason =
   | 'authentication-required'
+  | 'authentication-invalid'
+  | 'identity-incomplete'
   | 'membership-required'
   | 'configuration-error'
   | 'access-denied'
@@ -8,6 +10,8 @@ export type AccessFailureReason =
 
 const supportedReasons = new Set<AccessFailureReason>([
   'authentication-required',
+  'authentication-invalid',
+  'identity-incomplete',
   'membership-required',
   'configuration-error',
   'access-denied',

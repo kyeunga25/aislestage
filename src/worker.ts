@@ -287,9 +287,9 @@ async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessI
       algorithms: ['RS256']
     })
     const identity = identityFromPayload(payload)
-    return identity || accessError('authentication-required', 401, 'Cloudflare Access identity is incomplete.')
+    return identity || accessError('identity-incomplete', 401, 'Cloudflare Access identity claims are incomplete.')
   } catch {
-    return accessError('authentication-required', 401, 'Cloudflare Access authentication is invalid.')
+    return accessError('authentication-invalid', 401, 'Cloudflare Access authentication is invalid.')
   }
 }
 

@@ -29,6 +29,20 @@ const loginMessages: Record<AccessFailureReason | 'ready', LoginMessage> = {
     status: '未建立可用的私人工作區 session。',
     tone: 'warning'
   },
+  'authentication-invalid': {
+    title: '安全登入憑證未能驗證',
+    titleEn: 'The secure sign-in token could not be verified',
+    body: 'Cloudflare Access 已返回應用程式，但 Worker 未能驗證這次登入憑證。請先安全登出，再重新開始；在驗證完成前，私人內容會保持鎖定。',
+    status: '這次 Access session 不可使用。',
+    tone: 'error'
+  },
+  'identity-incomplete': {
+    title: '登入身份資料不完整',
+    titleEn: 'The verified identity is incomplete',
+    body: 'Cloudflare Access 已返回應用程式，但必要的身份聲明不完整。請重新登入；如問題持續，請由管理員核對身份提供者設定。',
+    status: '系統沒有建立或修改工作區帳戶。',
+    tone: 'error'
+  },
   'membership-required': {
     title: '身份已驗證，但未獲工作區授權',
     titleEn: 'Workspace access was not approved',
@@ -71,7 +85,10 @@ export function AccessLoginPage({ reason, returnTo }: Props) {
   const activeReason = reason || normalizeAccessFailureReason(query.get('reason'))
   const destination = safePrivateReturnPath(returnTo || query.get('returnTo'))
   const message = loginMessages[activeReason || 'ready']
-  const canResetIdentity = activeReason === 'membership-required' || activeReason === 'access-denied'
+  const canResetIdentity = activeReason === 'authentication-invalid'
+    || activeReason === 'identity-incomplete'
+    || activeReason === 'membership-required'
+    || activeReason === 'access-denied'
   const destinationLabel = destination === '/app' ? '工作區首頁' : '原本的私人頁面'
 
   return <main className={`access-gate access-gate-${message.tone}`}>
