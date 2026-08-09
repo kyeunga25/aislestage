@@ -56,6 +56,8 @@ const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
 const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
 const accessJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
 
+class TerminalGenerationError extends Error {}
+
 const json = (body: unknown, init: ResponseInit = {}) => {
   const headers = new Headers(init.headers)
   if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8')
@@ -65,6 +67,7 @@ const json = (body: unknown, init: ResponseInit = {}) => {
 }
 
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 
 function base64Url(bytes: Uint8Array) {
   let binary = ''
@@ -134,13 +137,57 @@ function cleanString(value: unknown, max = 120) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
-async function readBody(request: Request, maxBytes: number) {
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) return { body: null, tooLarge: true }
-  const raw = await request.text().catch(() => '')
-  if (textEncoder.encode(raw).byteLength > maxBytes) return { body: null, tooLarge: true }
+async function cancelRequestBody(request: Request) {
+  await request.body?.cancel().catch(() => undefined)
+}
+
+async function readBoundedRequestBytes(request: Request, maxBytes: number) {
+  const declaredLength = request.headers.get('content-length')
+  if (declaredLength !== null) {
+    const normalized = declaredLength.trim()
+    const parsed = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN
+    if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maxBytes) {
+      await cancelRequestBody(request)
+      return { bytes: null, tooLarge: true }
+    }
+  }
+
+  if (!request.body) return { bytes: new Uint8Array(), tooLarge: false }
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
   try {
-    return { body: JSON.parse(raw) as unknown, tooLarge: false }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value.byteLength > maxBytes - total) {
+        await reader.cancel().catch(() => undefined)
+        return { bytes: null, tooLarge: true }
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined)
+    return { bytes: null, tooLarge: false }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return { bytes, tooLarge: false }
+}
+
+async function readBody(request: Request, maxBytes: number) {
+  const bounded = await readBoundedRequestBytes(request, maxBytes)
+  if (bounded.tooLarge || !bounded.bytes) return { body: null, tooLarge: bounded.tooLarge }
+  try {
+    return { body: JSON.parse(textDecoder.decode(bounded.bytes)) as unknown, tooLarge: false }
   } catch {
     return { body: null, tooLarge: false }
   }
@@ -324,6 +371,35 @@ function validInput(value: unknown): value is GenerationInput {
     && boundedStringArray(input.referenceAssetIds, 1, 80) && input.referenceAssetIds?.length === 1
 }
 
+function generationInputIdentity(input: GenerationInput) {
+  return JSON.stringify([
+    input.workspaceId,
+    input.workflowId,
+    input.aspectRatio,
+    input.approvedRevision,
+    input.intent,
+    input.brand.name,
+    input.brand.tone,
+    input.brand.colors,
+    input.brand.forbiddenWords,
+    input.brand.locale,
+    input.brand.cta,
+    input.brand.ctaEn,
+    input.product.name,
+    input.product.nameEn,
+    input.product.category,
+    input.product.benefits,
+    input.product.benefitsEn,
+    input.product.specifications,
+    input.product.price,
+    input.product.promotion,
+    input.product.promotionEn,
+    input.product.channels,
+    input.referenceImageUrls,
+    input.referenceAssetIds
+  ])
+}
+
 const productImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 function hasValidProductImageSignature(contentType: string, bytes: Uint8Array) {
@@ -341,16 +417,61 @@ function chunkName(bytes: Uint8Array, offset: number) {
 
 function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/jpeg') {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return true
     let offset = 2
-    while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
-      const marker = bytes[offset + 1]
-      if (marker === 0xda || marker === 0xd9) break
+    let inScan = false
+    let sawFrame = false
+    let sawScan = false
+    while (offset < bytes.length) {
+      const markerWasInScan: boolean = inScan
+      if (bytes[offset] !== 0xff) {
+        if (!inScan) return true
+        offset += 1
+        continue
+      }
+
+      let fillBytes = 0
+      while (offset < bytes.length && bytes[offset] === 0xff) {
+        fillBytes += 1
+        offset += 1
+      }
+      if (offset >= bytes.length) return true
+      const marker = bytes[offset++]
+
+      if (marker === 0x00) {
+        if (!inScan || fillBytes !== 1) return true
+        continue
+      }
+      if (marker >= 0xd0 && marker <= 0xd7) {
+        if (!inScan) return true
+        continue
+      }
+      if (marker === 0x01) continue
       if (marker === 0xe1 || marker === 0xed || marker === 0xfe) return true
-      const length = (bytes[offset + 2] << 8) | bytes[offset + 3]
-      if (length < 2) break
-      offset += length + 2
+      if (marker === 0xd9) return offset !== bytes.length || !sawFrame || !sawScan
+      if (marker === 0xd8 || marker < 0xc0) return true
+      if (offset + 2 > bytes.length) return true
+
+      const length = (bytes[offset] << 8) | bytes[offset + 1]
+      if (length < 2 || length > bytes.length - offset) return true
+      const isFrameMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+      if (isFrameMarker) {
+        if (sawFrame || length < 8) return true
+        const componentCount = bytes[offset + 7]
+        if (componentCount < 1 || componentCount > 4 || length !== 8 + componentCount * 3) return true
+        sawFrame = true
+      }
+      if (marker === 0xda) {
+        if (!sawFrame || length < 6) return true
+        const componentCount = bytes[offset + 2]
+        if (componentCount < 1 || componentCount > 4 || length !== 6 + componentCount * 2) return true
+        sawScan = true
+      }
+      if (marker === 0xdc && length !== 4) return true
+      offset += length
+      inScan = marker === 0xda || (markerWasInScan && marker === 0xdc)
     }
-    return false
+    return true
   }
   if (contentType === 'image/png') {
     const metadataChunks = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
@@ -541,11 +662,14 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
 }
 
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength > MAX_UPLOAD_REQUEST_BYTES) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
   if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data.' }, { status: 415 })
 
-  const form = await request.formData().catch(() => null)
+  const bounded = await readBoundedRequestBytes(request, MAX_UPLOAD_REQUEST_BYTES)
+  if (bounded.tooLarge) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
+  if (!bounded.bytes) return json({ error: 'Unable to read multipart upload.' }, { status: 400 })
+  const headers = new Headers({ 'content-type': request.headers.get('content-type')! })
+  const boundedRequest = new Request(request.url, { method: 'POST', headers, body: bounded.bytes as BodyInit })
+  const form = await boundedRequest.formData().catch(() => null)
   const value = form?.get('file')
   if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
   if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或 WebP 圖片。' }, { status: 415 })
@@ -659,6 +783,19 @@ async function approvedGenerationInput(env: Env, input: GenerationInput) {
     product: input.product
   })
   return JSON.stringify(submittedBrief) === JSON.stringify(state.brief)
+}
+
+async function requireCurrentGenerationExecution(env: Env, input: GenerationInput) {
+  const current = await env.DB.prepare(`
+    SELECT 1 AS current
+    FROM workspaces w
+    JOIN media_assets a ON a.workspace_id = w.id
+    WHERE w.id = ? AND w.access_status = 'active'
+      AND a.id = ? AND a.kind = 'product-source'
+  `).bind(input.workspaceId, input.referenceAssetIds[0]).first<{ current: number }>()
+  if (!current || !await approvedGenerationInput(env, input)) {
+    throw new TerminalGenerationError('Generation execution approval is stale.')
+  }
 }
 
 async function generationSourceAsset(env: Env, input: GenerationInput) {
@@ -1053,9 +1190,9 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength > MAX_GENERATION_BODY_BYTES) return json({ error: 'Generation payload is too large.' }, { status: 413 })
-  const input = await request.json().catch(() => null)
+  const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Generation payload is too large.' }, { status: 413 })
+  const input = parsed.body
   if (!validInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
   if (input.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
   const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
@@ -1102,15 +1239,28 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
   const workspace = await getWorkspace(env, session.user.id, workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const result = await env.DB.prepare(`
-    SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status, output_key AS outputKey,
+    SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
       output_content_type AS contentType, approved_revision AS approvedRevision,
       error_message AS errorMessage, created_at AS createdAt
     FROM generations
     WHERE workspace_id = ?
     ORDER BY created_at DESC
     LIMIT 20
-  `).bind(workspace.id).all<{ id: string; campaignPackId: string | null; workflowId: string; aspectRatio: string; status: string; outputKey: string | null; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
-  return json({ generations: result.results.map((item) => ({ ...item, imageUrl: item.outputKey ? `/api/generations/${item.id}/image` : null })) })
+  `).bind(workspace.id).all<{ id: string; campaignPackId: string | null; workflowId: string; aspectRatio: string; status: string; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
+  return json({
+    generations: result.results.map((item) => ({
+      id: item.id,
+      campaignPackId: item.campaignPackId,
+      workflowId: item.workflowId,
+      aspectRatio: item.aspectRatio,
+      status: item.status,
+      contentType: item.contentType,
+      approvedRevision: item.approvedRevision,
+      errorMessage: item.errorMessage,
+      createdAt: item.createdAt,
+      imageUrl: item.status === 'completed' ? `/api/generations/${item.id}/image` : null
+    }))
+  })
 }
 
 async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
@@ -1272,31 +1422,75 @@ export default {
 
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
-      const { generationId, input } = message.body as GenerationMessage
+      const queuedMessage = message.body && typeof message.body === 'object'
+        ? message.body as Partial<GenerationMessage>
+        : null
+      const generationId = typeof queuedMessage?.generationId === 'string' ? queuedMessage.generationId : ''
+      if (!boundedString(generationId, 64)) {
+        message.ack()
+        continue
+      }
+
+      let workspaceId: string | null = null
       let storedOutputKey: string | null = null
       try {
         const claim = await env.DB.prepare(`
           UPDATE generations
           SET status = 'processing', processing_attempt = ?, error_message = NULL
-          WHERE id = ? AND workspace_id = ?
+          WHERE id = ?
             AND (status = 'queued' OR (status = 'processing' AND processing_attempt < ?))
-        `).bind(message.attempts, generationId, input.workspaceId, message.attempts).run()
+        `).bind(message.attempts, generationId, message.attempts).run()
         if (!claim.meta.changes) {
           message.ack()
           continue
         }
-        const mode = generationMode(env)
-        if (mode === 'disabled') throw new Error('Campaign generation is disabled for this deployment.')
+
+        const canonical = await env.DB.prepare(`
+          SELECT g.workspace_id AS workspaceId, g.input_json AS inputJson, w.access_status AS accessStatus
+          FROM generations g
+          LEFT JOIN workspaces w ON w.id = g.workspace_id
+          WHERE g.id = ? AND g.status = 'processing'
+        `).bind(generationId).first<{ workspaceId: string; inputJson: string; accessStatus: string | null }>()
+        if (!canonical) throw new TerminalGenerationError('Canonical generation record is unavailable.')
+        workspaceId = canonical.workspaceId
+        if (canonical.accessStatus !== 'active') throw new TerminalGenerationError('Canonical workspace is inactive.')
+        if (typeof canonical.inputJson !== 'string' || canonical.inputJson.length > MAX_GENERATION_BODY_BYTES) {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+
+        let input: unknown
+        try {
+          input = JSON.parse(canonical.inputJson)
+        } catch {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+        if (!validInput(input) || input.workspaceId !== workspaceId) {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+        if (!validInput(queuedMessage?.input) || generationInputIdentity(queuedMessage.input) !== generationInputIdentity(input)) {
+          throw new TerminalGenerationError('Queue message identity does not match canonical input.')
+        }
+
         const workflow = workflowById(input.workflowId)
+        if (!workflow.ratios.includes(input.aspectRatio) || validateCompositionInput(input).length) {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+        await requireCurrentGenerationExecution(env, input)
+
+        const mode = generationMode(env)
+        if (mode === 'disabled') throw new TerminalGenerationError('Campaign generation is disabled for this deployment.')
         const source = await generationSourceAsset(env, input)
         let background: { base64: string; contentType: 'image/png' } | undefined
         if (mode === 'assisted' && env.OPENAI_API_KEY) {
+          await requireCurrentGenerationExecution(env, input)
           const copy = await new OpenAICopyProvider(env.OPENAI_API_KEY).createCopy({ brand: input.brand, product: input.product, workflowTitle: workflow.title, aspectRatio: input.aspectRatio })
+          await requireCurrentGenerationExecution(env, input)
           const generated = await new OpenAIImageProvider(env.OPENAI_API_KEY).generate({ prompt: `${copy.imagePrompt}\nBackground scene only. Do not render text, logos, prices, claims, or a replacement product.`, aspectRatio: input.aspectRatio, referenceImageUrls: [] })
           background = { base64: generated.imageBase64, contentType: 'image/png' }
         }
         const output = composeCampaignSvg({ input, source, background })
         const key = `workspaces/${input.workspaceId}/generations/${generationId}.svg`
+        await requireCurrentGenerationExecution(env, input)
         await env.MEDIA_BUCKET.put(key, output, {
           httpMetadata: { contentType: CAMPAIGN_OUTPUT_CONTENT_TYPE },
           customMetadata: {
@@ -1308,29 +1502,45 @@ export default {
           }
         })
         storedOutputKey = key
-        await completeGenerationAndSettle(env, input.workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE)
+        await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE)
         storedOutputKey = null
         message.ack()
       } catch (error) {
         if (storedOutputKey) await env.MEDIA_BUCKET.delete(storedOutputKey).catch(() => null)
+        if (!workspaceId) {
+          workspaceId = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM generations WHERE id = ?')
+            .bind(generationId)
+            .first<{ workspaceId: string }>()
+            .then((row) => row?.workspaceId ?? null)
+            .catch(() => null)
+        }
         const internalReason = error instanceof Error ? error.message : ''
-        const retryable = error instanceof TypeError || /request failed: (408|409|429|5\d\d)/i.test(internalReason)
+        const retryable = !(error instanceof TerminalGenerationError)
+          && (error instanceof TypeError || /request failed: (408|409|429|5\d\d)/i.test(internalReason))
         if (retryable && message.attempts <= 3) {
-          const reset = await env.DB.prepare(`
-            UPDATE generations SET status = 'queued', error_message = ?
-            WHERE id = ? AND workspace_id = ? AND status = 'processing'
-          `).bind(RETRYING_GENERATION_MESSAGE, generationId, input.workspaceId).run()
+          const reset = workspaceId
+            ? await env.DB.prepare(`
+              UPDATE generations SET status = 'queued', error_message = ?
+              WHERE id = ? AND workspace_id = ? AND status = 'processing'
+            `).bind(RETRYING_GENERATION_MESSAGE, generationId, workspaceId).run()
+            : await env.DB.prepare(`
+              UPDATE generations SET status = 'queued', error_message = ?
+              WHERE id = ? AND status = 'processing'
+            `).bind(RETRYING_GENERATION_MESSAGE, generationId).run()
           if (reset.meta.changes) {
             message.retry({ delaySeconds: 60 })
             continue
           }
         }
         try {
-          await failGenerationAndRelease(env, input.workspaceId, generationId, FAILED_GENERATION_MESSAGE)
+          if (!workspaceId) throw new Error('Generation workspace is unavailable.')
+          await failGenerationAndRelease(env, workspaceId, generationId, FAILED_GENERATION_MESSAGE)
           message.ack()
         } catch {
           console.error('generation-settlement-failed')
-          const reset = await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing'").bind(generationId, input.workspaceId).run()
+          const reset = workspaceId
+            ? await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing'").bind(generationId, workspaceId).run()
+            : await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND status = 'processing'").bind(generationId).run()
           if (reset.meta.changes) message.retry({ delaySeconds: 60 })
           else message.ack()
         }

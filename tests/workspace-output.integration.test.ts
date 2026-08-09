@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers'
 import { createExecutionContext, createMessageBatch, getQueueResult } from 'cloudflare:test'
+import { getAgentByName } from 'agents'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker, { type Env, type GenerationMessage } from '../src/worker'
 import { dispatch, generationInput, registerAccount } from './helpers'
@@ -15,6 +16,14 @@ function approvedAssistedEnv(envOverride: Env = env): Env {
     ASSISTED_BUDGET_MODE: 'approved',
     OPENAI_API_KEY: 'test-openai-key'
   }
+}
+
+function manuallyDeliveredAssistedEnv(): Env {
+  const holdingQueue = {
+    send: async () => undefined,
+    sendBatch: async () => undefined
+  } as unknown as Queue<GenerationMessage>
+  return approvedAssistedEnv({ ...env, GENERATION_QUEUE: holdingQueue })
 }
 
 async function createGeneration(cookie: string, input: ReturnType<typeof generationInput>, envOverride: Env = env) {
@@ -92,6 +101,36 @@ async function ledgerCount(generationId: string, eventType: string) {
   return row?.count ?? 0
 }
 
+async function expectTerminalGenerationState(
+  account: Awaited<ReturnType<typeof registerAccount>>,
+  generationId: string
+) {
+  expect(await env.DB.prepare('SELECT status, output_key AS outputKey FROM generations WHERE id = ?')
+    .bind(generationId)
+    .first<{ status: string; outputKey: string | null }>()).toEqual({ status: 'failed', outputKey: null })
+  expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+  expect(await ledgerCount(generationId, 'reservation')).toBe(1)
+  expect(await ledgerCount(generationId, 'release')).toBe(1)
+  expect(await ledgerCount(generationId, 'settlement')).toBe(0)
+  expect(await env.MEDIA_BUCKET.get(`workspaces/${account.currentWorkspace.id}/generations/${generationId}.svg`)).toBeNull()
+}
+
+async function expectTerminalQueueFailure(
+  account: Awaited<ReturnType<typeof registerAccount>>,
+  generationId: string,
+  queuedInput: ReturnType<typeof generationInput>,
+  attempts = 1,
+  envOverride: Env = approvedAssistedEnv()
+) {
+  const fetchMock = vi.fn(async () => { throw new Error('External providers must not be called for stale work.') })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const result = await deliver({ generationId, input: queuedInput }, attempts, crypto.randomUUID(), envOverride)
+  expect(result.explicitAcks).toHaveLength(1)
+  expect(fetchMock).not.toHaveBeenCalled()
+  await expectTerminalGenerationState(account, generationId)
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -164,6 +203,13 @@ describe('workspace authorization and output allowance integrity', () => {
     const listedPayload = await listed.json() as { generations: Array<{ id: string; status: string; imageUrl: string }> }
     expect(listedPayload.generations).toHaveLength(3)
     expect(listedPayload.generations.every((item) => item.status === 'completed' && item.imageUrl)).toBe(true)
+    for (const generation of listedPayload.generations) {
+      expect(Object.keys(generation).sort()).toEqual([
+        'approvedRevision', 'aspectRatio', 'campaignPackId', 'contentType', 'createdAt',
+        'errorMessage', 'id', 'imageUrl', 'status', 'workflowId'
+      ].sort())
+      expect(JSON.stringify(generation)).not.toMatch(/output[_-]?key|storage|workspaces\//i)
+    }
 
     const stored = await env.DB.prepare(`
       SELECT id, output_key AS outputKey
@@ -367,6 +413,171 @@ describe('workspace authorization and output allowance integrity', () => {
     const output = await env.MEDIA_BUCKET.get(generation!.outputKey)
     expect(output?.httpMetadata?.contentType).toBe('image/svg+xml')
     expect(await output?.text()).toContain('<svg')
+  })
+
+  it('terminally fails a queued generation after its approved brief is replanned', async () => {
+    const account = await registerAccount('Queue Replan')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+
+    const replanned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({
+        brief: {
+          assetId: input.referenceAssetIds[0],
+          intent: input.intent,
+          brand: input.brand,
+          product: { ...input.product, promotion: 'A changed, unapproved offer' }
+        }
+      })
+    }, assistedEnv)
+    expect(replanned.status).toBe(200)
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('revalidates approval on a retry and releases once after the Agent is reset', async () => {
+    const account = await registerAccount('Queue Reset Retry')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    await env.DB.prepare("UPDATE generations SET status = 'processing', processing_attempt = 1 WHERE id = ?").bind(id).run()
+
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, account.currentWorkspace.id)
+    await agent.resetPlan()
+    await expectTerminalQueueFailure(account, id, input, 2, assistedEnv)
+
+    const duplicate = await deliver({ generationId: id, input }, 3, crypto.randomUUID(), assistedEnv)
+    expect(duplicate.explicitAcks).toHaveLength(1)
+    expect(await ledgerCount(id, 'release')).toBe(1)
+  })
+
+  it('terminally fails claimed work when the canonical workspace is suspended', async () => {
+    const account = await registerAccount('Queue Suspended Workspace')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    await env.DB.prepare("UPDATE workspaces SET access_status = 'suspended' WHERE id = ?").bind(account.currentWorkspace.id).run()
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('terminally fails before provider or R2 work when the canonical source asset is gone', async () => {
+    const account = await registerAccount('Queue Missing Source')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const asset = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .first<{ objectKey: string }>()
+    await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(input.referenceAssetIds[0], account.currentWorkspace.id).run()
+    if (asset) await env.MEDIA_BUCKET.delete(asset.objectKey)
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('rejects a queue message whose input does not match the canonical D1 input', async () => {
+    const account = await registerAccount('Queue Message Identity')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const tampered = { ...input, product: { ...input.product, price: 'Unapproved queue value' } }
+
+    await expectTerminalQueueFailure(account, id, tampered, 1, assistedEnv)
+  })
+
+  it('rechecks approval after copy egress and blocks image-provider egress after a concurrent replan', async () => {
+    const account = await registerAccount('Queue Provider Replan')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        const agent = await getAgentByName(env.CAMPAIGN_AGENT, account.currentWorkspace.id)
+        await agent.planBrief({
+          assetId: input.referenceAssetIds[0],
+          intent: input.intent,
+          brand: input.brand,
+          product: { ...input.product, promotion: 'Concurrent unapproved replan' }
+        })
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) return Response.json({ data: [{ b64_json: btoa('must-not-run') }] })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expectTerminalGenerationState(account, id)
+  })
+
+  it('rechecks workspace activity immediately before R2 put after provider execution', async () => {
+    const account = await registerAccount('Queue Provider Suspension')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        await env.DB.prepare("UPDATE workspaces SET access_status = 'suspended' WHERE id = ?").bind(account.currentWorkspace.id).run()
+        return Response.json({ data: [{ b64_json: btoa('generated-background') }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expectTerminalGenerationState(account, id)
+  })
+
+  it('rechecks source ownership immediately before R2 put after provider execution', async () => {
+    const account = await registerAccount('Queue Provider Source Delete')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const asset = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .first<{ objectKey: string }>()
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(input.referenceAssetIds[0], account.currentWorkspace.id).run()
+        if (asset) await env.MEDIA_BUCKET.delete(asset.objectKey)
+        return Response.json({ data: [{ b64_json: btoa('generated-background') }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expectTerminalGenerationState(account, id)
   })
 
   it('builds a private deterministic SVG without contacting an external provider', async () => {

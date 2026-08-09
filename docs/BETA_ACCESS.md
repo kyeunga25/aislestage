@@ -42,7 +42,7 @@ restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`：身份必須先對�
 - workspace role：`owner`、`admin`、`member`；目前只表示 active membership，所有內容操作仍由 server-side workspace scope 驗證。
 - workspace access：只有 `active` workspace 可建立 session context 或執行受保護操作。
 
-公開介面不提供帳號清單或邀請管理。邀請可由 `npm run cf:invite` 在受保護本機環境建立；收件電郵及 D1 名稱只由環境變數提供，不寫入 repository 或 script output。撤銷、帳號狀態變更及成員指派只可經受保護的操作流程完成。
+公開介面不提供帳號清單或邀請管理。邀請可由 `npm run cf:invite` 在受保護本機環境建立；收件電郵只由 `AISLESTAGE_INVITE_EMAIL` 環境變數提供，D1 則只使用受保護 `wrangler.local.jsonc` 內的通用 `DB` binding。script 拒絕以 command-line flags 傳入收件電郵、資料庫或 config，亦不會把這些受保護值交給 child-process argv。撤銷、帳號狀態變更及成員指派只可經受保護的操作流程完成。
 
 ## 隔離測試流程
 

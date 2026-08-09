@@ -41,6 +41,19 @@ async function uploadPng(cookie: string, name = 'speaker.png') {
   })
 }
 
+async function uploadJpeg(cookie: string, bytes: Uint8Array, name = 'product.jpg') {
+  const form = new FormData()
+  form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: 'image/jpeg' }))
+  return dispatch('/api/assets/product', {
+    method: 'POST',
+    headers: { cookie, origin: 'https://app.test' },
+    body: form
+  })
+}
+
+const jpegScanHeader = [0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]
+const jpegFrameHeader = [0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]
+
 describe('private product assets', () => {
   it('validates, stores and privately serves a workspace product image', async () => {
     const owner = await registerAccount('Asset Owner')
@@ -79,6 +92,61 @@ describe('private product assets', () => {
     form.set('file', new File([bytes], 'private-details.png', { type: 'image/png' }))
 
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('metadata') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('accepts a structurally bounded JPEG with fill bytes, stuffed bytes, restart markers and multiple scans', async () => {
+    const owner = await registerAccount('Safe JPEG Markers')
+    const bytes = new Uint8Array([
+      0xff, 0xd8,
+      0xff, 0xe0, 0x00, 0x02,
+      ...jpegFrameHeader,
+      ...jpegScanHeader,
+      0x11, 0xff, 0x00, 0x22, 0xff, 0xd0, 0x33,
+      0xff, 0xff, ...jpegScanHeader.slice(1),
+      0x44, 0xff, 0xd7, 0x55,
+      0xff, 0xd9
+    ])
+
+    const response = await uploadJpeg(owner.cookie, bytes)
+    expect(response.status).toBe(201)
+    expect(await response.json()).toMatchObject({ asset: { contentType: 'image/jpeg', sizeBytes: bytes.byteLength } })
+  })
+
+  it.each([
+    {
+      label: 'repeated marker fill before APP1',
+      bytes: [0xff, 0xd8, 0xff, 0xff, 0xe1, 0x00, 0x02, 0xff, 0xd9]
+    },
+    {
+      label: 'standalone restart marker before APP13',
+      bytes: [0xff, 0xd8, 0xff, 0xd0, 0xff, 0xed, 0x00, 0x02, 0xff, 0xd9]
+    },
+    {
+      label: 'comment marker after stuffed entropy data and a second scan',
+      bytes: [
+        0xff, 0xd8, ...jpegFrameHeader, ...jpegScanHeader, 0x11, 0xff, 0x00, 0x22,
+        ...jpegScanHeader, 0x33, 0xff, 0xfe, 0x00, 0x02, 0xff, 0xd9
+      ]
+    },
+    {
+      label: 'truncated segment length',
+      bytes: [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x00, 0xff, 0xd9]
+    },
+    {
+      label: 'missing end-of-image marker',
+      bytes: [0xff, 0xd8, ...jpegFrameHeader, ...jpegScanHeader, 0x11, 0xff, 0x00, 0x22]
+    },
+    {
+      label: 'end-of-image without a frame or scan',
+      bytes: [0xff, 0xd8, 0xff, 0xd9]
+    }
+  ])('fails closed for JPEG metadata or malformed marker structure: $label', async ({ bytes }) => {
+    const owner = await registerAccount('Unsafe JPEG Markers')
+    const response = await uploadJpeg(owner.cookie, new Uint8Array(bytes))
+
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('metadata') })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
