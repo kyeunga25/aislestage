@@ -51,6 +51,7 @@ export function CampaignWorkspace(props: Props) {
     && englishReady
   )
   const imageReady = image.status === 'ready' || image.status === 'demo'
+  const imageMutationBusy = image.status === 'uploading'
   const agentReady = agentState.stage === 'awaiting-approval' || agentState.stage === 'approved'
 
   const setProduct = (key: keyof Product, value: string | string[]) => onProductChange({ ...product, [key]: value })
@@ -69,6 +70,10 @@ export function CampaignWorkspace(props: Props) {
   }
 
   function chooseImage(event: ChangeEvent<HTMLInputElement>) {
+    if (imageMutationBusy) {
+      event.target.value = ''
+      return
+    }
     const file = event.target.files?.[0]
     if (file) onImageSelected(file)
     event.target.value = ''
@@ -117,12 +122,12 @@ export function CampaignWorkspace(props: Props) {
           ? <img src={image.url} alt={`${product.name || '商品'} 商品原圖`} />
           : <div><ImagePlus size={28} /><strong>加入商品原圖</strong><span>圖片只會透過已授權的工作區路徑顯示</span></div>}
         </div>
-        <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={image.status === 'uploading'}>
+        <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={imageMutationBusy}>
           {image.status === 'uploading' ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
           <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
         </button>
-        <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} />
-        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片"><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label="刪除圖片"><Trash2 size={15} /></button> : null}</div></div>
+        <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} disabled={imageMutationBusy} />
+        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageMutationBusy}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label="刪除圖片" disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
       </section>
 
       <CampaignAgentPanel state={agentState} busy={agentBusy} generationAvailable={generationAvailable} onPlan={onPlan} onApprove={onApprove} onGenerate={onGenerate} />

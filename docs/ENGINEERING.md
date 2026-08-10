@@ -140,7 +140,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - MIME type 與檔案 signature 必須相符；
 - PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC 與完整結尾；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
-- upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱；只接受 exact `201 application/json` asset envelope，並把 UUID、canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；
+- upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱；只接受 exact `201 application/json` asset envelope，並把 UUID、canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，hidden file input、主要上載、更換與刪除控制會一併鎖定，避免同一 UI 啟動競爭的私人 asset mutation；
 - R2 object key 只由 server 生成；
 - 私人商品圖 GET 先做 workspace-scoped D1 metadata 查詢，再讀取私人 R2 object；真正不存在或跨 workspace 保持 `404`，D1 或 R2 暫時不可讀則回雙語 no-store `503 unavailable`，固定 log 不包含 object key、workspace ID 或原始錯誤；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；

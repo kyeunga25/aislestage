@@ -29,6 +29,31 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toContain(`maxLength="${campaignBriefLimits.product.category}" value="synthetic-category"`)
   })
 
+  it('locks every product-image mutation control while an upload is in progress', () => {
+    const markup = renderToStaticMarkup(<CampaignWorkspace
+      brand={starterBrand}
+      product={starterProduct}
+      intent="新品推廣"
+      image={{ name: 'synthetic-upload.png', url: 'blob:synthetic-upload', asset: null, status: 'uploading', error: '' }}
+      agentState={initialCampaignAgentState()}
+      agentBusy={false}
+      generationAvailable={true}
+      onBrandChange={vi.fn()}
+      onProductChange={vi.fn()}
+      onIntentChange={vi.fn()}
+      onImageSelected={vi.fn()}
+      onImageDelete={vi.fn()}
+      onPlan={vi.fn()}
+      onApprove={vi.fn()}
+      onGenerate={vi.fn()}
+    />)
+
+    expect(markup.match(/disabled=""/g)).toHaveLength(4)
+    expect(markup).toMatch(/<input[^>]+type="file"[^>]+disabled=""/)
+    expect(markup).toMatch(/<button[^>]+aria-label="更換圖片"[^>]+disabled=""/)
+    expect(markup).toMatch(/<button[^>]+aria-label="刪除圖片"[^>]+disabled=""/)
+  })
+
   it('keeps the Agent at needs-input until the required category is present', () => {
     const state = buildCampaignPlan({
       assetId: 'synthetic-asset',
