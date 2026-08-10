@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker, { type Env, type GenerationMessage } from '../src/worker'
 import { dispatch, generationInput, registerAccount } from './helpers'
 
+const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9ZKAAAAAASUVORK5CYII='
+
 function approvedAssistedEnv(envOverride: Env = env): Env {
   return {
     ...envOverride,
@@ -399,7 +401,7 @@ describe('workspace authorization and output allowance integrity', () => {
         return Response.json({ output_text: JSON.stringify({ imagePrompt: 'A clean background', headline: 'Headline', body: 'Body', hashtags: ['#test'], cta: 'Buy' }) })
       }
       if (url.endsWith('/v1/images/generations')) {
-        return Response.json({ data: [{ b64_json: btoa('fake-png') }] })
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })
@@ -526,7 +528,7 @@ describe('workspace authorization and output allowance integrity', () => {
         })
         return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
       }
-      if (url.endsWith('/v1/images/generations')) return Response.json({ data: [{ b64_json: btoa('must-not-run') }] })
+      if (url.endsWith('/v1/images/generations')) return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       throw new Error(`Unexpected request: ${url}`)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -551,7 +553,7 @@ describe('workspace authorization and output allowance integrity', () => {
       }
       if (url.endsWith('/v1/images/generations')) {
         await env.DB.prepare("UPDATE workspaces SET access_status = 'suspended' WHERE id = ?").bind(account.currentWorkspace.id).run()
-        return Response.json({ data: [{ b64_json: btoa('generated-background') }] })
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })
@@ -581,7 +583,7 @@ describe('workspace authorization and output allowance integrity', () => {
       if (url.endsWith('/v1/images/generations')) {
         await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(input.referenceAssetIds[0], account.currentWorkspace.id).run()
         if (asset) await env.MEDIA_BUCKET.delete(asset.objectKey)
-        return Response.json({ data: [{ b64_json: btoa('generated-background') }] })
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })
@@ -642,7 +644,7 @@ describe('workspace authorization and output allowance integrity', () => {
         return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Recovered background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
       }
       if (url.endsWith('/v1/images/generations')) {
-        return Response.json({ data: [{ b64_json: btoa('recovered-png') }] })
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })

@@ -49,7 +49,7 @@ npm run cf:types:check
 | `ASSISTED_BUDGET_MODE` | `disabled` | 付費推理與相關預算未批准 |
 | `MAX_ACTIVE_GENERATIONS_PER_WORKSPACE` | `3` | 每個 workspace 最多三個 reserved Queue outputs |
 
-目前 adapter 的 credential 是 Worker-side secret。只有 `GENERATION_MODE=assisted`、provider allowlist、資料政策、固定評估、預算及 secret 六項全部通過時才會使用。結構化回應會再由本機 validator 核對完整 schema；拒絕、缺漏或無效 JSON 會 fail closed。
+目前 adapter 的 credential 是 Worker-side secret。只有 `GENERATION_MODE=assisted`、provider allowlist、資料政策、固定評估、預算及 secret 六項全部通過時才會使用。文字 request 固定 output token 上限；success response 以實際串流位元組及 chunk 數限制讀取，不只信任 `Content-Length`。本機 validator 會再核對 JSON MIME／UTF-8、exact schema、欄位長度、base64 大小及 PNG signature；拒絕、缺漏、超限、過度碎片或無效 response 均 fail closed。未使用的 error body 會立即取消。
 
 ## Authentication and workspace boundary
 
@@ -136,7 +136,7 @@ Integration tests 會套用所有 D1 migrations，並覆蓋：
 - duplicate Queue delivery、retry recovery、settlement 與 release；
 - deterministic SVG 不呼叫外部 provider；
 - synthetic assisted quality／latency／budget evaluation；
-- structured provider output parsing。
+- structured provider output parsing、misleading／oversized／fragmented response 及 bounded PNG validation。
 
 ## Protected deployment
 

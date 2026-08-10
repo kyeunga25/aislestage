@@ -9,6 +9,7 @@
 - [x] provider-neutral payment boundary 保持 disabled，沒有 checkout 或付款狀態宣稱；
 - [x] public repository egress gate 納入本機及 CI；
 - [x] workspace status、Queue、allowance、provider 與 observability 合約經測試核對；
+- [x] provider success response 具實際 byte／chunk、MIME／UTF-8、exact field、文字長度、base64 與 PNG signature 邊界；
 - [x] 完成輸出預設為私人草稿，owner／admin 的不可變審核決定與逐項受控下載已通過隔離 integration 及 browser QA；
 - [x] `/app` 與 `/app/*` 採 Worker-first，工作區 shell 在 Access JWT 及 active D1 membership 驗證後才返回；
 - [x] feature branch 的完整 repository checks，以及 390–1280px browser／visual QA 完成；
