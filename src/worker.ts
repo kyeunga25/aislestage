@@ -262,7 +262,26 @@ function isAllowedOrigin(request: Request, env: Env) {
 
 async function recordAuthAttempt(env: Env, request: Request, eventType: 'login_failed' | 'login_success' | 'register_failed' | 'register_success' | 'rate_limited', email = '') {
   const [emailKey, ipKey] = await Promise.all([email ? sha256(email) : '', sha256(getClientIp(request))])
-  await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), emailKey, ipKey, eventType).run()
+  const eventId = crypto.randomUUID()
+  try {
+    await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(eventId, emailKey, ipKey, eventType).run()
+  } catch {
+    try {
+      const stored = await env.DB.prepare(`
+        SELECT email, ip_address AS ipAddress, event_type AS eventType
+        FROM auth_attempts
+        WHERE id = ?
+      `).bind(eventId).first<{ email: string; ipAddress: string; eventType: string }>()
+      if (stored
+        && stored.email === emailKey
+        && stored.ipAddress === ipKey
+        && stored.eventType === eventType) return
+    } catch {
+      // Report only the bounded event below; auth keys and database details stay private.
+    }
+    console.error('auth-attempt-reconciliation-failed')
+    throw new TypeError('Authentication event storage is unavailable.')
+  }
 }
 
 async function authAttemptCount(env: Env, request: Request, options: { email?: string; eventTypes: string[]; minutes: number }) {

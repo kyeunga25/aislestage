@@ -279,6 +279,47 @@ describe('restricted registration authentication', () => {
     expect(await session.json()).toMatchObject({ authenticated: true, user: { id: account.user.id } })
   })
 
+  it('reconciles an authentication event that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Auth Event')
+    await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    })
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO auth_attempts')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after auth event commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const login = await dispatch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.19', origin: 'https://app.test' },
+      body: JSON.stringify({ email: account.user.email, password: 'SecurePass123!' })
+    }, { ...env, DB: ambiguousDb })
+
+    expect(login.status).toBe(200)
+    expect(login.headers.get('set-cookie')).toContain('aislestage_session=')
+    expect(await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM auth_attempts
+      WHERE email = ? AND event_type = 'login_success'
+    `).bind(await hashValue(account.user.email)).first()).toEqual({ count: 1 })
+    expect((await dispatch('/api/session', { headers: { cookie: cookieFrom(login) } })).status).toBe(200)
+  })
+
   it('rejects expired sessions and expires the browser cookie', async () => {
     const account = await registerAccount('Expired User')
     await env.DB.prepare("UPDATE sessions SET expires_at = datetime('now', '-1 minute') WHERE user_id = ?").bind(account.user.id).run()
