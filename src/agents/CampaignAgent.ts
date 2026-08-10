@@ -54,8 +54,9 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
 
   @callable()
   approvePlan(revision: number) {
-    if (this.state.stage !== 'awaiting-approval') return { ok: false as const, error: 'This campaign plan is not ready for approval.' }
     if (revision !== this.state.revision) return { ok: false as const, error: 'The campaign plan changed. Review the latest revision before approving.' }
+    if (this.state.stage === 'approved') return { ok: true as const, state: this.state, replayed: true as const }
+    if (this.state.stage !== 'awaiting-approval') return { ok: false as const, error: 'This campaign plan is not ready for approval.' }
     const next: CampaignAgentState = {
       ...this.state,
       stage: 'approved',
@@ -63,7 +64,7 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
       messages: [...this.state.messages, { id: `approved-${revision}`, role: 'user' as const, text: '已批准這個輸出計劃。' }].slice(-12)
     }
     this.setState(next)
-    return { ok: true as const, state: next }
+    return { ok: true as const, state: next, replayed: false as const }
   }
 
   @callable()

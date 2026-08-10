@@ -1073,7 +1073,7 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
     if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
     const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
-    if (parsed.tooLarge) return json({ error: 'Campaign brief is too large.' }, { status: 413 })
+    if (parsed.tooLarge) return json({ error: 'Campaign Agent 請求過大。 Campaign Agent payload is too large.' }, { status: 413 })
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
     if (action === 'plan') {
       const briefIssues = validateCampaignBrief(body.brief)
@@ -1088,14 +1088,19 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
       return json({ state: await agent.planBrief(brief) })
     }
     if (action === 'approve') {
+      const keys = Object.keys(body)
+      const revision = body.revision
+      if (keys.length !== 1 || keys[0] !== 'revision' || !Number.isSafeInteger(revision) || Number(revision) <= 0) {
+        return json({ error: '批准版本格式無效。 Approval revision must be a positive integer.' }, { status: 400 })
+      }
       const state = await agent.getPlan()
       if (state.stage === 'awaiting-approval' && state.brief?.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
         const object = asset ? await env.MEDIA_BUCKET.head(asset.objectKey) : null
         if (!asset || !object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
       }
-      const result = await agent.approvePlan(Number(body.revision))
-      return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
+      const result = await agent.approvePlan(revision as number)
+      return result.ok ? json({ state: result.state, replayed: result.replayed }) : json({ error: result.error }, { status: 409 })
     }
     return json({ error: 'Not found.' }, { status: 404 })
   } catch {

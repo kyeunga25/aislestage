@@ -422,7 +422,7 @@ describe('workspace Campaign Agent', () => {
     const staleApproval = await dispatch('/api/campaign-agent/approve', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
-      body: JSON.stringify({ revision: 0 })
+      body: JSON.stringify({ revision: 2 })
     })
     expect(staleApproval.status).toBe(409)
 
@@ -438,6 +438,58 @@ describe('workspace Campaign Agent', () => {
     const otherState = await dispatch('/api/campaign-agent', { headers: { cookie: otherOwner.cookie } })
     expect(otherState.status).toBe(200)
     expect(await otherState.json()).toMatchObject({ state: { stage: 'idle', revision: 0 } })
+  })
+
+  it('requires an exact approval revision and makes concurrent replay idempotent', async () => {
+    const owner = await registerAccount('Strict Agent Approval')
+    const uploaded = await uploadPng(owner.cookie, 'strict-approval-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    const { state: plannedState } = await planned.json() as { state: { revision: number } }
+    const approve = (body: unknown) => dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify(body)
+    })
+
+    for (const malformed of [
+      { revision: true },
+      { revision: String(plannedState.revision) },
+      { revision: null },
+      { revision: 0 },
+      { revision: 1.5 },
+      { revision: plannedState.revision, unexpected: true },
+      []
+    ]) {
+      const response = await approve(malformed)
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: expect.stringMatching(/批准版本格式無效.*Approval revision/) })
+      expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((stateResponse) => stateResponse.json())).toMatchObject({
+        state: { stage: 'awaiting-approval', revision: plannedState.revision }
+      })
+    }
+
+    const oversized = await approve({ revision: plannedState.revision, padding: 'x'.repeat(48_000) })
+    expect(oversized.status).toBe(413)
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((stateResponse) => stateResponse.json())).toMatchObject({
+      state: { stage: 'awaiting-approval', revision: plannedState.revision }
+    })
+
+    const concurrent = await Promise.all([approve({ revision: plannedState.revision }), approve({ revision: plannedState.revision })])
+    expect(concurrent.map((response) => response.status)).toEqual([200, 200])
+    const concurrentPayloads = await Promise.all(concurrent.map((response) => response.json())) as Array<{ replayed: boolean; state: { approvedAt: string; messages: Array<{ id: string }> } }>
+    expect(concurrentPayloads.map((payload) => payload.replayed).sort()).toEqual([false, true])
+    expect(concurrentPayloads[0].state.approvedAt).toBe(concurrentPayloads[1].state.approvedAt)
+    expect(concurrentPayloads[1].state.messages.filter((message) => message.id === `approved-${plannedState.revision}`)).toHaveLength(1)
+
+    const replay = await approve({ revision: plannedState.revision })
+    expect(replay.status).toBe(200)
+    expect(await replay.json()).toMatchObject({ replayed: true, state: { stage: 'approved', revision: plannedState.revision, approvedAt: concurrentPayloads[0].state.approvedAt } })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
   })
 
   it('keeps the current revision when replanning references a missing or cross-workspace asset', async () => {

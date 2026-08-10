@@ -58,6 +58,7 @@
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；
 - [x] Agent 與 compositor 共用三比例換行／明細行數 validator，任一比例超界的商業文字更正前不可批准或預留輸出；
 - [x] 無空格 SKU／型號 token 會按共用視覺單位有界拆行，不丟失或替換商業字元；
+- [x] Agent approval 嚴格驗證單一正整數 revision，並在同 revision 併發／重送時保持冪等；
 - [x] 修改資料後前端計劃立即失效，Worker 再獨立比對；
 - [x] atomic + idempotent 三輸出 Campaign Pack API；
 - [x] Queue batch failure 全數退回、duplicate delivery 冪等；
