@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from './fetch-with-timeout'
+
 export type PrivateResourceKind = 'product-asset' | 'generation'
 
 type ResourceConfig = {
@@ -23,6 +25,7 @@ const resourceConfigs: Record<PrivateResourceKind, ResourceConfig> = {
 }
 
 const resourceIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+const PRIVATE_DELETE_TIMEOUT_MS = 15_000
 
 function deleteFailureMessage(kind: PrivateResourceKind, status: number) {
   if (status === 401 || status === 403) {
@@ -40,21 +43,25 @@ export async function deletePrivateResource(kind: PrivateResourceKind, resourceI
     throw new Error(config?.invalidIdentityMessage || '私人資產識別資料無效，請重新載入。 Private resource identity is invalid; reload it.')
   }
 
-  let response: Response
+  let outcome: { status: number; ok: boolean }
   try {
-    response = await fetch(`${config.path}/${encodeURIComponent(resourceId)}`, {
-      method: 'DELETE',
-      credentials: 'same-origin'
-    })
+    outcome = await fetchWithTimeout(
+      `${config.path}/${encodeURIComponent(resourceId)}`,
+      {
+        method: 'DELETE',
+        credentials: 'same-origin'
+      },
+      PRIVATE_DELETE_TIMEOUT_MS,
+      async (response) => {
+        const result = { status: response.status, ok: response.ok }
+        await response.body?.cancel().catch(() => undefined)
+        return result
+      }
+    )
   } catch {
     throw new Error(config.unavailableMessage)
   }
-  if (response.status === 204) return
-  if (response.status === 404) {
-    await response.body?.cancel().catch(() => undefined)
-    return
-  }
-  await response.body?.cancel().catch(() => undefined)
-  if (response.ok) throw new Error(config.invalidResponseMessage)
-  throw new Error(deleteFailureMessage(kind, response.status))
+  if (outcome.status === 204 || outcome.status === 404) return
+  if (outcome.ok) throw new Error(config.invalidResponseMessage)
+  throw new Error(deleteFailureMessage(kind, outcome.status))
 }

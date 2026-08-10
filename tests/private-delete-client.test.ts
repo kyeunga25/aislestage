@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deletePrivateResource } from '../src/lib/private-delete-client'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -15,7 +16,8 @@ describe('private resource delete client', () => {
     await expect(deletePrivateResource('product-asset', resourceId)).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledOnce()
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/assets/${resourceId}`)
-    expect(fetchMock.mock.calls[0]?.[1]).toEqual({ method: 'DELETE', credentials: 'same-origin' })
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'DELETE', credentials: 'same-origin' })
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('deletes one generation through the exact same-origin route', async () => {
@@ -30,6 +32,27 @@ describe('private resource delete client', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'synthetic detail' }, { status: 404 })))
 
     await expect(deletePrivateResource('generation', resourceId)).resolves.toBeUndefined()
+  })
+
+  it('aborts an unresolved deletion at the endpoint deadline and preserves a retryable error', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const completion = setTimeout(() => resolve(new Response(null, { status: 204 })), 30_000)
+      init?.signal?.addEventListener('abort', () => {
+        clearTimeout(completion)
+        reject(new DOMException('Aborted', 'AbortError'))
+      }, { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const deletion = deletePrivateResource('product-asset', resourceId)
+    const assertion = expect(deletion).rejects.toThrow(
+      '商品圖片刪除暫時無法使用。 Product image deletion is temporarily unavailable.'
+    )
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('rejects a non-canonical success status', async () => {

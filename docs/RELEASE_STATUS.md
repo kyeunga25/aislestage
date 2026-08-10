@@ -50,7 +50,7 @@
 - [x] Agent GET／plan／approve 都要求 exact `200 application/json`；GET 另要求 exact `{ state }` envelope，三者共用 bounded、unique-ID normalizer，分別綁定 canonical brief 與 requested revision／timestamp／replay marker；非 canonical status、錯誤 media type、額外 outer field、malformed state 或 server detail 不會套用；
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
 - [x] 商品圖／已完成輸出的 scoped delete preflight metadata 不可讀時回固定雙語 no-store `503`；D1 row、私人 R2 object 及 Agent revision 均不變；
-- [x] browser delete client 每次只接受一個 bounded safe ID、same-origin route 與空 body；只把 `204`／workspace-scoped `404` 視為 absent，其他狀態保留 UI 項目且不反映任意 server error detail；
+- [x] browser delete client 每次只接受一個 bounded safe ID、same-origin route 與空 body；只把 `204`／workspace-scoped `404` 視為 absent，使用 15 秒 deadline 釋放 stalled action，逾時及其他狀態保留 UI 項目且可安全重試，不反映任意 server error detail；
 - [x] synthetic R2 delete failure 會保留 D1 retry anchor 及 Agent revision；只有 R2 delete 完成後才按 asset identity 重設 plan；
 - [x] 商品圖 D1 DELETE ambiguous commit 會核對同 workspace／asset type row；已提交回覆冪等 `204`，未提交保留 D1 retry anchor 並可再次完成刪除；
 - [x] 已完成輸出的 D1 DELETE ambiguous commit 會以 workspace-scoped row absence reconciliation；已提交回覆冪等 `204`，未提交保留 retry anchor 並可再次刪除；
