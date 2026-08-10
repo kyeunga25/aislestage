@@ -1031,6 +1031,10 @@ function invalidProductAsset() {
   return json({ error: '商品圖片完整性驗證失敗，請重新上傳。 Product image integrity check failed; upload it again.' }, { status: 409 })
 }
 
+function productAssetNotFound() {
+  return json({ error: '找不到這張商品圖片。 Product asset not found.' }, { status: 404 })
+}
+
 async function productAsset(request: Request, env: Env, session: SessionContext, assetId: string) {
   const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
@@ -1071,7 +1075,16 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
     if (parsed.tooLarge) return json({ error: 'Campaign brief is too large.' }, { status: 413 })
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
-    if (action === 'plan') return json({ state: await agent.planBrief(body.brief) })
+    if (action === 'plan') {
+      const brief = sanitizeCampaignBrief(body.brief)
+      if (brief.assetId) {
+        const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, brief.assetId)
+        if (!asset) return productAssetNotFound()
+        const object = await env.MEDIA_BUCKET.head(asset.objectKey)
+        if (!object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
+      }
+      return json({ state: await agent.planBrief(brief) })
+    }
     if (action === 'approve') {
       const state = await agent.getPlan()
       if (state.stage === 'awaiting-approval' && state.brief?.assetId) {

@@ -163,16 +163,10 @@ describe('private product assets', () => {
       headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
       body: JSON.stringify({ brief: validBrief(asset.id) })
     })
-    expect(planned.status).toBe(200)
-    const { state } = await planned.json() as { state: { revision: number } }
-    const approved = await dispatch('/api/campaign-agent/approve', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
-      body: JSON.stringify({ revision: state.revision })
-    })
-    expect(approved.status).toBe(409)
+    expect(planned.status).toBe(409)
+    expect(await planned.json()).toMatchObject({ error: expect.stringContaining('完整性') })
     expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json()))
-      .toMatchObject({ state: { stage: 'awaiting-approval', revision: state.revision } })
+      .toMatchObject({ state: { stage: 'idle', revision: 0 } })
   })
 
   it('rejects an allowlisted MIME type when the file signature does not match', async () => {
@@ -444,6 +438,34 @@ describe('workspace Campaign Agent', () => {
     const otherState = await dispatch('/api/campaign-agent', { headers: { cookie: otherOwner.cookie } })
     expect(otherState.status).toBe(200)
     expect(await otherState.json()).toMatchObject({ state: { stage: 'idle', revision: 0 } })
+  })
+
+  it('keeps the current revision when replanning references a missing or cross-workspace asset', async () => {
+    const owner = await registerAccount('Plan Asset Scope')
+    const otherOwner = await registerAccount('Other Plan Asset Scope')
+    const ownUpload = await uploadPng(owner.cookie, 'own-plan-source.png')
+    const otherUpload = await uploadPng(otherOwner.cookie, 'other-plan-source.png')
+    const { asset: ownAsset } = await ownUpload.json() as { asset: { id: string } }
+    const { asset: otherAsset } = await otherUpload.json() as { asset: { id: string } }
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(ownAsset.id) })
+    })
+    const { state: current } = await planned.json() as { state: { stage: string; revision: number } }
+
+    for (const invalidAssetId of [otherAsset.id, crypto.randomUUID()]) {
+      const response = await dispatch('/api/campaign-agent/plan', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+        body: JSON.stringify({ brief: validBrief(invalidAssetId) })
+      })
+      expect(response.status).toBe(404)
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining('Product asset not found') })
+      expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((stateResponse) => stateResponse.json())).toMatchObject({
+        state: { stage: current.stage, revision: current.revision, brief: { assetId: ownAsset.id } }
+      })
+    }
   })
 
   it('refuses approval until missing commercial facts and the product asset are supplied', async () => {

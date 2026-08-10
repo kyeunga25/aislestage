@@ -96,7 +96,7 @@ idle -> needs-input -> awaiting-approval -> approved
 - Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；
 - browser 只收到 asset ID 及授權 preview URL；
 - 跨 workspace 返回 not found；
-- preview、Agent 批准及 Queue 讀取都會重新核對 D1／R2 SHA-256、大小、MIME、asset kind 與 workspace metadata；任一不一致均不返回 object body、不批准亦不呼叫 provider；
+- Agent plan 在寫入 Durable Object 或呼叫可選 provider 前，先核對來源圖屬於目前 workspace 且 D1／R2 SHA-256、大小、MIME、asset kind 與 metadata 一致；preview、Agent 批准及 Queue 讀取亦會再次核對，任一不一致均不返回 object body、不改寫有效 revision、不批准亦不呼叫 provider；
 - D1 寫入失敗時清理剛建立的單一 R2 object；
 - 來源圖和輸出不得互相覆寫。
 - 使用者可逐一刪除明確的商品圖或已完成輸出；只有目前 Agent plan 實際引用該商品圖時，刪除才會在 Durable Object 內按 asset identity 重設計劃，刪除同 workspace 的無關圖片不會清除待審核或已批准 revision。
