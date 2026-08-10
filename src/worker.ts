@@ -965,27 +965,7 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}.${extensionForContentType(value.type)}`
   const contentDigest = await sha256Bytes(bytes)
   const contentSha256 = base64Url(new Uint8Array(contentDigest))
-
-  try {
-    const stored = await env.MEDIA_BUCKET.put(objectKey, bytes, {
-      httpMetadata: { contentType: value.type },
-      customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id },
-      sha256: contentDigest
-    })
-    if (!stored || r2Sha256(stored) !== contentSha256) throw new TypeError('Product asset storage integrity verification failed.')
-    await env.DB.prepare(`
-      INSERT INTO media_assets (
-        id, workspace_id, created_by_user_id, kind, object_key,
-        original_filename, content_type, size_bytes, content_sha256
-      )
-      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?)
-    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size, contentSha256).run()
-  } catch {
-    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
-    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
-  }
-
-  return json({
+  const createdResponse = () => json({
     asset: {
       id: assetId,
       name: storedFilename,
@@ -994,6 +974,46 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
       previewUrl: `/api/assets/${assetId}`
     }
   }, { status: 201 })
+
+  try {
+    const stored = await env.MEDIA_BUCKET.put(objectKey, bytes, {
+      httpMetadata: { contentType: value.type },
+      customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id },
+      sha256: contentDigest
+    })
+    if (!stored || r2Sha256(stored) !== contentSha256) throw new TypeError('Product asset storage integrity verification failed.')
+  } catch {
+    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
+  }
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO media_assets (
+        id, workspace_id, created_by_user_id, kind, object_key,
+        original_filename, content_type, size_bytes, content_sha256
+      )
+      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?)
+    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size, contentSha256).run()
+  } catch {
+    try {
+      const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+      if (committed) {
+        if (committed.objectKey === objectKey
+          && committed.contentType === value.type
+          && committed.sizeBytes === value.size
+          && committed.contentSha256 === contentSha256) return createdResponse()
+        return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+      }
+    } catch {
+      console.error('product-asset-upload-reconciliation-failed')
+      return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+    }
+    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
+  }
+
+  return createdResponse()
 }
 
 type StoredProductAsset = {

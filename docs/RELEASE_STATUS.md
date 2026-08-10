@@ -14,6 +14,7 @@
 - [x] 完成輸出預設為私人草稿，owner／admin 的不可變審核決定與逐項受控下載已通過隔離 integration 及 browser QA；
 - [x] Queue output SHA-256 經 R2 寫入驗收；approve／preview／download 在 D1 與 R2 digest、MIME 或 provenance metadata 不一致時 fail closed；
 - [x] 來源商品圖 SHA-256 經 R2 寫入驗收；Agent plan 在 DO mutation／provider work 前核對 workspace ownership 與 D1／R2 digest、大小、MIME、provenance，preview／approve／Queue 亦再次核對；missing／跨 workspace／失配不覆蓋既有 revision；
+- [x] 商品圖 D1 insert 的 ambiguous commit 會以 asset ID 與 canonical 欄位 reconciliation；已提交不刪 R2，明確未提交才補償刪除 object；
 - [x] PNG critical chunk／CRC／結尾及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；signature-only、truncated、checksum／length 失配與無 image data 上傳均 fail closed；
 - [x] PNG IHDR、JPEG frame、WebP VP8X／VP8／VP8L header 尺寸在解碼前限制為單邊 8192 px 及 32 MP；三種 oversized fixture 均不建立 D1／R2 asset；
 - [x] PNG chunk、JPEG structural marker 與 WebP chunk 掃描均採固定 4,096 traversal-count 上限；過度分段 JPEG 在寫入 D1／R2 前 fail closed；

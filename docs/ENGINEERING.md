@@ -112,6 +112,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
 - R2 object key 只由 server 生成；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；
+- R2 驗收後若 D1 insert 拋錯，Worker 會以 server-generated asset ID 重新讀取 workspace-scoped 記錄：完整 canonical row 已提交時返回同一 `201` 並保留 object，明確沒有 row 時才補償刪除 R2；reconciliation 本身不可用時返回不含識別資料的 `503`，不做可能破壞已提交記錄的盲目刪除；
 - Agent plan 在 Durable Object mutation／provider work 前核對來源圖的 workspace ownership 與 D1／R2 digest、大小、MIME、asset kind、workspace metadata；preview、Agent 批准及 Queue 取圖亦再次核對。找不到或失配不改寫既有 Agent revision，並在任何 provider work 前 fail closed；
 - 確定性 compositor 把已批准原圖位元組嵌入 SVG，不重新繪製商品；
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；

@@ -30,18 +30,18 @@ function validBrief(assetId: string) {
   }
 }
 
-async function uploadImage(cookie: string, bytes: Uint8Array, name: string, contentType: 'image/png' | 'image/jpeg' | 'image/webp') {
+async function uploadImage(cookie: string, bytes: Uint8Array, name: string, contentType: 'image/png' | 'image/jpeg' | 'image/webp', envOverride = env) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: contentType }))
   return dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie, origin: 'https://app.test' },
     body: form
-  })
+  }, envOverride)
 }
 
-async function uploadPng(cookie: string, name = 'speaker.png') {
-  return uploadImage(cookie, validPngBytes(), name, 'image/png')
+async function uploadPng(cookie: string, name = 'speaker.png', envOverride = env) {
+  return uploadImage(cookie, validPngBytes(), name, 'image/png', envOverride)
 }
 
 async function uploadWebp(cookie: string, bytes = validWebpBytes(), name = 'product.webp') {
@@ -133,6 +133,56 @@ describe('private product assets', () => {
     expect(forbidden.status).toBe(404)
     const forbiddenDelete = await dispatch(payload.asset.previewUrl, { method: 'DELETE', headers: { cookie: otherOwner.cookie, origin: 'https://app.test' } })
     expect(forbiddenDelete.status).toBe(404)
+  })
+
+  it('reconciles an asset insert that commits before D1 reports failure', async () => {
+    const owner = await registerAccount('Ambiguous Asset Commit')
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO media_assets')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new Error('synthetic response failure after commit')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as typeof env.DB
+
+    const uploaded = await uploadPng(owner.cookie, 'ambiguous-commit.png', { ...env, DB: ambiguousDb })
+
+    expect(uploaded.status).toBe(201)
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 1 })
+    expect(await dispatch(asset.previewUrl, { headers: { cookie: owner.cookie } }).then((response) => response.status)).toBe(200)
+  })
+
+  it('removes the private object when an asset insert definitely does not commit', async () => {
+    const owner = await registerAccount('Rejected Asset Insert')
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO media_assets')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new Error('synthetic failure before commit') }
+          })
+        }
+      }
+    } as unknown as typeof env.DB
+
+    const uploaded = await uploadPng(owner.cookie, 'rejected-insert.png', { ...env, DB: rejectingDb })
+
+    expect(uploaded.status).toBe(503)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+    const objects = await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })
+    expect(objects.objects).toHaveLength(0)
   })
 
   it('fails closed when private R2 product bytes change while metadata remains unchanged', async () => {
