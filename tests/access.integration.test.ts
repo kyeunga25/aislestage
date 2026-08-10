@@ -252,6 +252,81 @@ describe('Cloudflare Access authentication', () => {
     expect(stored?.subjectHash).not.toBe(fixture.subject)
   })
 
+  it('reconciles an Access subject update that commits before D1 reports failure', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const seeded = await seedAccessOwner(fixture.email)
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET access_subject_hash = ?')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after Access subject commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: ambiguousDb })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      authenticated: true,
+      user: { id: seeded.userId, email: fixture.email },
+      currentWorkspace: { id: seeded.workspaceId, role: 'owner', accessStatus: 'active' }
+    })
+    const stored = await env.DB.prepare(`
+      SELECT auth_mode AS authMode, access_subject_hash AS subjectHash
+      FROM users
+      WHERE id = ?
+    `).bind(seeded.userId).first<{ authMode: string; subjectHash: string | null }>()
+    expect(stored?.authMode).toBe('access')
+    expect(stored?.subjectHash).toBeTruthy()
+    expect(stored?.subjectHash).not.toBe(fixture.subject)
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)).status).toBe(200)
+  })
+
+  it('keeps an unbound Access account retryable when the subject update does not commit', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const seeded = await seedAccessOwner(fixture.email)
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET access_subject_hash = ?')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before Access subject commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: rejectingDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+    expect(await env.DB.prepare('SELECT access_subject_hash AS subjectHash FROM users WHERE id = ?')
+      .bind(seeded.userId)
+      .first()).toEqual({ subjectHash: null })
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)).status).toBe(200)
+  })
+
   it('denies a bound identity when its account or workspace is disabled', async () => {
     const accountFixture = await accessFixture({ autoProvision: false })
     await seedAccessOwner(accountFixture.email)

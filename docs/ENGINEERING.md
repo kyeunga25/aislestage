@@ -57,6 +57,7 @@ npm run cf:types:check
 - Static Assets 對 `/app` 及 `/app/*` 採 Worker-first；Access 模式先完成 JWT 與 active D1 membership 驗證，才經 `ASSETS` binding 返回 no-store 的 SPA shell；
 - Worker 以 remote JWKS 驗證 RS256、issuer、audience、有效期、subject 與電郵；
 - Access subject 只保存單向 hash，身份與帳戶不符時 fail closed；
+- pre-onboarded 帳號首次綁定 Access subject 的 UPDATE 回報失敗時，Worker 會以同一 user ID、標準化 email、Access 顯示名稱、subject hash、`auth_mode=access` 及 active 狀態做 exact post-read；完整提交才繼續 membership 查詢，明確未提交或不可讀則以 Access `unavailable` fail closed 並保留未綁定帳號供重試；
 - password endpoint 在 Access 模式停用，避免雙重登入或繞過 edge identity；
 - 密碼以 PBKDF2 衍生 hash；session token 只保存 SHA-256 hash；
 - session cookie 為 HttpOnly、SameSite=Lax，非本機環境加上 Secure；

@@ -7,6 +7,7 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - The public product site and private `/app` workspace are separate routes.
 - Production authentication uses Cloudflare Access at the edge; the Worker independently validates the signed JWT issuer, audience, expiry, subject, and email before checking D1 membership.
 - Access subjects are stored only as one-way hashes. Password login and registration are disabled in Access mode.
+- A reported first-time Access-subject update failure is accepted only when an exact post-read matches the same user ID, normalized email, Access display name, subject hash, Access auth mode, and active status. A missing or unreadable binding returns the bounded `unavailable` failure and leaves the pre-onboarded account retryable.
 - Protected APIs require a verified Access identity, an active account, and a matching active D1 workspace membership.
 - JSON and multipart write routes require an exact, case-insensitive base media type before bounded body parsing. Standard parameters remain supported, while substring lookalikes such as JSONP-style or prefixed media types cancel the unread stream and fail with `415` before password verification or endpoint mutation; protected routes still complete their required session and membership checks first.
 - Session and invitation tokens are stored as hashes; authentication abuse records use one-way email and IP keys.

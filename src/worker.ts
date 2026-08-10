@@ -868,16 +868,31 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
       if (emailAccount.accountStatus !== 'active' || (emailAccount.accessSubjectHash && emailAccount.accessSubjectHash !== subjectHash)) {
         return accessError('membership-required', 403, 'This identity does not have an active workspace membership.')
       }
-      await env.DB.prepare(`
-        UPDATE users
-        SET access_subject_hash = ?, auth_mode = 'access', name = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ? AND (access_subject_hash IS NULL OR access_subject_hash = ?)
-      `).bind(subjectHash, identity.name, emailAccount.id, subjectHash).run()
-      user = await env.DB.prepare(`
-        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
-        FROM users
-        WHERE id = ? AND email = ? AND access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
-      `).bind(emailAccount.id, identity.email, subjectHash).first<AuthUser>()
+      let subjectUpdateReportedFailure = false
+      try {
+        await env.DB.prepare(`
+          UPDATE users
+          SET access_subject_hash = ?, auth_mode = 'access', name = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND (access_subject_hash IS NULL OR access_subject_hash = ?)
+        `).bind(subjectHash, identity.name, emailAccount.id, subjectHash).run()
+      } catch {
+        subjectUpdateReportedFailure = true
+      }
+      try {
+        user = await env.DB.prepare(`
+          SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+          FROM users
+          WHERE id = ? AND email = ? AND name = ? AND access_subject_hash = ?
+            AND auth_mode = 'access' AND account_status = 'active'
+        `).bind(emailAccount.id, identity.email, identity.name, subjectHash).first<AuthUser>()
+      } catch {
+        console.error('access-subject-reconciliation-failed')
+        return accessError('unavailable', 503, 'Access account binding is temporarily unavailable.')
+      }
+      if (subjectUpdateReportedFailure && !user) {
+        console.error('access-subject-reconciliation-conflict')
+        return accessError('unavailable', 503, 'Access account binding is temporarily unavailable.')
+      }
     } else if (env.ACCESS_AUTO_PROVISION === 'enabled') {
       const userId = crypto.randomUUID()
       const workspaceId = crypto.randomUUID()
