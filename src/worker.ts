@@ -1186,7 +1186,7 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
     await object.body.cancel().catch(() => undefined)
     return invalidProductAsset()
   }
-  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
+  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
 }
 
 async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
@@ -2453,7 +2453,7 @@ async function generationImage(request: Request, env: Env, session: SessionConte
   if (output.state === 'invalid') return invalidOutputFormat()
   const headers = new Headers({
     'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
-    'cache-control': 'private, max-age=300',
+    'cache-control': 'private, no-store',
     'content-disposition': 'inline',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'

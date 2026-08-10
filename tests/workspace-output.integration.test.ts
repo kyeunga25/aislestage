@@ -588,7 +588,7 @@ describe('workspace authorization and output allowance integrity', () => {
       const preview = await dispatch(generation.imageUrl, { headers: { cookie: account.cookie } }, deterministicEnv)
       expect(preview.status).toBe(200)
       expect(preview.headers.get('content-type')).toBe('image/svg+xml')
-      expect(preview.headers.get('cache-control')).toBe('private, max-age=300')
+      expect(preview.headers.get('cache-control')).toBe('private, no-store')
       expect(await preview.text()).toContain('data:image/png;base64,')
 
       const crossWorkspace = await dispatch(generation.imageUrl, { headers: { cookie: otherOwner.cookie } }, deterministicEnv)
@@ -764,7 +764,7 @@ describe('workspace authorization and output allowance integrity', () => {
     const ownerImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerB.cookie } })
     expect(ownerImage.status).toBe(200)
     expect(new TextDecoder().decode(await ownerImage.arrayBuffer())).toBe(privateOutput)
-    expect(ownerImage.headers.get('cache-control')).toBe('private, max-age=300')
+    expect(ownerImage.headers.get('cache-control')).toBe('private, no-store')
     const forbiddenDelete = await dispatch(`/api/generations/${generationId}`, { method: 'DELETE', headers: { cookie: ownerA.cookie, origin: 'https://app.test' } })
     expect(forbiddenDelete.status).toBe(404)
   })
