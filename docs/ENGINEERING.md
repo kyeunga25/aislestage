@@ -104,7 +104,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB、單邊 8192 px 及 32 MP；
 - MIME type 與檔案 signature 必須相符；
 - PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC 與完整結尾；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
-- JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕，原始檔名會改為 generic 名稱；
+- JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
 - R2 object key 只由 server 生成；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；
 - 來源圖 preview、Agent 批准及 Queue 取圖會重新核對 D1／R2 digest、大小、MIME、asset kind 與 workspace metadata；失配時取消 body、保持計劃未批准，並在任何 provider work 前 terminal fail closed；

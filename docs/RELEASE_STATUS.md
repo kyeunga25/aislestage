@@ -16,6 +16,7 @@
 - [x] 來源商品圖 SHA-256 經 R2 寫入驗收；preview／Agent approve／Queue 在 D1 與 R2 digest、大小、MIME 或 provenance metadata 不一致時於 provider work 前 fail closed；
 - [x] PNG critical chunk／CRC／結尾及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；signature-only、truncated、checksum／length 失配與無 image data 上傳均 fail closed；
 - [x] PNG IHDR、JPEG frame、WebP VP8X／VP8／VP8L header 尺寸在解碼前限制為單邊 8192 px 及 32 MP；三種 oversized fixture 均不建立 D1／R2 asset；
+- [x] PNG chunk、JPEG structural marker 與 WebP chunk 掃描均採固定 4,096 traversal-count 上限；過度分段 JPEG 在寫入 D1／R2 前 fail closed；
 - [x] scheduled auth cleanup 刪除過期 session、7 日前 auth attempt、過期 pending／revoked invite hash 及 30 日前 used invite linkage，同時保留仍有效／近期記錄；
 - [x] invite CLI 只接受明確列出的唯一參數；未知、位置、重複、缺值、不合法 account type 及受保護 flags 均在產生邀請或執行 Wrangler 前 fail closed；
 - [x] `/app` 與 `/app/*` 採 Worker-first，工作區 shell 在 Access JWT 及 active D1 membership 驗證後才返回；

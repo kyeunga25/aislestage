@@ -299,6 +299,27 @@ describe('private product assets', () => {
     expect(await response.json()).toMatchObject({ asset: { contentType: 'image/jpeg', sizeBytes: bytes.byteLength } })
   })
 
+  it('rejects a JPEG with excessive marker work before storing the asset', async () => {
+    const owner = await registerAccount('Bounded JPEG Markers')
+    const repeatedSegments = Array.from({ length: 4_096 }, () => [0xff, 0xe0, 0x00, 0x02]).flat()
+    const bytes = new Uint8Array([
+      0xff, 0xd8,
+      ...jpegFrameHeader,
+      ...repeatedSegments,
+      ...jpegScanHeader,
+      0x11,
+      0xff, 0xd9
+    ])
+
+    const response = await uploadJpeg(owner.cookie, bytes, 'excessive-markers.jpg')
+
+    expect(response.status).toBe(400)
+    const payload = await response.json() as { error: string }
+    expect(payload.error).toContain('結構')
+    expect(payload.error).toContain('Invalid image metadata or structure')
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
   it.each([
     {
       label: 'repeated marker fill before APP1',

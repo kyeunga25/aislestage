@@ -667,6 +667,7 @@ function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
     let inScan = false
     let sawFrame = false
     let sawScan = false
+    let markerCount = 0
     while (offset < bytes.length) {
       const markerWasInScan: boolean = inScan
       if (bytes[offset] !== 0xff) {
@@ -692,6 +693,8 @@ function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
         continue
       }
       if (marker === 0x01) continue
+      markerCount += 1
+      if (markerCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
       if (marker === 0xe1 || marker === 0xed || marker === 0xfe) return true
       if (marker === 0xd9) return offset !== bytes.length || !sawFrame || !sawScan
       if (marker === 0xd8 || marker < 0xc0) return true
@@ -933,7 +936,9 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
 
   const bytes = new Uint8Array(await value.arrayBuffer())
   if (!hasValidProductImageSignature(value.type, bytes)) return json({ error: '圖片內容與檔案格式不符。' }, { status: 415 })
-  if (hasPrivateImageMetadata(value.type, bytes)) return json({ error: '圖片含有 EXIF、XMP 或文字 metadata；請先移除隱藏資料再上傳。' }, { status: 400 })
+  if (hasPrivateImageMetadata(value.type, bytes)) {
+    return json({ error: '圖片含有 EXIF、XMP、文字 metadata 或過度複雜結構；請重新匯出後再上傳。 Invalid image metadata or structure; export the image again.' }, { status: 400 })
+  }
   if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
     return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
   }
