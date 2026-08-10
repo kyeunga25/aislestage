@@ -2318,15 +2318,49 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
     return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
   }
 
-  const updated = await env.DB.prepare(`
-    UPDATE generations
-    SET review_status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?
-    WHERE id = ? AND workspace_id = ? AND status = 'completed'
-      AND review_status = 'draft' AND approved_revision = ?
-  `).bind(targetStatus, session.user.id, generationId, session.currentWorkspace.id, expectedApprovedRevision).run()
+  let updateChanges: number
+  try {
+    const updated = await env.DB.prepare(`
+      UPDATE generations
+      SET review_status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?
+      WHERE id = ? AND workspace_id = ? AND status = 'completed'
+        AND review_status = 'draft' AND approved_revision = ?
+    `).bind(targetStatus, session.user.id, generationId, session.currentWorkspace.id, expectedApprovedRevision).run()
+    updateChanges = updated.meta.changes
+  } catch {
+    try {
+      const reconciliation = await env.DB.prepare(`
+        SELECT status, review_status AS reviewStatus, reviewed_at AS reviewedAt,
+          approved_revision AS approvedRevision
+        FROM generations
+        WHERE id = ? AND workspace_id = ?
+      `).bind(generationId, session.currentWorkspace.id).first<{
+        status: string
+        reviewStatus: string
+        reviewedAt: string | null
+        approvedRevision: number
+      }>()
+      if (reconciliation?.status === 'completed'
+        && reconciliation.reviewStatus === targetStatus
+        && reconciliation.reviewedAt
+        && reconciliation.approvedRevision === expectedApprovedRevision) {
+        const latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+        if (!latest) return json({ error: 'Output not found.' }, { status: 404 })
+        return json({ generation: generationPayload(latest), replayed: true })
+      }
+      if (reconciliation?.reviewStatus && reconciliation.reviewStatus !== 'draft') {
+        return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
+      }
+      console.error('generation-review-reconciliation-conflict')
+      return json({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' }, { status: 503 })
+    } catch {
+      console.error('generation-review-reconciliation-failed')
+      return json({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' }, { status: 503 })
+    }
+  }
   const latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
   if (!latest) return json({ error: 'Output not found.' }, { status: 404 })
-  if (!updated.meta.changes) {
+  if (!updateChanges) {
     if (latest.reviewStatus === targetStatus) return json({ generation: generationPayload(latest), replayed: true })
     return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
   }

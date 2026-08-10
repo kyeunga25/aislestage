@@ -12,6 +12,7 @@
 - [x] provider success response 具實際 byte／chunk、MIME／UTF-8、exact field、文字長度、base64 與 PNG signature 邊界；
 - [x] provider header／body 共用 30 秒 deadline；逾時的 bounded Queue retry 及 terminal allowance release 經隔離 integration 測試核對；
 - [x] 完成輸出預設為私人草稿，owner／admin 的不可變審核決定與逐項受控下載已通過隔離 integration 及 browser QA；
+- [x] review UPDATE ambiguous commit 以 workspace-scoped generation、completed state、target decision、expected revision 及 reviewed timestamp reconciliation；已提交以 replay 回覆，未提交保持 draft／不可下載；
 - [x] Queue output SHA-256 經 R2 寫入驗收；approve／preview／download 在 D1 與 R2 digest、MIME 或 provenance metadata 不一致時 fail closed；
 - [x] Queue completion batch 的 ambiguous commit 會核對 completed row、R2 metadata、draft state 與 settlement ledger；已提交保留 output，明確未提交才清理及重試；
 - [x] 來源商品圖 SHA-256 經 R2 寫入驗收；Agent plan 在 DO mutation／provider work 前核對 workspace ownership 與 D1／R2 digest、大小、MIME、provenance，preview／approve／Queue 亦再次核對；missing／跨 workspace／失配不覆蓋既有 revision；

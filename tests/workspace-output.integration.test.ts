@@ -1161,6 +1161,89 @@ describe('workspace authorization and output allowance integrity', () => {
 })
 
 describe('human output review and controlled delivery', () => {
+  it('reconciles a review update that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Output Review')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET review_status = ?')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after review commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, DB: ambiguousDb })
+
+    expect(approved.status).toBe(200)
+    expect(await approved.json()).toMatchObject({
+      generation: { id, reviewStatus: 'approved', downloadUrl: `/api/generations/${id}/download` },
+      replayed: true
+    })
+    expect(await env.DB.prepare(`
+      SELECT review_status AS reviewStatus, approved_revision AS approvedRevision,
+        reviewed_by_user_id AS reviewedByUserId
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({
+      reviewStatus: 'approved',
+      approvedRevision: input.approvedRevision,
+      reviewedByUserId: account.user.id
+    })
+    expect((await dispatch(`/api/generations/${id}/download`, {
+      headers: { cookie: account.cookie }
+    })).status).toBe(200)
+  })
+
+  it('keeps a draft retryable when the review update does not commit', async () => {
+    const account = await registerAccount('Rejected Output Review')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET review_status = ?')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before review commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, DB: rejectingDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare(`
+      SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt,
+        reviewed_by_user_id AS reviewedByUserId
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null, reviewedByUserId: null })
+    expect((await dispatch(`/api/generations/${id}/download`, {
+      headers: { cookie: account.cookie }
+    })).status).toBe(409)
+  })
+
   it('keeps completed output as a private draft until an idempotent human approval unlocks download', async () => {
     const account = await registerAccount('Output Reviewer')
     const otherOwner = await registerAccount('Other Output Reviewer')
