@@ -26,6 +26,7 @@ import {
   uploadProductAsset
 } from './lib/product-asset-client'
 import { deletePrivateResource } from './lib/private-delete-client'
+import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product } from './lib/types'
 import { loadPlatformStatus, loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 
@@ -54,6 +55,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [agentState, setAgentState] = useState<CampaignAgentState>(initialCampaignAgentState())
   const [agentBusy, setAgentBusy] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [serverResults, setServerResults] = useState<GenerationResult[]>([])
   const [notice, setNotice] = useState('')
@@ -365,16 +367,29 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function logout() {
+    if (isLoggingOut) return
     if (demoMode) {
       if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
       window.location.assign('/')
       return
     }
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => null)
     if (platformStatus.authMode === 'access') {
+      setIsLoggingOut(true)
       window.location.assign('/cdn-cgi/access/logout')
       return
     }
+    setIsLoggingOut(true)
+    setNotice('')
+    try {
+      await logoutPasswordSession()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : passwordLogoutUnavailableMessage)
+      setActiveSection('workspace')
+      setIsLoggingOut(false)
+      return
+    }
+    setIsLoggingOut(false)
+    if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
     setSession(null)
     setReviewingId(null)
     setServerResults([])
@@ -405,7 +420,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         <span className="allowance-chip"><Sparkles size={15} />可用輸出 <strong>{session.currentWorkspace.availableOutputs}</strong></span>
         <span className="workspace-chip"><span>{session.currentWorkspace.name.charAt(0)}</span><strong>{session.currentWorkspace.name}</strong></span>
         <span className="user-avatar" title={session.user.name}>{userInitial}</span>
-        <button className="icon-button logout-button" type="button" aria-label="登出" onClick={logout}><LogOut size={17} /></button>
+        <button className="icon-button logout-button" type="button" aria-label={isLoggingOut ? '正在登出' : '登出'} onClick={logout} disabled={isLoggingOut}><LogOut size={17} /></button>
       </header>
 
       <main className="main-content">
