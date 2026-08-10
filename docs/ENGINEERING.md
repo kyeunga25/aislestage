@@ -71,6 +71,7 @@ npm run cf:types:check
 - 所有 state-changing API 會核對 same-origin／fetch metadata；
 - JSON／multipart 寫入會先精確核對大小寫不敏感的 base media type，再進入 bounded body parser；標準 charset／boundary 參數可用，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；受保護 route 仍會先完成必要的 session／membership 核對；
 - active user 必須同時擁有 active workspace membership；
+- session 授權完成後，`/api/workspaces` 的第二次 workspace 清單查詢若不可讀，回雙語 no-store `503 unavailable` 並保留既有 session；不輸出 D1 細節，亦不回傳不完整清單；
 - 無權資產與輸出一律返回 not found，避免跨 workspace 枚舉；
 - 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；每個 auth event 另有 server-generated ID，INSERT 回應失敗時必須由該 ID 讀回完全相同的 email hash、IP hash 及 event type 才可繼續。同一主鍵與 exact fields 容許在 row 缺失或首輪 reconciliation 暫時不可讀時做一次有界重寫；首次其實已提交會由唯一鍵及 post-read 恢復，不會重複計數，衝突 row 亦不會覆寫。Event 最終未確認或 rate-limit count 暫時不可讀時，password auth route 以專用錯誤邊界返回雙語 no-store `503`；成功密碼不會取得 session，其他程式錯誤亦不會被這個邊界吞掉；
 - 定期 trigger 清理過期 session、7 日前的登入嘗試、已過期 pending／revoked invite hash，以及 30 日前已使用 invite 的 hash／account linkage。

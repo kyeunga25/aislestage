@@ -823,6 +823,13 @@ function sessionAuthorizationUnavailable(includeAuthenticationState = false) {
     : { code: 'unavailable', error }, { status: 503 })
 }
 
+function workspaceListUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區清單暫時無法讀取。 Workspace list is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function removeUndeliveredSession(env: Env, tokenHash: string) {
   try {
     await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
@@ -2595,7 +2602,12 @@ export default {
     if (url.pathname === '/api/workspaces' && request.method === 'GET') {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
-      return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+      try {
+        return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+      } catch {
+        console.error('workspace-list-read-failed')
+        return workspaceListUnavailable()
+      }
     }
     if (url.pathname === '/api/assets/product' && request.method === 'POST') {
       const session = await requireSession(request, env)

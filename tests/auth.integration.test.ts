@@ -646,6 +646,43 @@ describe('restricted registration authentication', () => {
     })
   })
 
+  it('reports the workspace list unavailable after password session authorization succeeds', async () => {
+    const account = await registerAccount('Unreadable Workspace List')
+    let workspaceReads = 0
+    const workspaceListFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM workspace_memberships wm')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              all: async () => {
+                workspaceReads += 1
+                if (workspaceReads === 2) throw new TypeError('synthetic workspace list read failure')
+                return bound.all()
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/workspaces', {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: workspaceListFailureDb })
+
+    expect(workspaceReads).toBe(2)
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('set-cookie')).toBeNull()
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '工作區清單暫時無法讀取。 Workspace list is temporarily unavailable.'
+    })
+  })
+
   it('rejects expired sessions and expires the browser cookie', async () => {
     const account = await registerAccount('Expired User')
     await env.DB.prepare("UPDATE sessions SET expires_at = datetime('now', '-1 minute') WHERE user_id = ?").bind(account.user.id).run()

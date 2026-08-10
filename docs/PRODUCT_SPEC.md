@@ -51,6 +51,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；
 - 所有受保護操作都採 server-side workspace scope；正式輸出審核另要求 `owner` 或 `admin`；
+- 已授權的 `/api/workspaces` 清單查詢不可讀時返回雙語 no-store `503 unavailable`，保留 session 並拒絕輸出不完整 workspace 資料；
 - 新邀請 workspace 取得六個技術性可用輸出，足以建立兩套 Campaign Pack。
 
 詳情見 [`BETA_ACCESS.md`](BETA_ACCESS.md)。
