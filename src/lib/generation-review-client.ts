@@ -1,4 +1,4 @@
-import { readBoundedJsonResponse } from './bounded-json-response'
+import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 import { normalizeGenerationResults } from './generation-loader'
 import type { GenerationResult } from './types'
@@ -103,8 +103,11 @@ async function submitGenerationReviewAttempt(
         await response.body?.cancel().catch(() => undefined)
         throw new GenerationReviewAttemptError(generationReviewResponseInvalidMessage, false)
       }
-      const data = await readBoundedJsonResponse(response, MAX_GENERATION_REVIEW_RESPONSE_BYTES)
-      if (signal.aborted) throw new GenerationReviewAttemptError(generationReviewUnavailableMessage, true)
+      const outcome = await readBoundedJsonResponseOutcome(response, MAX_GENERATION_REVIEW_RESPONSE_BYTES)
+      if (signal.aborted || outcome.kind === 'stream-error') {
+        throw new GenerationReviewAttemptError(generationReviewUnavailableMessage, true)
+      }
+      const data = outcome.kind === 'value' ? outcome.value : null
       if (!isRecord(data)
         || !hasExactKeys(data, responseKeys)
         || typeof data.replayed !== 'boolean') {

@@ -115,6 +115,24 @@ describe('password logout client', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('retries an immediate logout response stream failure with the same cookie context', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) return Response.json({ ok: true })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('synthetic response stream failure'))
+        }
+      })
+      return new Response(body, { headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(logoutPasswordSession()).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.every((call) => call[0] === '/api/auth/logout')).toBe(true)
+    expect(fetchMock.mock.calls.every((call) => call[1]?.credentials === 'same-origin')).toBe(true)
+  })
+
   it('retries one server-unavailable response', async () => {
     const fetchMock = vi.fn(async () => fetchMock.mock.calls.length === 1
       ? Response.json({ error: 'synthetic temporary failure' }, { status: 503 })

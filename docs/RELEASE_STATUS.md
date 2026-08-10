@@ -15,7 +15,7 @@
 - [x] 審核前的 scoped D1 generation row 或 approve R2 `head` 暫時不可讀時回雙語 no-store `503`；不執行 review UPDATE，draft／reviewed timestamp 保持不變；
 - [x] review UPDATE ambiguous commit 以 workspace-scoped generation、completed state、target decision、expected revision 及 reviewed timestamp reconciliation；已提交以 replay 回覆，未提交保持 draft／不可下載；
 - [x] review UPDATE 成功後的 authoritative reload 不可讀時回可重試 `503`；相同 decision 重送會讀取已提交不可變狀態並以 replay 恢復，不重複 mutation；
-- [x] browser 同一時間只執行一個審核 action；每次 attempt 連完整 response 有 15 秒 deadline，transport／deadline／`408`／`5xx` 最多以同一 generation／decision／revision 自動重試一次，兩次失敗後保留 draft 並解除 UI 鎖；authorization、conflict、malformed／oversized success 不重送；
+- [x] browser 同一時間只執行一個審核 action；每次 attempt 連完整 response 有 15 秒 deadline，transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 generation／decision／revision 自動重試一次，兩次失敗後保留 draft 並解除 UI 鎖；authorization、conflict、malformed／oversized success 不重送；
 - [x] browser review client 只提交 decision／expected revision，並以共享 normalizer 及 immutable identity／workflow／ratio／content／provenance binding 驗證 exact `200 application/json` success envelope；不相符 payload 或任意 server error detail 不會進入 workspace state；
 - [x] Queue output SHA-256 經 R2 寫入驗收；approve／preview／download 在 D1 與 R2 digest、MIME 或 provenance metadata 不一致時 fail closed；
 - [x] 私人 preview／已批准 download 的 scoped D1 metadata 或 R2 object 暫時不可讀時回雙語 no-store `503 unavailable` 且不返回 SVG；404／409 語義與私隱 log 邊界保持不變；
@@ -41,12 +41,12 @@
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
-- [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
+- [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
 - [x] Pack 建立後的 poll 綁定 exact 三個 generation IDs 與 16 個固定 interval；成功讀取重設 failure count，最多容許兩次連續暫時 GET 故障並保留最後可信快照，第三次才以雙語 queued-but-unavailable 狀態解除鎖，不誤報建立失敗；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
 - [x] password browser logout 只在 exact `200 application/json { "ok": true }` 後清空私人 state，故障時保持登入並可重試；Access logout 使用固定同源 path，不接受 response-controlled redirect；
-- [x] password logout 每次 attempt 連完整 response 有 15 秒 deadline；transport／deadline／`408`／`5xx` 最多以同一 cookie 自動重試一次，兩次失敗後解除按鈕並保持登入；authorization、malformed／oversized success 不重送；
+- [x] password logout 每次 attempt 連完整 response 有 15 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 cookie 自動重試一次，兩次失敗後解除按鈕並保持登入；authorization、malformed／oversized success 不重送；
 - [x] auth-attempt INSERT ambiguous commit 以 server-generated event ID、email／IP hashes 及 event type reconciliation；已提交不重複，真正缺失或不可讀維持 fail closed；
 - [x] invite CLI 只接受明確列出的唯一參數；未知、位置、重複、缺值、不合法 account type 及受保護 flags 均在產生邀請或執行 Wrangler 前 fail closed；
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
@@ -99,7 +99,7 @@
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
 - [x] browser multipart 不傳送本機原始檔名；upload success 只接受 exact `201 application/json` 及與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；upload pending 時所有圖片 file-input／更換／刪除入口都鎖定，避免競爭 mutation；
 - [x] product upload 要求 client UUID v4 idempotency key 並綁定 asset ID；同 workspace 同 key／同 canonical content replay 原 `201`，不同內容固定 `409`，跨 workspace 不可 replay；digest-separated 候選 R2 object 令並發 conflict 不互相覆寫，敗方只清理未被 D1 引用的 object；
-- [x] browser upload 每次 attempt 連完整 response body 有 45 秒 deadline；transport／deadline／`408`／`5xx` 最多同 key 自動重試一次，兩次失敗後釋放 UI；`4xx`、malformed／oversized success 不重送；
+- [x] browser upload 每次 attempt 連完整 response body 有 45 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多同 key 自動重試一次，兩次失敗後釋放 UI；`4xx`、malformed／oversized success 不重送；
 - [x] workspace-scoped Campaign Agent 與 revision approval；
 - [x] 繁中／英文商業資料由使用者明確提供；
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；

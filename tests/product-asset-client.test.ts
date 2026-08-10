@@ -169,6 +169,24 @@ describe('product asset upload client', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('retries an immediate success-body stream failure with the same upload identity', async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) return Response.json({ asset: canonicalAsset }, { status: 201 })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('synthetic response stream failure'))
+        }
+      })
+      return new Response(body, { status: 201, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(uploadProductAsset(file)).resolves.toEqual(canonicalAsset)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
+  })
+
   it('retries one server-unavailable response with the same upload identity', async () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => fetchMock.mock.calls.length === 1

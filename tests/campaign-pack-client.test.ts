@@ -189,6 +189,25 @@ describe('Campaign Pack client', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('retries an immediate pack response stream failure with the same canonical request', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) {
+        return Response.json({ campaignPackId, generations: queuedGenerations(), replayed: true })
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('synthetic response stream failure'))
+        }
+      })
+      return new Response(body, { status: 202, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createCampaignPack(request)).resolves.toMatchObject({ campaignPackId, replayed: true })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => call[1]?.body)).toEqual([JSON.stringify(request), JSON.stringify(request)])
+  })
+
   it('retries one server-unavailable response and accepts the authoritative replay', async () => {
     const failedGenerations = queuedGenerations().map((generation) => ({
       ...generation,

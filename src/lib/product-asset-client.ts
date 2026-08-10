@@ -1,4 +1,4 @@
-import { readBoundedJsonResponse } from './bounded-json-response'
+import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 import type { ProductAsset } from './types'
 
@@ -96,8 +96,11 @@ async function uploadProductAssetAttempt(file: File, form: FormData, idempotency
         await response.body?.cancel().catch(() => undefined)
         throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
       }
-      const data = await readBoundedJsonResponse(response, MAX_PRODUCT_ASSET_RESPONSE_BYTES)
-      if (signal.aborted) throw new ProductAssetUploadAttemptError(productAssetUploadUnavailableMessage, true)
+      const outcome = await readBoundedJsonResponseOutcome(response, MAX_PRODUCT_ASSET_RESPONSE_BYTES)
+      if (signal.aborted || outcome.kind === 'stream-error') {
+        throw new ProductAssetUploadAttemptError(productAssetUploadUnavailableMessage, true)
+      }
+      const data = outcome.kind === 'value' ? outcome.value : null
       if (!isRecord(data) || !hasExactKeys(data, responseKeys)) {
         throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
       }

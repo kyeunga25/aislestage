@@ -1,4 +1,4 @@
-import { readBoundedJsonResponse } from './bounded-json-response'
+import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 
 export const passwordLogoutInvalidResponseMessage = '未能確認登出狀態。 Unable to verify the logout state.'
@@ -50,8 +50,11 @@ async function logoutPasswordSessionAttempt() {
         await response.body?.cancel().catch(() => undefined)
         throw new PasswordLogoutAttemptError(passwordLogoutInvalidResponseMessage, false)
       }
-      const data = await readBoundedJsonResponse(response, MAX_LOGOUT_RESPONSE_BYTES)
-      if (signal.aborted) throw new PasswordLogoutAttemptError(passwordLogoutUnavailableMessage, true)
+      const outcome = await readBoundedJsonResponseOutcome(response, MAX_LOGOUT_RESPONSE_BYTES)
+      if (signal.aborted || outcome.kind === 'stream-error') {
+        throw new PasswordLogoutAttemptError(passwordLogoutUnavailableMessage, true)
+      }
+      const data = outcome.kind === 'value' ? outcome.value : null
       if (!isRecord(data) || !hasExactKeys(data, responseKeys) || data.ok !== true) {
         throw new PasswordLogoutAttemptError(passwordLogoutInvalidResponseMessage, false)
       }

@@ -1,5 +1,5 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
-import { readBoundedJsonResponse } from './bounded-json-response'
+import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 import { normalizeGenerationResults } from './generation-loader'
 import type { AspectRatio, BrandPack, GenerationResult, Product, WorkflowId } from './types'
@@ -185,8 +185,11 @@ async function createCampaignPackAttempt(canonical: NonNullable<ReturnType<typeo
         await response.body?.cancel().catch(() => undefined)
         throw new CampaignPackAttemptError(campaignPackResponseInvalidMessage, false)
       }
-      const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_PACK_RESPONSE_BYTES)
-      if (signal.aborted) throw new CampaignPackAttemptError(campaignPackUnavailableMessage, true)
+      const outcome = await readBoundedJsonResponseOutcome(response, MAX_CAMPAIGN_PACK_RESPONSE_BYTES)
+      if (signal.aborted || outcome.kind === 'stream-error') {
+        throw new CampaignPackAttemptError(campaignPackUnavailableMessage, true)
+      }
+      const data = outcome.kind === 'value' ? outcome.value : null
       const pack = normalizePackResponse(data, response.status, canonical.request)
       if (!pack) throw new CampaignPackAttemptError(campaignPackResponseInvalidMessage, false)
       return pack

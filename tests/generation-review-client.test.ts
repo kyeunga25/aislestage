@@ -190,6 +190,31 @@ describe('generation review client', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('retries an immediate review response stream failure with the same immutable decision', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) {
+        return Response.json({ generation: reviewedGeneration('approved'), replayed: true })
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('synthetic response stream failure'))
+        }
+      })
+      return new Response(body, { headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(submitGenerationReview(currentDraft(), 'approve')).resolves.toMatchObject({
+      id: generationId,
+      reviewStatus: 'approved'
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => call[1]?.body)).toEqual([
+      JSON.stringify({ decision: 'approve', expectedApprovedRevision: 3 }),
+      JSON.stringify({ decision: 'approve', expectedApprovedRevision: 3 })
+    ])
+  })
+
   it('retries one server-unavailable response and accepts an authoritative replay', async () => {
     const fetchMock = vi.fn(async () => fetchMock.mock.calls.length === 1
       ? Response.json({ error: 'synthetic temporary failure' }, { status: 503 })
