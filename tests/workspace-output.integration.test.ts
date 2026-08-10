@@ -7,6 +7,17 @@ import { dispatch, generationInput, registerAccount } from './helpers'
 
 const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9ZKAAAAAASUVORK5CYII='
 
+function bytesBase64Url(bytes: Uint8Array) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
+async function sha256Base64Url(value: string) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
+  return bytesBase64Url(digest)
+}
+
 function approvedAssistedEnv(envOverride: Env = env): Env {
   return {
     ...envOverride,
@@ -339,6 +350,8 @@ describe('workspace authorization and output allowance integrity', () => {
     const generationId = crypto.randomUUID()
     const outputKey = `workspaces/${ownerB.currentWorkspace.id}/generations/${generationId}.svg`
     const privateOutput = '<svg xmlns="http://www.w3.org/2000/svg"><text>private-output</text></svg>'
+    const privateDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(privateOutput))
+    const privateSha256 = await sha256Base64Url(privateOutput)
     await env.MEDIA_BUCKET.put(outputKey, privateOutput, {
       httpMetadata: { contentType: 'image/svg+xml' },
       customMetadata: {
@@ -346,17 +359,18 @@ describe('workspace authorization and output allowance integrity', () => {
         approvedRevision: '1',
         compositionVersion: 'deterministic-svg-v1',
         generationMode: 'deterministic'
-      }
+      },
+      sha256: privateDigest
     })
     await env.DB.prepare(`
       INSERT INTO generations (
         id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost,
         input_json, output_key, output_content_type, approved_revision,
-        composition_version, generation_mode, completed_at
+        composition_version, generation_mode, output_sha256, completed_at
       )
       VALUES (?, ?, 'store-main', '1:1', 'completed', 2, 2, '{}', ?, 'image/svg+xml', 1,
-        'deterministic-svg-v1', 'deterministic', CURRENT_TIMESTAMP)
-    `).bind(generationId, ownerB.currentWorkspace.id, outputKey).run()
+        'deterministic-svg-v1', 'deterministic', ?, CURRENT_TIMESTAMP)
+    `).bind(generationId, ownerB.currentWorkspace.id, outputKey, privateSha256).run()
 
     const forbiddenImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerA.cookie } })
     expect(forbiddenImage.status).toBe(404)
@@ -760,6 +774,13 @@ describe('human output review and controlled delivery', () => {
     const { id, input } = await completedDeterministicGeneration(account)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    const integrity = await env.DB.prepare('SELECT output_key AS outputKey, output_sha256 AS outputSha256 FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string; outputSha256: string }>()
+    const stored = integrity?.outputKey ? await env.MEDIA_BUCKET.head(integrity.outputKey) : null
+    expect(integrity?.outputSha256).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(stored?.checksums.sha256).toBeDefined()
+    expect(bytesBase64Url(new Uint8Array(stored!.checksums.sha256!))).toBe(integrity?.outputSha256)
 
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
       headers: { cookie: account.cookie }
@@ -914,6 +935,43 @@ describe('human output review and controlled delivery', () => {
     const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
     expect(download.status).toBe(409)
     expect(download.headers.get('content-type')).toContain('application/json')
+  })
+
+  it('fails closed when private R2 output bytes change while all metadata remains canonical', async () => {
+    const account = await registerAccount('R2 Output Digest Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const row = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const original = row?.outputKey ? await env.MEDIA_BUCKET.get(row.outputKey) : null
+    expect(original).not.toBeNull()
+    const replacement = '<svg xmlns="http://www.w3.org/2000/svg"><text>synthetic replacement body</text></svg>'
+    const replacementDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(replacement))
+    await env.MEDIA_BUCKET.put(row!.outputKey, replacement, {
+      httpMetadata: original!.httpMetadata,
+      customMetadata: original!.customMetadata,
+      sha256: replacementDigest
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+    expect(await preview.text()).not.toContain('synthetic replacement body')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+    expect(await download.text()).not.toContain('synthetic replacement body')
   })
 
   it('rejects unauthorized, stale, malformed, and oversized review decisions without changing the draft', async () => {

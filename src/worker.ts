@@ -50,6 +50,7 @@ type GenerationRow = {
   reviewedAt: string | null
   compositionVersion: string | null
   generationMode: CompletedGenerationMode | null
+  outputSha256: string | null
 }
 type StoredGenerationRow = GenerationRow & { outputKey: string | null }
 // One generated output consumes one technical allowance unit for idempotent accounting.
@@ -106,7 +107,11 @@ function fromBase64(value: string) {
 }
 
 async function sha256(value: string) {
-  return base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', textEncoder.encode(value))))
+  return base64Url(new Uint8Array(await sha256Bytes(textEncoder.encode(value))))
+}
+
+async function sha256Bytes(value: Uint8Array<ArrayBuffer>) {
+  return crypto.subtle.digest('SHA-256', value)
 }
 
 async function hashPassword(password: string, salt = crypto.getRandomValues(new Uint8Array(16))) {
@@ -1016,6 +1021,7 @@ async function completeGenerationAndSettle(
   generationId: string,
   outputKey: string,
   outputContentType: string,
+  outputSha256: string,
   completedMode: CompletedGenerationMode
 ) {
   await env.DB.batch([
@@ -1023,10 +1029,10 @@ async function completeGenerationAndSettle(
       UPDATE generations
       SET status = 'completed', output_key = ?, output_content_type = ?,
         review_status = 'draft', reviewed_at = NULL, reviewed_by_user_id = NULL,
-        composition_version = ?, generation_mode = ?, error_message = NULL,
+        composition_version = ?, generation_mode = ?, output_sha256 = ?, error_message = NULL,
         completed_at = CURRENT_TIMESTAMP
       WHERE id = ? AND workspace_id = ? AND status = 'processing'
-    `).bind(outputKey, outputContentType, CAMPAIGN_COMPOSITION_VERSION, completedMode, generationId, workspaceId),
+    `).bind(outputKey, outputContentType, CAMPAIGN_COMPOSITION_VERSION, completedMode, outputSha256, generationId, workspaceId),
     env.DB.prepare(`
       INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'settlement', 0, 'Generation completed'
@@ -1122,7 +1128,7 @@ async function generationForWorkspace(env: Env, workspaceId: string, generationI
       g.approved_revision AS approvedRevision, g.error_message AS errorMessage,
       g.created_at AS createdAt, g.review_status AS reviewStatus,
       g.reviewed_at AS reviewedAt, g.composition_version AS compositionVersion,
-      g.generation_mode AS generationMode
+      g.generation_mode AS generationMode, g.output_sha256 AS outputSha256
     FROM generations g
     JOIN workspaces w ON w.id = g.workspace_id
     WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
@@ -1135,7 +1141,7 @@ async function packGenerations(env: Env, workspaceId: string, campaignPackId: st
       status, output_content_type AS contentType, approved_revision AS approvedRevision,
       error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
       reviewed_at AS reviewedAt, composition_version AS compositionVersion,
-      generation_mode AS generationMode
+      generation_mode AS generationMode, output_sha256 AS outputSha256
     FROM generations
     WHERE workspace_id = ? AND campaign_pack_id = ?
     ORDER BY created_at ASC
@@ -1304,7 +1310,7 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
       output_content_type AS contentType, approved_revision AS approvedRevision,
       error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
       reviewed_at AS reviewedAt, composition_version AS compositionVersion,
-      generation_mode AS generationMode
+      generation_mode AS generationMode, output_sha256 AS outputSha256
     FROM generations
     WHERE workspace_id = ?
     ORDER BY created_at DESC
@@ -1322,11 +1328,18 @@ function hasCanonicalOutputMetadata(row: StoredGenerationRow, object: R2Object) 
   const metadata = object.customMetadata
   return row.contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE
     && Boolean(row.compositionVersion && row.generationMode)
+    && typeof row.outputSha256 === 'string' && /^[A-Za-z0-9_-]{43}$/.test(row.outputSha256)
+    && r2Sha256(object) === row.outputSha256
     && object.httpMetadata?.contentType === row.contentType
     && metadata?.workflow === row.workflowId
     && metadata?.approvedRevision === String(row.approvedRevision)
     && metadata?.compositionVersion === row.compositionVersion
     && metadata?.generationMode === row.generationMode
+}
+
+function r2Sha256(object: R2Object) {
+  const checksum = object.checksums.sha256
+  return checksum?.byteLength === 32 ? base64Url(new Uint8Array(checksum)) : null
 }
 
 async function canonicalGenerationOutput(env: Env, row: StoredGenerationRow): Promise<CanonicalOutputResult> {
@@ -1653,9 +1666,13 @@ export default {
           background = { base64: generated.imageBase64, contentType: 'image/png' }
         }
         const output = composeCampaignSvg({ input, source, background })
+        const outputBytes = textEncoder.encode(output)
+        const outputDigest = await sha256Bytes(outputBytes)
+        const outputSha256 = base64Url(new Uint8Array(outputDigest))
         const key = `workspaces/${input.workspaceId}/generations/${generationId}.svg`
         await requireCurrentGenerationExecution(env, input)
-        await env.MEDIA_BUCKET.put(key, output, {
+        storedOutputKey = key
+        const stored = await env.MEDIA_BUCKET.put(key, outputBytes, {
           httpMetadata: { contentType: CAMPAIGN_OUTPUT_CONTENT_TYPE },
           customMetadata: {
             workflow: input.workflowId,
@@ -1663,10 +1680,11 @@ export default {
             approvedRevision: String(input.approvedRevision),
             compositionVersion: CAMPAIGN_COMPOSITION_VERSION,
             generationMode: mode
-          }
+          },
+          sha256: outputDigest
         })
-        storedOutputKey = key
-        await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, mode)
+        if (!stored || r2Sha256(stored) !== outputSha256) throw new TypeError('Output storage integrity verification failed.')
+        await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, outputSha256, mode)
         storedOutputKey = null
         message.ack()
       } catch (error) {

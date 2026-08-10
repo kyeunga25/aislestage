@@ -196,6 +196,7 @@ Migration 是受保護的 state change：
 - 確認備份／Time Travel 策略與復原責任；
 - 不要把 migration output、database ID 或 SQL query result 貼到公開 log；
 - 不要在 CI 自動對未知 database 執行 migration；
+- 引入 output checksum contract 的版本不會盲目回填舊物件；缺少已驗證 checksum 的既有輸出會保持不可核准／交付，應在升級後由授權使用者重新建立；
 - 程式 rollback 不代表 schema rollback，不能以刪除 database 作復原方法。
 
 本公開文件不列出資料表、欄位、索引、row 或實際資料組織；唯一 schema source 是已審核的 repository migrations。

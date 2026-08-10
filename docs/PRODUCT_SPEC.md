@@ -111,7 +111,7 @@ idle -> needs-input -> awaiting-approval -> approved
 - 1:1 1080×1080、4:5 1080×1350、9:16 1080×1920；
 - 私人 SVG 保存與 restrictive response headers。
 
-Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存通用 composition version、generation mode 及批准 revision；初始審核狀態固定為 `draft`。審核 decision 以條件更新保持併發安全，同一決定可安全重送，相反決定不可覆蓋已完成的審核。每次 approve、preview 及 download 亦會核對 D1 的正式 SVG content type 與私人 R2 的 HTTP／provenance metadata；workflow、批准 revision、composition version 或 generation mode 任一不一致都會 fail closed，不寫入核准決定或返回 object body。
+Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存通用 composition version、generation mode、批准 revision 及正文 SHA-256；R2 在寫入時核對同一 checksum，初始審核狀態固定為 `draft`。審核 decision 以條件更新保持併發安全，同一決定可安全重送，相反決定不可覆蓋已完成的審核。每次 approve、preview 及 download 亦會核對 D1 的正式 SVG content type／SHA-256 與私人 R2 的 checksum／HTTP／provenance metadata；正文、workflow、批准 revision、composition version 或 generation mode 任一不一致都會 fail closed，不寫入核准決定或返回 object body。
 
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
 
@@ -137,7 +137,7 @@ Cron Trigger -> expired session and auth-attempt cleanup
 - 重送、Queue duplicate delivery 及 enqueue failure 不會重複預留；
 - 商品圖、價格、優惠、CTA 及雙語文案可逐項核對；
 - 完成輸出預設為草稿，只有 owner／admin 核准後才返回 download URL；重送及相反決定併發不會覆蓋首個審核結果；
-- D1 與 R2 的 output format／provenance metadata 不一致時，不可核准，preview 與 download 亦不返回私人 object body；
+- D1 與 R2 的 output SHA-256／format／provenance metadata 不一致時，不可核准，preview 與 download 亦不返回私人 object body；
 - 匿名及跨 workspace 不可讀取私人資料；
 - deterministic mode 不接觸 provider；
 - desktop、mobile、keyboard focus、無水平溢出及破圖檢查通過；

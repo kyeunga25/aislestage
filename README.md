@@ -131,13 +131,13 @@ Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 bin
 
 ## 技術、AI 模型與參考資料 / Technology, AI models and references
 
-以下是本 repository 實際使用或明確參考的公開技術資料；核對日期為 **2026-08-07**。
+以下是本 repository 實際使用或明確參考的公開技術資料；核對日期為 **2026-08-10**。
 
 ### 實際使用的技術
 
 - [React](https://react.dev/)、[TypeScript](https://www.typescriptlang.org/docs/) 及 [Vite](https://vite.dev/guide/)：前端與建置；
 - [Cloudflare Workers](https://developers.cloudflare.com/workers/)、[Static Assets](https://developers.cloudflare.com/workers/static-assets/) 及 [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/)：edge runtime、SPA 與部署；
-- [Cloudflare D1](https://developers.cloudflare.com/d1/)、[R2](https://developers.cloudflare.com/r2/)、[Queues](https://developers.cloudflare.com/queues/) 及 [Durable Objects](https://developers.cloudflare.com/durable-objects/)：關聯資料、私人檔案、非同步工作及 workspace-scoped state；
+- [Cloudflare D1](https://developers.cloudflare.com/d1/)、[R2 Workers API／checksums](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)、[Queues](https://developers.cloudflare.com/queues/) 及 [Durable Objects](https://developers.cloudflare.com/durable-objects/)：關聯資料、具 SHA-256 完整性核對的私人檔案、非同步工作及 workspace-scoped state；
 - [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/)：Campaign Agent 的 Durable Object 基礎；
 - [Cloudflare Access application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) 及 [JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)：私人 route 與 origin 驗證；
 - [`jose`](https://github.com/panva/jose)、[Vitest](https://vitest.dev/) 及 [Cloudflare Vitest integration](https://developers.cloudflare.com/workers/testing/vitest-integration/)：JWT 與隔離測試。
