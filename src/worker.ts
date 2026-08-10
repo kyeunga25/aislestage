@@ -2376,12 +2376,26 @@ async function deleteGeneration(env: Env, session: SessionContext, generationId:
   `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null; status: string }>()
   if (!row) return json({ error: 'Output not found.' }, { status: 404 })
   if (row.status === 'queued' || row.status === 'processing') return json({ error: '仍在處理的輸出不可刪除。' }, { status: 409 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
   try {
     if (row.outputKey) await env.MEDIA_BUCKET.delete(row.outputKey)
-    await env.DB.prepare('DELETE FROM generations WHERE id = ?').bind(generationId).run()
-    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+    await env.DB.prepare('DELETE FROM generations WHERE id = ? AND workspace_id = ?')
+      .bind(generationId, session.currentWorkspace.id)
+      .run()
+    return deletedResponse()
   } catch {
-    return json({ error: '未能刪除輸出。' }, { status: 503 })
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM generations
+        WHERE id = ? AND workspace_id = ?
+      `).bind(generationId, session.currentWorkspace.id).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('generation-delete-reconciliation-pending')
+    } catch {
+      console.error('generation-delete-reconciliation-failed')
+    }
+    return json({ error: '未能刪除輸出。 Unable to delete output.' }, { status: 503 })
   }
 }
 

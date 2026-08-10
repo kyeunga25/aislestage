@@ -1160,6 +1160,80 @@ describe('workspace authorization and output allowance integrity', () => {
   })
 })
 
+describe('explicit private output deletion', () => {
+  it('reconciles a generation delete that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Output Delete')
+    const { id } = await completedDeterministicGeneration(account)
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM generations')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after generation delete commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const deleted = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: ambiguousDb })
+
+    expect(deleted.status).toBe(204)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 0 })
+    expect(await env.MEDIA_BUCKET.get(stored!.outputKey)).toBeNull()
+  })
+
+  it('keeps a generation retry anchor when its D1 delete does not commit', async () => {
+    const account = await registerAccount('Rejected Output Delete')
+    const { id } = await completedDeterministicGeneration(account)
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM generations')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before generation delete commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const failed = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: rejectingDb })
+
+    expect(failed.status).toBe(503)
+    expect(await failed.json()).toEqual({ error: '未能刪除輸出。 Unable to delete output.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 1 })
+    expect(await env.MEDIA_BUCKET.get(stored!.outputKey)).toBeNull()
+
+    const retried = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    })
+    expect(retried.status).toBe(204)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 0 })
+  })
+})
+
 describe('human output review and controlled delivery', () => {
   it('reconciles a review update that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Output Review')
