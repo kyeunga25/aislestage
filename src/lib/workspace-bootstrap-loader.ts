@@ -15,6 +15,7 @@ export const sessionDataUnavailableMessage = '登入資料暫時無法確認。 
 export const platformStatusUnavailableMessage = '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
 
 const authenticatedSessionKeys = new Set(['authenticated', 'user', 'currentWorkspace'])
+const authSessionKeys = new Set(['user', 'currentWorkspace'])
 const unauthenticatedSessionKeys = new Set(['authenticated'])
 const userKeys = new Set(['id', 'email', 'name', 'accountStatus', 'accountType'])
 const workspaceKeys = new Set(['id', 'name', 'role', 'accessStatus', 'availableOutputs', 'reservedOutputs'])
@@ -57,12 +58,8 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0
 }
 
-function normalizeAuthenticatedSession(value: Record<string, unknown>): AuthedSession | null {
-  const user = value.user
-  const currentWorkspace = value.currentWorkspace
-  if (value.authenticated !== true
-    || !hasExactKeys(value, authenticatedSessionKeys)
-    || !isRecord(user)
+function normalizeActiveSession(user: unknown, currentWorkspace: unknown): AuthedSession | null {
+  if (!isRecord(user)
     || !hasExactKeys(user, userKeys)
     || !isText(user.id, 64)
     || !isEmail(user.email)
@@ -95,6 +92,16 @@ function normalizeAuthenticatedSession(value: Record<string, unknown>): AuthedSe
       reservedOutputs: currentWorkspace.reservedOutputs
     }
   }
+}
+
+function normalizeAuthenticatedSession(value: Record<string, unknown>): AuthedSession | null {
+  if (value.authenticated !== true || !hasExactKeys(value, authenticatedSessionKeys)) return null
+  return normalizeActiveSession(value.user, value.currentWorkspace)
+}
+
+export function normalizeAuthSessionPayload(value: unknown): AuthedSession | null {
+  if (!isRecord(value) || !hasExactKeys(value, authSessionKeys)) return null
+  return normalizeActiveSession(value.user, value.currentWorkspace)
 }
 
 export async function loadSession(): Promise<SessionLoadResult> {

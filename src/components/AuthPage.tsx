@@ -1,26 +1,15 @@
 import { ArrowRight, LockKeyhole, Sparkles } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { BrandMark } from './BrandMark'
-import type { AuthUser, WorkspaceSummary } from '../lib/types'
+import { submitPasswordAuth } from '../lib/password-auth-client'
+import type { AuthedSession } from '../lib/workspace-bootstrap-loader'
 
 type Props = {
   registrationMode: 'open' | 'invite' | 'closed'
-  onAuthenticated: (session: { user: AuthUser; currentWorkspace: WorkspaceSummary }) => void
+  onAuthenticated: (session: AuthedSession) => void
 }
 
 type Mode = 'login' | 'register'
-
-async function submitAuth(mode: Mode, payload: Record<string, string>) {
-  const response = await fetch(`/api/auth/${mode}`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload)
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : '登入服務暫時未能使用。')
-  return data as { user: AuthUser; currentWorkspace: WorkspaceSummary }
-}
 
 export function AuthPage({ registrationMode, onAuthenticated }: Props) {
   const [mode, setMode] = useState<Mode>('login')
@@ -40,10 +29,12 @@ export function AuthPage({ registrationMode, onAuthenticated }: Props) {
     setError('')
     setIsSubmitting(true)
     try {
-      const session = await submitAuth(mode, { name, workspaceName, email, password, inviteCode })
+      const session = await submitPasswordAuth(mode === 'login'
+        ? { mode, email, password }
+        : { mode, name, workspaceName, email, password, ...(inviteOnly ? { inviteCode } : {}) })
       onAuthenticated(session)
     } catch (authError) {
-      setError(authError instanceof Error ? authError.message : '登入服務暫時未能使用。')
+      setError(authError instanceof Error ? authError.message : '登入服務暫時無法使用。 Authentication service is temporarily unavailable.')
     } finally {
       setIsSubmitting(false)
     }
@@ -71,10 +62,10 @@ export function AuthPage({ registrationMode, onAuthenticated }: Props) {
       <form className="auth-form" onSubmit={handleSubmit}>
         <div className="section-heading"><h2 id="auth-title">{isRegister ? '建立帳號' : '登入 AisleStage'}</h2><p>{isRegister ? inviteOnly ? '使用受邀電郵及一次性邀請碼建立私人工作區。' : '建立你的私人工作區，開始第一套 Campaign Pack。' : '回到工作區，繼續建立推廣素材包。'}</p></div>
         {!registrationAvailable ? <p className="registration-note"><strong>註冊目前未開放</strong><span>已有帳號仍可登入。</span></p> : null}
-        {isRegister && <div className="form-row"><label>你的姓名<input value={name} onChange={(event) => setName(event.target.value)} required /></label><label>工作區名稱<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="例如 Example Store" required /></label></div>}
-        <label>電郵地址<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
-        <label>密碼<input type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-        {isRegister && inviteOnly ? <label>Beta 邀請碼<input type="password" autoComplete="one-time-code" minLength={12} value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} spellCheck={false} required /></label> : null}
+        {isRegister && <div className="form-row"><label>你的姓名<input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required /></label><label>工作區名稱<input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="例如 Example Store" maxLength={120} required /></label></div>}
+        <label>電郵地址<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required /></label>
+        <label>密碼<input type="password" autoComplete={isRegister ? 'new-password' : 'current-password'} minLength={8} maxLength={256} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+        {isRegister && inviteOnly ? <label>Beta 邀請碼<input type="password" autoComplete="one-time-code" minLength={12} maxLength={256} value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} spellCheck={false} required /></label> : null}
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="primary-button auth-submit" type="submit" disabled={isSubmitting}>{isSubmitting ? '處理中…' : isRegister ? '建立帳號與工作區' : '登入工作區'}<ArrowRight size={16} /></button>
       </form>
