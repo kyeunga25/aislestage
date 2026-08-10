@@ -96,6 +96,18 @@ function isCampaignAgentState(value: unknown): value is CampaignAgentState {
     && (value.brief === null || isCampaignBrief(value.brief))
 }
 
+function hasUniqueIds(items: Array<{ id: string }>) {
+  return new Set(items.map((item) => item.id)).size === items.length
+}
+
+export function normalizeCampaignAgentState(value: unknown): CampaignAgentState | null {
+  if (!isCampaignAgentState(value)
+    || !hasUniqueIds(value.checks)
+    || !hasUniqueIds(value.plan)
+    || !hasUniqueIds(value.messages)) return null
+  return value
+}
+
 export async function loadCampaignAgentState() {
   let response: Response
   try {
@@ -108,8 +120,9 @@ export async function loadCampaignAgentState() {
     throw new Error(campaignAgentUnavailableMessage)
   }
   const data = await response.json().catch(() => null) as { state?: unknown } | null
-  if (!isCampaignAgentState(data?.state)) throw new Error(campaignAgentUnavailableMessage)
-  return data.state
+  const state = normalizeCampaignAgentState(data?.state)
+  if (!state) throw new Error(campaignAgentUnavailableMessage)
+  return state
 }
 
 export async function loadCampaignAgentSnapshot(): Promise<{

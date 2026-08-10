@@ -41,6 +41,7 @@
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
 - [x] JSON／multipart 寫入只接受精確、大小寫不敏感的 base media type；合法 charset／boundary 參數保留，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；
 - [x] Campaign Agent stub acquisition／state RPC 失敗回固定雙語 no-store `503`；前端只套用完整 bounded state envelope，暫時或 malformed 回應保留目前計劃而不偽裝成 `idle`；
+- [x] Agent GET／plan／approve 共用 bounded、unique-ID state normalizer；plan success 綁定 canonical brief，approve success 綁定 requested revision／timestamp／replay marker；40 KiB client request cap 與固定錯誤避免套用 malformed state 或反映 server detail；
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
 - [x] 商品圖／已完成輸出的 scoped delete preflight metadata 不可讀時回固定雙語 no-store `503`；D1 row、私人 R2 object 及 Agent revision 均不變；
 - [x] synthetic R2 delete failure 會保留 D1 retry anchor 及 Agent revision；只有 R2 delete 完成後才按 asset identity 重設 plan；

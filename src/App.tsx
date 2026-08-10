@@ -12,6 +12,7 @@ import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
+import { submitCampaignAgentAction } from './lib/campaign-agent-client'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
@@ -29,18 +30,6 @@ const demoSession: AuthedSession = {
 const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', authMode: 'access', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
 const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', registrationMode: 'open', registrationOpen: true, generationEnabled: true, generationMode: 'deterministic' }
 const demoPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', generationEnabled: true, generationMode: 'deterministic' }
-
-async function agentAction(path: string, body?: unknown) {
-  const response = await fetch(`/api/campaign-agent${path}`, body === undefined ? { credentials: 'same-origin' } : {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  })
-  const data = await response.json().catch(() => ({})) as { state?: CampaignAgentState; error?: string }
-  if (!response.ok || !data.state) throw new Error(data.error || 'Campaign Agent 暫時未能完成這個動作。')
-  return data.state
-}
 
 function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const previewMode = import.meta.env.DEV || demoMode
@@ -152,7 +141,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         await new Promise((resolve) => window.setTimeout(resolve, 620))
         setAgentState(buildCampaignPlan(campaignBrief(), agentState.revision + 1, 'deterministic'))
       } else {
-        setAgentState(await agentAction('/plan', { brief: campaignBrief() }))
+        setAgentState(await submitCampaignAgentAction({ action: 'plan', brief: campaignBrief() }))
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Campaign Agent 暫時未能完成規劃。')
@@ -169,7 +158,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         await new Promise((resolve) => window.setTimeout(resolve, 420))
         setAgentState((current) => ({ ...current, stage: 'approved', approvedAt: new Date().toISOString(), messages: [...current.messages, { id: `approved-${current.revision}`, role: 'user', text: '已批准這個輸出計劃。' }] }))
       } else {
-        setAgentState(await agentAction('/approve', { revision: agentState.revision }))
+        setAgentState(await submitCampaignAgentAction({ action: 'approve', revision: agentState.revision }))
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能批准計劃。')

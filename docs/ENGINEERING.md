@@ -86,7 +86,7 @@ npm run cf:types:check
 idle -> needs-input -> awaiting-approval -> approved
 ```
 
-Campaign Agent route 把 Agent stub acquisition 與後續 RPC 全部放在同一可用性邊界；任何失敗只記錄固定 action event，並回雙語 no-store `503`。Browser GET 只接受欄位完整、枚舉合法且符合既定文字／清單上限的 state envelope；網絡、非成功或 malformed 回應不會被轉成 `idle`，而會保留目前 Agent state 並顯示固定雙語提示。
+Campaign Agent route 把 Agent stub acquisition 與後續 RPC 全部放在同一可用性邊界；任何失敗只記錄固定 action event，並回雙語 no-store `503`。Browser GET、plan 與 approve 共用欄位完整、枚舉合法、ID 唯一且符合既定文字／清單上限的 state normalizer；plan success 必須綁定 canonical submitted brief 及 planning stage，approve success 必須確認 requested revision、approved timestamp 與 boolean replay marker。Action request 另有 40 KiB client cap；網絡、非成功、任意 server error detail 或 malformed 回應不會被套用或轉成 `idle`，而會保留目前 Agent state 並顯示固定雙語提示。
 
 前端修改任何商業欄位或商品圖時，現有計劃立即在 UI 失效。Worker 在建立 Campaign Pack 前仍會獨立檢查：
 
