@@ -838,7 +838,11 @@ async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionCo
   if (!user) return null
   const workspaces = await workspacesForUser(env, user.id)
   if (!workspaces[0]) return null
-  await env.DB.prepare('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
+  try {
+    await env.DB.prepare('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
+  } catch {
+    console.error('session-last-seen-update-failed')
+  }
   return { user, currentWorkspace: workspaces[0] }
 }
 

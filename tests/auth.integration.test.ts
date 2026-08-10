@@ -384,6 +384,33 @@ describe('restricted registration authentication', () => {
     expect((await dispatch('/api/session', { headers: { cookie: cookieFrom(login) } })).status).toBe(200)
   })
 
+  it('does not make active-session authorization depend on last-seen telemetry', async () => {
+    const account = await registerAccount('Last Seen Telemetry')
+    const telemetryFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('UPDATE sessions SET last_seen_at')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic last-seen telemetry failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: telemetryFailureDb })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      authenticated: true,
+      user: { id: account.user.id, accountStatus: 'active' },
+      currentWorkspace: { id: account.currentWorkspace.id, accessStatus: 'active' }
+    })
+  })
+
   it('rejects expired sessions and expires the browser cookie', async () => {
     const account = await registerAccount('Expired User')
     await env.DB.prepare("UPDATE sessions SET expires_at = datetime('now', '-1 minute') WHERE user_id = ?").bind(account.user.id).run()

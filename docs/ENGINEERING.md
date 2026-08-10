@@ -62,6 +62,7 @@ npm run cf:types:check
 - 密碼以 PBKDF2 衍生 hash；session token 只保存 SHA-256 hash；
 - session cookie 為 HttpOnly、SameSite=Lax，非本機環境加上 Secure；
 - session INSERT 回報失敗時，Worker 只以本次高熵 token 的 SHA-256 hash 重新讀取，並要求 user ID 與完整 expiry 完全相同；已提交的 exact row 可繼續載入 active user／workspace 並發出同一 cookie，缺失、衝突或不可讀狀態只返回不含 token／hash 的通用 `503`；
+- `last_seen_at` 只屬非權威 session telemetry：active user、未過期 session 及 active workspace membership 全部讀取成功後才嘗試更新；UPDATE 失敗只記錄固定事件名，不會推翻已完成的 authorization，expiry 亦不會因此延長；
 - logout DELETE 回報失敗時，只有同一 token hash 的 D1 row 已確定不存在才返回成功及 expired cookie；row 仍存在或 reconciliation 不可讀時返回雙語 `503` 並保留 browser cookie 作重試錨點，不會虛假宣稱 server session 已撤銷；
 - password／invite 模式以一個 D1 batch 建立 user、workspace、owner membership、初始 output allowance，並在適用時消耗一次性 invite。若 batch 已提交但回應失敗，Worker 只以本次 server-generated user／workspace IDs 核對 exact email、名稱、password hash／salt、帳戶模式、workspace 狀態、owner membership、初始 allowance 及 invite linkage；完整相符才記錄一次成功並建立 session，明確未提交維持既有 conflict，衝突或不可讀狀態不會把其他同 email 帳號誤認為本次成功；
 - 所有 state-changing API 會核對 same-origin／fetch metadata；
