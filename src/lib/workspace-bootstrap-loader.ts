@@ -1,4 +1,5 @@
 import { normalizeAccessFailureReason, type AccessFailureReason } from './access-login'
+import { readBoundedJsonResponse } from './bounded-json-response'
 import type { AuthUser, PlatformStatus, WorkspaceSummary } from './types'
 
 export type AuthedSession = {
@@ -15,6 +16,8 @@ export const sessionDataUnavailableMessage = '登入資料暫時無法確認。 
 export const platformStatusUnavailableMessage = '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
 
 const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
+const MAX_SESSION_RESPONSE_BYTES = 16 * 1024
+const MAX_PLATFORM_STATUS_RESPONSE_BYTES = 4 * 1024
 const authenticatedSessionKeys = new Set(['authenticated', 'user', 'currentWorkspace'])
 const authSessionKeys = new Set(['user', 'currentWorkspace'])
 const unauthenticatedSessionKeys = new Set(['authenticated'])
@@ -129,7 +132,7 @@ export async function loadSession(): Promise<SessionLoadResult> {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(sessionDataUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_SESSION_RESPONSE_BYTES)
   if (!isRecord(data)) throw new Error(sessionDataUnavailableMessage)
   if (data.authenticated === false && hasExactKeys(data, unauthenticatedSessionKeys)) {
     return { session: null, failure: 'authentication-required' }
@@ -189,6 +192,6 @@ export async function loadPlatformStatus() {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(platformStatusUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_PLATFORM_STATUS_RESPONSE_BYTES)
   return normalizePlatformStatus(data)
 }

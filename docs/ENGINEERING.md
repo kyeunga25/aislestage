@@ -76,6 +76,7 @@ npm run cf:types:check
 - session 授權完成後，`/api/workspaces` 的第二次 workspace 清單查詢若不可讀，回雙語 no-store `503 unavailable` 並保留既有 session；不輸出 D1 細節，亦不回傳不完整清單；
 - `/api/generations` 先重核 requested workspace 與 session current workspace 一致，再讀 active membership scope 及最多 20 個輸出；scope／清單 D1 查詢不可讀時回雙語 no-store `503 unavailable`，不以空清單掩蓋，跨 workspace request 仍為 `404`；
 - browser generation loader 在 JSON parse 前要求 exact `200 application/json`，並只接受 exact `{ generations }` outer envelope；normalizer 再只把最多 20 項、ID 唯一、欄位完整的 array 視為 authoritative snapshot，核對 workflow／比例／狀態、review／provenance revision 關係，以及與 generation ID 精確相符的同網域 preview／download route。清單 GET 與 Campaign Pack success response 共用內層契約；網絡失敗、非 canonical success status、額外 outer field、外部 URL 或 malformed payload 會保留現有 session／輸出並顯示固定雙語提示，不把後端故障渲染成真正空白 workspace；
+- 私人 hydration JSON 在 parse 前以共用 reader 計算實際 decoded stream bytes：health 4 KiB、session 16 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只作早期拒絕，不是唯一保護；宣稱較小但實際超限的 body 仍會被取消，不套用部分 snapshot；
 - 無權資產與輸出一律返回 not found，避免跨 workspace 枚舉；
 - 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；每個 auth event 另有 server-generated ID，INSERT 回應失敗時必須由該 ID 讀回完全相同的 email hash、IP hash 及 event type 才可繼續。同一主鍵與 exact fields 容許在 row 缺失或首輪 reconciliation 暫時不可讀時做一次有界重寫；首次其實已提交會由唯一鍵及 post-read 恢復，不會重複計數，衝突 row 亦不會覆寫。Event 最終未確認或 rate-limit count 暫時不可讀時，password auth route 以專用錯誤邊界返回雙語 no-store `503`；成功密碼不會取得 session，其他程式錯誤亦不會被這個邊界吞掉；
 - 定期 trigger 清理過期 session、7 日前的登入嘗試、已過期 pending／revoked invite hash，以及 30 日前已使用 invite 的 hash／account linkage。

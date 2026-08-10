@@ -150,6 +150,8 @@ Preview／已批准 download 的 scoped D1 generation metadata 或 R2 output obj
 
 Browser generation list 在任何 JSON parse 前要求 exact `200 application/json`，成功亦只接受 exact `{ generations }` envelope，再套用最多 20 項、唯一 ID、完整 review／provenance 與同源 route normalizer；額外 outer fields 不會進入 workspace。
 
+Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate、輸出或 Agent 計劃。
+
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
 
 ## 8. Cloudflare 架構

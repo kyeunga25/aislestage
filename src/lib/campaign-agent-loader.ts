@@ -1,8 +1,10 @@
 import { campaignBriefLimits } from './campaign-agent'
+import { readBoundedJsonResponse } from './bounded-json-response'
 import type { CampaignAgentState, CampaignBrief } from './types'
 
 export const campaignAgentUnavailableMessage = 'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
 
+const MAX_CAMPAIGN_AGENT_RESPONSE_BYTES = 256 * 1024
 const stateKeys = new Set(['stage', 'revision', 'summary', 'checks', 'plan', 'messages', 'mode', 'approvedAt', 'brief'])
 const briefKeys = new Set(['assetId', 'intent', 'brand', 'product'])
 const brandKeys = new Set(['name', 'tone', 'colors', 'forbiddenWords', 'locale', 'cta', 'ctaEn'])
@@ -129,7 +131,7 @@ export async function loadCampaignAgentState() {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(campaignAgentUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_AGENT_RESPONSE_BYTES)
   if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(campaignAgentUnavailableMessage)
   const state = normalizeCampaignAgentState(data.state)
   if (!state) throw new Error(campaignAgentUnavailableMessage)

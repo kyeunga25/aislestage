@@ -1,8 +1,10 @@
 import type { GenerationResult } from './types'
 import { workflowById } from './workflows'
+import { readBoundedJsonResponse } from './bounded-json-response'
 
 export const generationListUnavailableMessage = '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
 
+const MAX_GENERATION_LIST_RESPONSE_BYTES = 128 * 1024
 const generationKeys = new Set([
   'id',
   'campaignPackId',
@@ -101,7 +103,7 @@ export async function loadGenerations(workspaceId: string) {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(generationListUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_GENERATION_LIST_RESPONSE_BYTES)
   if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(generationListUnavailableMessage)
   return normalizeGenerationResults(data.generations)
 }

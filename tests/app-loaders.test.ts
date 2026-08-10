@@ -130,6 +130,17 @@ describe('workspace generation loading', () => {
     )
   })
 
+  it('rejects a generation list whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(128 * 1024)}${JSON.stringify({ generations: [] })}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(loadGenerations('workspace-oversized-test')).rejects.toThrow(
+      '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    )
+  })
+
   it('uses the bounded bilingual error when the request cannot reach the API', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('synthetic network failure') }))
 
@@ -222,6 +233,17 @@ describe('Campaign Agent state loading', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       state: initialCampaignAgentState()
     }, { status: 201 })))
+
+    await expect(loadCampaignAgentState()).rejects.toThrow(
+      'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    )
+  })
+
+  it('rejects Agent state whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(256 * 1024)}${JSON.stringify({ state: initialCampaignAgentState() })}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
 
     await expect(loadCampaignAgentState()).rejects.toThrow(
       'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
@@ -341,6 +363,17 @@ describe('workspace bootstrap loading', () => {
     )
   })
 
+  it('rejects a session whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(16 * 1024)}${JSON.stringify(canonicalSession)}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(loadSession()).rejects.toThrow(
+      '登入資料暫時無法確認。 Session data is temporarily unavailable.'
+    )
+  })
+
   it('accepts a canonical restricted platform status', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalPlatformStatus)))
 
@@ -351,6 +384,17 @@ describe('workspace bootstrap loading', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(canonicalPlatformStatus), {
       headers: { 'content-type': 'text/plain' }
     })))
+
+    await expect(loadPlatformStatus()).rejects.toThrow(
+      '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
+    )
+  })
+
+  it('rejects platform status whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(4 * 1024)}${JSON.stringify(canonicalPlatformStatus)}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
 
     await expect(loadPlatformStatus()).rejects.toThrow(
       '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
