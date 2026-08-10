@@ -69,6 +69,7 @@ const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
+const MAX_IMAGE_CONTAINER_CHUNKS = 4_096
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
@@ -440,6 +441,174 @@ function chunkName(bytes: Uint8Array, offset: number) {
   return String.fromCharCode(...bytes.slice(offset, offset + 4))
 }
 
+function uint32BigEndian(bytes: Uint8Array, offset: number) {
+  return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0
+}
+
+function uint32LittleEndian(bytes: Uint8Array, offset: number) {
+  return (bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000 + bytes[offset + 3] * 0x1000000) >>> 0
+}
+
+function uint24LittleEndian(bytes: Uint8Array, offset: number) {
+  return bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000
+}
+
+const pngCrcTable = (() => {
+  const table = new Uint32Array(256)
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index
+    for (let bit = 0; bit < 8; bit += 1) value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+    table[index] = value >>> 0
+  }
+  return table
+})()
+
+function hasValidPngChunkCrc(bytes: Uint8Array, typeOffset: number, crcOffset: number) {
+  let crc = 0xffffffff
+  for (let offset = typeOffset; offset < crcOffset; offset += 1) crc = pngCrcTable[(crc ^ bytes[offset]) & 0xff] ^ (crc >>> 8)
+  return ((crc ^ 0xffffffff) >>> 0) === uint32BigEndian(bytes, crcOffset)
+}
+
+function hasValidPngStructure(bytes: Uint8Array) {
+  let offset = 8
+  let chunkCount = 0
+  let sawHeader = false
+  let sawPalette = false
+  let sawImageData = false
+  let endedImageData = false
+  let imageDataBytes = 0
+  let colorType = -1
+
+  while (offset < bytes.length) {
+    chunkCount += 1
+    if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return false
+    if (bytes.length - offset < 12) return false
+    const length = uint32BigEndian(bytes, offset)
+    if (length > bytes.length - offset - 12) return false
+    const typeOffset = offset + 4
+    const dataOffset = offset + 8
+    const crcOffset = dataOffset + length
+    const typeBytes = bytes.subarray(typeOffset, typeOffset + 4)
+    if ([...typeBytes].some((value) => !((value >= 65 && value <= 90) || (value >= 97 && value <= 122)))) return false
+    if ((typeBytes[2] & 0x20) !== 0 || !hasValidPngChunkCrc(bytes, typeOffset, crcOffset)) return false
+
+    const name = chunkName(bytes, typeOffset)
+    if (!sawHeader && name !== 'IHDR') return false
+    if (sawImageData && name !== 'IDAT') endedImageData = true
+
+    if (name === 'IHDR') {
+      if (sawHeader || offset !== 8 || length !== 13) return false
+      const width = uint32BigEndian(bytes, dataOffset)
+      const height = uint32BigEndian(bytes, dataOffset + 4)
+      const bitDepth = bytes[dataOffset + 8]
+      colorType = bytes[dataOffset + 9]
+      const validBitDepth = (colorType === 0 && [1, 2, 4, 8, 16].includes(bitDepth))
+        || (colorType === 2 && [8, 16].includes(bitDepth))
+        || (colorType === 3 && [1, 2, 4, 8].includes(bitDepth))
+        || ((colorType === 4 || colorType === 6) && [8, 16].includes(bitDepth))
+      if (width === 0 || height === 0 || width > 0x7fffffff || height > 0x7fffffff || !validBitDepth) return false
+      if (bytes[dataOffset + 10] !== 0 || bytes[dataOffset + 11] !== 0 || bytes[dataOffset + 12] > 1) return false
+      sawHeader = true
+    } else if (name === 'PLTE') {
+      if (sawPalette || sawImageData || colorType === 0 || colorType === 4 || length === 0 || length > 768 || length % 3 !== 0) return false
+      sawPalette = true
+    } else if (name === 'IDAT') {
+      if (!sawHeader || endedImageData || (colorType === 3 && !sawPalette)) return false
+      sawImageData = true
+      imageDataBytes += length
+    } else if (name === 'IEND') {
+      return length === 0 && sawImageData && imageDataBytes > 0 && crcOffset + 4 === bytes.length
+    } else if ((typeBytes[0] & 0x20) === 0) {
+      return false
+    }
+
+    offset = crcOffset + 4
+  }
+  return false
+}
+
+function webpBitstreamDimensions(bytes: Uint8Array, name: string, dataOffset: number, length: number) {
+  if (name === 'VP8L') {
+    if (length < 5 || bytes[dataOffset] !== 0x2f) return null
+    const header = uint32LittleEndian(bytes, dataOffset + 1)
+    if ((header >>> 29) !== 0) return null
+    return { width: (header & 0x3fff) + 1, height: ((header >>> 14) & 0x3fff) + 1 }
+  }
+  if (name === 'VP8 ') {
+    if (length < 10 || (bytes[dataOffset] & 1) !== 0) return null
+    if (bytes[dataOffset + 3] !== 0x9d || bytes[dataOffset + 4] !== 0x01 || bytes[dataOffset + 5] !== 0x2a) return null
+    const width = (bytes[dataOffset + 6] + bytes[dataOffset + 7] * 0x100) & 0x3fff
+    const height = (bytes[dataOffset + 8] + bytes[dataOffset + 9] * 0x100) & 0x3fff
+    return width > 0 && height > 0 ? { width, height } : null
+  }
+  return null
+}
+
+function hasValidWebpStructure(bytes: Uint8Array) {
+  if (bytes.length < 20 || uint32LittleEndian(bytes, 4) !== bytes.length - 8) return false
+  let offset = 12
+  let chunkCount = 0
+  let extended = false
+  let flags = 0
+  let canvas: { width: number; height: number } | null = null
+  let image: { name: string; width: number; height: number } | null = null
+  let sawIccProfile = false
+  let sawAlpha = false
+
+  while (offset < bytes.length) {
+    chunkCount += 1
+    if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return false
+    if (bytes.length - offset < 8) return false
+    const name = chunkName(bytes, offset)
+    const length = uint32LittleEndian(bytes, offset + 4)
+    const dataOffset = offset + 8
+    if (length > bytes.length - dataOffset) return false
+    const dataEnd = dataOffset + length
+    const paddedEnd = dataEnd + (length % 2)
+    if (paddedEnd > bytes.length || (length % 2 === 1 && bytes[dataEnd] !== 0)) return false
+
+    if (offset === 12 && name === 'VP8X') {
+      if (length !== 10) return false
+      flags = bytes[dataOffset]
+      if ((flags & 0xc1) !== 0 || (flags & 0x0e) !== 0) return false
+      if (bytes[dataOffset + 1] !== 0 || bytes[dataOffset + 2] !== 0 || bytes[dataOffset + 3] !== 0) return false
+      const width = uint24LittleEndian(bytes, dataOffset + 4) + 1
+      const height = uint24LittleEndian(bytes, dataOffset + 7) + 1
+      if (width * height > 0xffffffff) return false
+      canvas = { width, height }
+      extended = true
+    } else if (!extended) {
+      if (offset !== 12 || image) return false
+      const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
+      if (!dimensions || paddedEnd !== bytes.length) return false
+      image = { name, ...dimensions }
+    } else if (name === 'VP8X' || name === 'ANIM' || name === 'ANMF' || name === 'EXIF' || name === 'XMP ') {
+      return false
+    } else if (name === 'ICCP') {
+      if (sawIccProfile || image || length === 0) return false
+      sawIccProfile = true
+    } else if (name === 'ALPH') {
+      if (sawAlpha || image || length === 0 || (bytes[dataOffset] & 0xc0) !== 0) return false
+      sawAlpha = true
+    } else if (name === 'VP8 ' || name === 'VP8L') {
+      if (image || (name === 'VP8L' && sawAlpha)) return false
+      const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
+      if (!dimensions || !canvas || dimensions.width !== canvas.width || dimensions.height !== canvas.height) return false
+      image = { name, ...dimensions }
+    } else if (!image) {
+      return false
+    }
+
+    offset = paddedEnd
+  }
+
+  if (!image) return false
+  if (!extended) return true
+  if (Boolean(flags & 0x20) !== sawIccProfile) return false
+  if (image.name === 'VP8 ' && Boolean(flags & 0x10) !== sawAlpha) return false
+  return true
+}
+
 function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/jpeg') {
     if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return true
@@ -501,7 +670,10 @@ function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/png') {
     const metadataChunks = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
     let offset = 8
+    let chunkCount = 0
     while (offset + 12 <= bytes.length) {
+      chunkCount += 1
+      if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
       const length = ((bytes[offset] << 24) >>> 0) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]
       if (metadataChunks.has(chunkName(bytes, offset + 4))) return true
       offset += 12 + length
@@ -510,7 +682,10 @@ function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   }
   if (contentType === 'image/webp') {
     let offset = 12
+    let chunkCount = 0
     while (offset + 8 <= bytes.length) {
+      chunkCount += 1
+      if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
       const name = chunkName(bytes, offset)
       if (name === 'EXIF' || name === 'XMP ') return true
       const length = bytes[offset + 4] + (bytes[offset + 5] << 8) + (bytes[offset + 6] << 16) + ((bytes[offset + 7] << 24) >>> 0)
@@ -703,6 +878,9 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const bytes = new Uint8Array(await value.arrayBuffer())
   if (!hasValidProductImageSignature(value.type, bytes)) return json({ error: '圖片內容與檔案格式不符。' }, { status: 415 })
   if (hasPrivateImageMetadata(value.type, bytes)) return json({ error: '圖片含有 EXIF、XMP 或文字 metadata；請先移除隱藏資料再上傳。' }, { status: 400 })
+  if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
+    return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
+  }
 
   const assetId = crypto.randomUUID()
   const storedFilename = `product-image.${extensionForContentType(value.type)}`

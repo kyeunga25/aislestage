@@ -31,7 +31,7 @@ AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns a
 - Session、帳號狀態及 workspace 授權；
 - 公開雙語產品主頁與獨立 `/app` 工作區；
 - Cloudflare Access JWT 驗證及受控 workspace membership；
-- 私人 R2 商品圖上傳、格式／大小檢查及授權預覽；
+- 私人 R2 商品圖上傳、格式／大小／有界結構檢查及授權預覽；
 - Workspace-scoped Campaign Agent 與人工批准 revision；
 - 原子、具冪等鍵的三比例 Campaign Pack 建立；
 - Queue 重送安全、失敗回復及輸出額度核算；
@@ -140,6 +140,7 @@ Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 bin
 - [Cloudflare D1](https://developers.cloudflare.com/d1/)、[R2 Workers API／checksums](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)、[Queues](https://developers.cloudflare.com/queues/) 及 [Durable Objects](https://developers.cloudflare.com/durable-objects/)：關聯資料、具 SHA-256 完整性核對的私人檔案、非同步工作及 workspace-scoped state；
 - [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/)：Campaign Agent 的 Durable Object 基礎；
 - [Cloudflare Access application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) 及 [JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)：私人 route 與 origin 驗證；
+- [W3C PNG Specification](https://www.w3.org/TR/png-3/) 及 [WebP Container Specification](https://developers.google.com/speed/webp/docs/riff_container)：來源圖 critical chunk、CRC、RIFF 長度及靜態 bitstream 結構驗證；
 - [`jose`](https://github.com/panva/jose)、[Vitest](https://vitest.dev/) 及 [Cloudflare Vitest integration](https://developers.cloudflare.com/workers/testing/vitest-integration/)：JWT 與隔離測試。
 
 ### AI 模型與 API 狀態

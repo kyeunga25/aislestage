@@ -101,8 +101,9 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 
 ## Product fidelity
 
-- 上傳只接受 PNG、JPEG、WebP，最大 4 MB；
+- 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB；
 - MIME type 與檔案 signature 必須相符；
+- PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC 與完整結尾；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕，原始檔名會改為 generic 名稱；
 - R2 object key 只由 server 生成；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；
@@ -132,7 +133,7 @@ npm run release:check
 Integration tests 會套用所有 D1 migrations，並覆蓋：
 
 - registration、invite、session、rate limit 與 account lifecycle；
-- workspace isolation、private uploads 及 response headers；
+- workspace isolation、private uploads、PNG／WebP malformed container rejection 及 response headers；
 - Agent revision 與 exact brief matching；
 - Campaign Pack atomicity、idempotency、Queue failure rollback；
 - workspace active-output cap 及 assisted multi-gate fail-closed policy；

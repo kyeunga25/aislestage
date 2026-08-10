@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { dispatch, registerAccount } from './helpers'
+import { dispatch, registerAccount, validPngBytes, validWebpBytes } from './helpers'
 
 function validBrief(assetId: string) {
   return {
@@ -31,9 +31,19 @@ function validBrief(assetId: string) {
 }
 
 async function uploadPng(cookie: string, name = 'speaker.png') {
-  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])
+  const bytes = validPngBytes()
   const form = new FormData()
   form.set('file', new File([bytes], name, { type: 'image/png' }))
+  return dispatch('/api/assets/product', {
+    method: 'POST',
+    headers: { cookie, origin: 'https://app.test' },
+    body: form
+  })
+}
+
+async function uploadWebp(cookie: string, bytes = validWebpBytes(), name = 'product.webp') {
+  const form = new FormData()
+  form.set('file', new File([bytes], name, { type: 'image/webp' }))
   return dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie, origin: 'https://app.test' },
@@ -67,13 +77,13 @@ describe('private product assets', () => {
     const uploaded = await uploadPng(owner.cookie)
     expect(uploaded.status).toBe(201)
     const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number } }
-    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: 12 })
+    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: validPngBytes().byteLength })
 
     const storedAsset = await env.DB.prepare(`
       SELECT object_key AS objectKey, content_sha256 AS contentSha256, size_bytes AS sizeBytes
       FROM media_assets WHERE id = ?
     `).bind(payload.asset.id).first<{ objectKey: string; contentSha256: string; sizeBytes: number }>()
-    expect(storedAsset).toMatchObject({ sizeBytes: 12, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })
+    expect(storedAsset).toMatchObject({ sizeBytes: validPngBytes().byteLength, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })
     const storedObject = storedAsset ? await env.MEDIA_BUCKET.head(storedAsset.objectKey) : null
     expect(storedObject?.checksums.sha256?.byteLength).toBe(32)
     expect(base64Url(storedObject!.checksums.sha256!)).toBe(storedAsset!.contentSha256)
@@ -99,7 +109,8 @@ describe('private product assets', () => {
       .first<{ objectKey: string }>()
     const original = row?.objectKey ? await env.MEDIA_BUCKET.get(row.objectKey) : null
     expect(original).not.toBeNull()
-    const replacement = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 1, 1, 1])
+    const replacement = validPngBytes()
+    replacement[replacement.byteLength - 1] ^= 1
     const replacementDigest = await crypto.subtle.digest('SHA-256', replacement)
     await env.MEDIA_BUCKET.put(row!.objectKey, replacement, {
       httpMetadata: original!.httpMetadata,
@@ -135,6 +146,76 @@ describe('private product assets', () => {
     form.set('file', new File(['not-a-png'], 'fake.png', { type: 'image/png' }))
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
     expect(response.status).toBe(415)
+  })
+
+  it.each([
+    { label: 'signature without chunks', bytes: validPngBytes().slice(0, 8) },
+    { label: 'IHDR without image data or trailer', bytes: validPngBytes().slice(0, 33) },
+    { label: 'truncated final chunk', bytes: validPngBytes().slice(0, -1) },
+    {
+      label: 'chunk checksum mismatch',
+      bytes: (() => {
+        const bytes = validPngBytes()
+        bytes[29] ^= 1
+        return bytes
+      })()
+    },
+    {
+      label: 'content after IEND',
+      bytes: (() => {
+        const valid = validPngBytes()
+        const bytes = new Uint8Array(valid.byteLength + 1)
+        bytes.set(valid)
+        bytes[bytes.byteLength - 1] = 1
+        return bytes
+      })()
+    }
+  ])('rejects structurally invalid PNG files: $label', async ({ bytes }) => {
+    const owner = await registerAccount('Invalid PNG Structure')
+    const form = new FormData()
+    form.set('file', new File([bytes], 'invalid.png', { type: 'image/png' }))
+
+    const response = await dispatch('/api/assets/product', {
+      method: 'POST',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' },
+      body: form
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('accepts a bounded static WebP container with image data', async () => {
+    const owner = await registerAccount('Valid WebP Structure')
+    const response = await uploadWebp(owner.cookie)
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toMatchObject({ asset: { contentType: 'image/webp', sizeBytes: validWebpBytes().byteLength } })
+  })
+
+  it.each([
+    { label: 'RIFF header without chunks', bytes: validWebpBytes().slice(0, 12) },
+    {
+      label: 'incorrect RIFF payload size',
+      bytes: (() => {
+        const bytes = validWebpBytes()
+        bytes[4] = 0
+        return bytes
+      })()
+    },
+    { label: 'truncated image chunk', bytes: validWebpBytes().slice(0, -1) },
+    {
+      label: 'container without image data',
+      bytes: new Uint8Array([82, 73, 70, 70, 12, 0, 0, 0, 87, 69, 66, 80, 74, 85, 78, 75, 0, 0, 0, 0])
+    }
+  ])('rejects structurally invalid WebP files: $label', async ({ bytes }) => {
+    const owner = await registerAccount('Invalid WebP Structure')
+    const response = await uploadWebp(owner.cookie, bytes, 'invalid.webp')
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
   })
 
   it('rejects image metadata that could leak hidden location or author details', async () => {

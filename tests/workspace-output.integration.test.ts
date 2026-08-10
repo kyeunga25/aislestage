@@ -3,9 +3,9 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from 'clou
 import { getAgentByName } from 'agents'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker, { type Env, type GenerationMessage } from '../src/worker'
-import { dispatch, generationInput, registerAccount } from './helpers'
+import { dispatch, generationInput, registerAccount, validPngBytes } from './helpers'
 
-const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9ZKAAAAAASUVORK5CYII='
+const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 function bytesBase64Url(bytes: Uint8Array) {
   let binary = ''
@@ -70,7 +70,7 @@ async function createCampaignPack(cookie: string, input: Awaited<ReturnType<type
 
 async function approvedInput(cookie: string, workspaceId: string) {
   const form = new FormData()
-  form.set('file', new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'product.png', { type: 'image/png' }))
+  form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
   const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test' }, body: form })
   const { asset } = await upload.json() as { asset: { id: string } }
   const seed = generationInput(workspaceId, asset.id)
@@ -545,7 +545,8 @@ describe('workspace authorization and output allowance integrity', () => {
       .first<{ objectKey: string }>()
     const original = asset?.objectKey ? await env.MEDIA_BUCKET.get(asset.objectKey) : null
     expect(original).not.toBeNull()
-    const replacement = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 2, 2, 2, 2])
+    const replacement = validPngBytes()
+    replacement[replacement.byteLength - 1] ^= 1
     const replacementDigest = await crypto.subtle.digest('SHA-256', replacement)
     await env.MEDIA_BUCKET.put(asset!.objectKey, replacement, {
       httpMetadata: original!.httpMetadata,

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { dispatch, registerAccount } from './helpers'
+import { dispatch, registerAccount, validPngBytes } from './helpers'
 
 const encoder = new TextEncoder()
 const uploadRequestLimit = 4 * 1024 * 1024 + 64 * 1024
@@ -102,7 +102,7 @@ describe('bounded request body consumption', () => {
   it('rejects a small file hidden inside an oversized multipart request', async () => {
     const account = await registerAccount('Oversized Multipart')
     const boundary = 'aislestage-small-file-large-request'
-    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])
+    const png = validPngBytes()
     const body = multipartBody(boundary, [
       { disposition: 'form-data; name="file"; filename="product.png"', contentType: 'image/png', bytes: png },
       { disposition: 'form-data; name="ignored"', bytes: new Uint8Array(uploadRequestLimit + 1).fill(120) }
@@ -129,7 +129,7 @@ describe('bounded request body consumption', () => {
     expect(login.status).toBe(200)
 
     const boundary = 'aislestage-valid-upload'
-    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])
+    const png = validPngBytes()
     const uploadBody = multipartBody(boundary, [{
       disposition: 'form-data; name="file"; filename="product.png"',
       contentType: 'image/png',

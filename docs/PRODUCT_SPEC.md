@@ -88,9 +88,9 @@ idle -> needs-input -> awaiting-approval -> approved
 
 ## 6. 私人資產
 
-- 只接受 PNG、JPEG、WebP；
+- 只接受 PNG、JPEG、靜態 WebP；
 - 最大 4 MB；
-- browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；
+- browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；PNG 必須具有效 critical chunk 次序、CRC、IDAT 及 IEND，WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
 - source object 存於 workspace-scoped private R2 key；
 - Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；
