@@ -57,6 +57,7 @@
 - [x] 繁中／英文商業資料由使用者明確提供；
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；
 - [x] Campaign plan 嚴格驗證單一 brief object envelope，malformed／null／額外外層欄位不改寫有效 revision；
+- [x] Agent plan、Campaign Pack 及單輸出共用已知 Brief／brand／product 欄位集合，未知欄位 fail closed 且不寫入 state、allowance 或 input JSON；
 - [x] Agent 與 compositor 共用三比例換行／明細行數 validator，任一比例超界的商業文字更正前不可批准或預留輸出；
 - [x] 無空格 SKU／型號 token 會按共用視覺單位有界拆行，不丟失或替換商業字元；
 - [x] Agent approval 嚴格驗證單一正整數 revision，並在同 revision 併發／重送時保持冪等；

@@ -219,6 +219,8 @@ describe('workspace authorization and output allowance integrity', () => {
     const validBody = campaignPackBody(input)
     const malformedBodies = [
       { ...validBody, unexpected: true },
+      { ...validBody, brand: { ...validBody.brand, unexpected: true } },
+      { ...validBody, product: { ...validBody.product, unexpected: true } },
       {
         ...validBody,
         outputs: validBody.outputs.map((output, index) => index === 0 ? { ...output, unexpected: true } : output)
@@ -237,6 +239,33 @@ describe('workspace authorization and output allowance integrity', () => {
       expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?')
         .bind(account.currentWorkspace.id)
         .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+    }
+  })
+
+  it('rejects unknown single-generation fields without reserving outputs', async () => {
+    const account = await registerAccount('Strict Generation Input')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const malformedInputs = [
+      { ...input, unexpected: true },
+      { ...input, brand: { ...input.brand, unexpected: true } },
+      { ...input, product: { ...input.product, unexpected: true } }
+    ]
+
+    for (const malformedInput of malformedInputs) {
+      const response = await dispatch('/api/generations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+        body: JSON.stringify(malformedInput)
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: 'Invalid generation payload.' })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
       expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
         .bind(account.currentWorkspace.id)
         .first()).toEqual({ count: 0 })

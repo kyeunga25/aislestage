@@ -57,6 +57,18 @@ describe('Campaign Workspace product contract', () => {
     })).toEqual([])
   })
 
+  it('rejects unknown Campaign Brief, brand, and product fields', () => {
+    for (const value of [
+      { unexpected: true },
+      { brand: { unexpected: true } },
+      { product: { unexpected: true } }
+    ]) {
+      expect(validateCampaignBrief(value)).toEqual([
+        expect.stringMatching(/不支援.*not supported/i)
+      ])
+    }
+  })
+
   it('shows the composition correction and withholds approval in the workspace', () => {
     const product = { ...starterProduct, price: 'HK$ 12,345,678,900' }
     const agentState = buildCampaignPlan({ assetId: 'synthetic-asset', intent: '新品推廣', brand: starterBrand, product })

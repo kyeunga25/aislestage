@@ -532,6 +532,19 @@ describe('workspace Campaign Agent', () => {
       })
     }
 
+    for (const briefWithUnknownField of [
+      { ...brief, unexpected: true },
+      { ...brief, brand: { ...brief.brand, unexpected: true } },
+      { ...brief, product: { ...brief.product, unexpected: true } }
+    ]) {
+      const response = await plan(JSON.stringify({ brief: briefWithUnknownField }))
+      expect(response.status).toBe(422)
+      expect(await response.json()).toMatchObject({ error: expect.stringMatching(/不支援.*not supported/i) })
+      expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((stateResponse) => stateResponse.json())).toMatchObject({
+        state: { stage: 'approved', revision: approvedState.revision, approvedAt: approvedState.approvedAt, brief: { assetId: asset.id } }
+      })
+    }
+
     const partial = await plan(JSON.stringify({ brief: { product: { price: '' } } }))
     expect(partial.status).toBe(200)
     expect(await partial.json()).toMatchObject({ state: { stage: 'needs-input', revision: approvedState.revision + 1 } })

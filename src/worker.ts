@@ -1397,11 +1397,35 @@ const campaignPackRequestKeys = [
   'outputs'
 ] as const
 const campaignPackOutputKeys = ['workflowId', 'aspectRatio'] as const
+const generationInputRequestKeys = [
+  'workspaceId',
+  'workflowId',
+  'aspectRatio',
+  'approvedRevision',
+  'intent',
+  'brand',
+  'product',
+  'referenceImageUrls',
+  'referenceAssetIds'
+] as const
 
 function hasExactKeys(value: unknown, expectedKeys: readonly string[]) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const keys = Object.keys(value)
   return keys.length === expectedKeys.length && keys.every((key) => expectedKeys.includes(key))
+}
+
+function hasKnownCampaignBriefFields(input: GenerationInput) {
+  return validateCampaignBrief({
+    assetId: input.referenceAssetIds[0],
+    intent: input.intent,
+    brand: input.brand,
+    product: input.product
+  }).length === 0
+}
+
+function strictGenerationInput(value: unknown): value is GenerationInput {
+  return hasExactKeys(value, generationInputRequestKeys) && validInput(value) && hasKnownCampaignBriefFields(value)
 }
 
 function campaignPackInputs(value: unknown): { request: CampaignPackRequest; inputs: GenerationInput[] } | null {
@@ -1422,7 +1446,7 @@ function campaignPackInputs(value: unknown): { request: CampaignPackRequest; inp
     referenceImageUrls: [],
     referenceAssetIds: request.referenceAssetIds
   }))
-  if (!inputs.every(validInput)) return null
+  if (!inputs.every((input) => validInput(input) && hasKnownCampaignBriefFields(input))) return null
   const outputKeys = inputs.map((input) => `${input.workflowId}:${input.aspectRatio}`)
   if (new Set(outputKeys).size !== outputKeys.length) return null
   return { request: request as CampaignPackRequest, inputs: inputs as GenerationInput[] }
@@ -1635,7 +1659,7 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Generation payload is too large.' }, { status: 413 })
   const input = parsed.body
-  if (!validInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
+  if (!strictGenerationInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
   if (input.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
   const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })

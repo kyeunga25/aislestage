@@ -27,6 +27,9 @@ export const campaignBriefLimits = {
 } as const
 
 const MAX_TEXT = campaignBriefLimits.brand.forbiddenWords
+const campaignBriefKeys = new Set(['assetId', 'intent', 'brand', 'product'])
+const brandKeys = new Set(['name', 'tone', 'colors', 'forbiddenWords', 'locale', 'cta', 'ctaEn'])
+const productKeys = new Set(['name', 'nameEn', 'category', 'benefits', 'benefitsEn', 'specifications', 'price', 'promotion', 'promotionEn', 'channels'])
 
 function clean(value: unknown, max: number = MAX_TEXT) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -38,6 +41,12 @@ function cleanList(value: unknown, maxItems: number, maxLength: number) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validateKnownFields(issues: string[], source: Record<string, unknown>, allowedKeys: ReadonlySet<string>, zhLabel: string, enLabel: string) {
+  if (Object.keys(source).some((key) => !allowedKeys.has(key))) {
+    issues.push(`${zhLabel}包含不支援的欄位。 Unknown fields are not supported in ${enLabel}.`)
+  }
 }
 
 function validateTextField(issues: string[], source: Record<string, unknown>, key: string, maxLength: number, zhLabel: string, enLabel: string, allowNull = false) {
@@ -75,6 +84,9 @@ export function validateCampaignBrief(value: unknown) {
   const product = isRecord(productValue) ? productValue : {}
   if (brandValue !== undefined && !isRecord(brandValue)) issues.push('品牌資料格式無效。Brand details must be an object.')
   if (productValue !== undefined && !isRecord(productValue)) issues.push('商品資料格式無效。Product details must be an object.')
+  validateKnownFields(issues, value, campaignBriefKeys, 'Campaign Brief ', 'Campaign Brief')
+  validateKnownFields(issues, brand, brandKeys, '品牌資料', 'Brand details')
+  validateKnownFields(issues, product, productKeys, '商品資料', 'Product details')
 
   validateTextField(issues, value, 'assetId', campaignBriefLimits.assetId, '商品圖片識別碼', 'Product asset identifier', true)
   validateTextField(issues, value, 'intent', campaignBriefLimits.intent, '推廣目的', 'Campaign intent')
