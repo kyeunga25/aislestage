@@ -306,6 +306,52 @@ describe('Cloudflare Access authentication', () => {
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'identity-incomplete' })
   })
 
+  it('reports Access unavailable when the bound-subject lookup cannot be read', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const subjectLookupFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes("WHERE access_subject_hash = ? AND auth_mode = 'access'")) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic bound-subject lookup failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: subjectLookupFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+  })
+
+  it('reports Access unavailable when the onboarding email lookup cannot be read', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const emailLookupFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('WHERE email = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic onboarding email lookup failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: emailLookupFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+  })
+
   it('binds a protected pre-onboarded identity to one active owner workspace', async () => {
     const fixture = await accessFixture({ autoProvision: false })
     const seeded = await seedAccessOwner(fixture.email)

@@ -38,6 +38,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 - 正式環境使用邀請註冊，不提供匿名自助註冊；
 - 一次性邀請同時綁定標準化電郵，D1 只保存 token hash 與組合 hash；
+- Access subject hash 及已驗證 email 的初始帳號查詢不可讀時返回 no-store `503 unavailable`；不得洩漏資料庫錯誤，亦不得把暫時可用性問題當成未獲邀或無 membership；
 - pre-onboarded 帳號的首次 Access subject 綁定只保存 subject hash；UPDATE 回應不確定時必須由同一 user、email、顯示名稱、hash、Access auth mode 及 active 狀態完整證實，未提交時返回暫時不可用並保留安全重試路徑；
 - 明確啟用的 Access auto-provision 以一個 D1 batch 建立 user、workspace、owner membership 與 allowance；batch 回應不確定時只接受 subject hash／email 的 exact active Access user，missing 或不可讀狀態返回 `503 unavailable` 而不是誤報未獲邀；
 - invite registration 以單一 D1 batch 建立帳號、workspace、owner membership、初始 allowance 並消耗邀請；若 D1 回報不確定，只在本次 server-generated user／workspace IDs、canonical password account fields、membership、allowance 及 invite linkage 全部相符時恢復成功並發出 session，不能只憑相同 email 已存在而宣稱成功；

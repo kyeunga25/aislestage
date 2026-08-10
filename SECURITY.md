@@ -7,6 +7,7 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - The public product site and private `/app` workspace are separate routes.
 - Production authentication uses Cloudflare Access at the edge; the Worker independently validates the signed JWT issuer, audience, expiry, subject, and email before checking D1 membership.
 - Access subjects are stored only as one-way hashes. Password login and registration are disabled in Access mode.
+- Initial D1 lookups by Access subject hash and verified email are bounded availability checks. An unreadable lookup returns `503 unavailable` without exposing database details or misclassifying a temporary storage failure as a membership denial.
 - A reported first-time Access-subject update failure is accepted only when an exact post-read matches the same user ID, normalized email, Access display name, subject hash, Access auth mode, and active status. A missing or unreadable binding returns the bounded `unavailable` failure and leaves the pre-onboarded account retryable.
 - When the explicitly enabled Access auto-provision batch reports failure, the Worker proceeds only if an exact post-read finds the active Access user by subject hash and normalized email. A missing or unreadable result is classified as bounded `503 unavailable`, not as a membership denial; a committed transaction can recover, while a definitely uncommitted transaction leaves no account rows.
 - Protected APIs require a verified Access identity, an active account, and a matching active D1 workspace membership.

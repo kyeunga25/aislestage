@@ -897,23 +897,35 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
   const identity = await verifyAccessIdentity(request, env)
   if (identity instanceof Response) return identity
   const subjectHash = await sha256(identity.subject)
-  let user = await env.DB.prepare(`
-    SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
-    FROM users
-    WHERE access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
-  `).bind(subjectHash).first<AuthUser>()
+  let user: AuthUser | null
+  try {
+    user = await env.DB.prepare(`
+      SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+      FROM users
+      WHERE access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
+    `).bind(subjectHash).first<AuthUser>()
+  } catch {
+    console.error('access-subject-lookup-failed')
+    return accessError('unavailable', 503, 'Access account lookup is temporarily unavailable.')
+  }
 
   if (user && normalizeEmail(user.email) !== identity.email) {
     return accessError('membership-required', 403, 'The verified identity does not match this workspace account.')
   }
 
   if (!user) {
-    const emailAccount = await env.DB.prepare(`
-      SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
-        auth_mode AS authMode, access_subject_hash AS accessSubjectHash
-      FROM users
-      WHERE email = ?
-    `).bind(identity.email).first<AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }>()
+    let emailAccount: (AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }) | null
+    try {
+      emailAccount = await env.DB.prepare(`
+        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
+          auth_mode AS authMode, access_subject_hash AS accessSubjectHash
+        FROM users
+        WHERE email = ?
+      `).bind(identity.email).first<AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }>()
+    } catch {
+      console.error('access-email-lookup-failed')
+      return accessError('unavailable', 503, 'Access account onboarding is temporarily unavailable.')
+    }
 
     if (emailAccount) {
       if (emailAccount.accountStatus !== 'active' || (emailAccount.accessSubjectHash && emailAccount.accessSubjectHash !== subjectHash)) {
