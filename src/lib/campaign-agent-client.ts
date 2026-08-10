@@ -1,10 +1,11 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
-import { normalizeCampaignAgentState } from './campaign-agent-loader'
+import { loadCampaignAgentState, normalizeCampaignAgentState } from './campaign-agent-loader'
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 import type { CampaignAgentState, CampaignBrief } from './types'
 
 export type CampaignAgentActionRequest =
-  | { action: 'plan'; brief: CampaignBrief }
+  | { action: 'plan'; brief: CampaignBrief; currentRevision: number }
   | { action: 'approve'; revision: number }
 
 export const campaignAgentRequestInvalidMessage = 'Campaign Agent 請求格式無效。 Campaign Agent request is invalid.'
@@ -12,8 +13,18 @@ export const campaignAgentActionUnavailableMessage = 'Campaign Agent 暫時未�
 
 const MAX_AGENT_CLIENT_BODY_BYTES = 40 * 1024
 const MAX_AGENT_ACTION_RESPONSE_BYTES = 256 * 1024
+const CAMPAIGN_PLAN_TIMEOUT_MS = 40_000
+const CAMPAIGN_APPROVAL_TIMEOUT_MS = 15_000
+const CAMPAIGN_APPROVAL_ATTEMPTS = 2
 const planResponseKeys = new Set(['state'])
 const approvalResponseKeys = new Set(['state', 'replayed'])
+
+class CampaignAgentAttemptError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message)
+    this.name = 'CampaignAgentAttemptError'
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -31,9 +42,13 @@ function serializeAgentRequest(request: CampaignAgentActionRequest) {
 
   let body: { brief: CampaignBrief } | { revision: number }
   let expectedBrief: CampaignBrief | null = null
+  let currentRevision: number | null = null
   if (request.action === 'plan') {
-    if (validateCampaignBrief(request.brief).length) throw new Error(campaignAgentRequestInvalidMessage)
+    if (!Number.isSafeInteger(request.currentRevision)
+      || request.currentRevision < 0
+      || validateCampaignBrief(request.brief).length) throw new Error(campaignAgentRequestInvalidMessage)
     expectedBrief = sanitizeCampaignBrief(request.brief)
+    currentRevision = request.currentRevision
     body = { brief: expectedBrief }
   } else {
     if (!Number.isSafeInteger(request.revision) || request.revision <= 0) {
@@ -46,7 +61,7 @@ function serializeAgentRequest(request: CampaignAgentActionRequest) {
   if (new TextEncoder().encode(serialized).byteLength > MAX_AGENT_CLIENT_BODY_BYTES) {
     throw new Error(campaignAgentRequestInvalidMessage)
   }
-  return { body: serialized, expectedBrief }
+  return { body: serialized, expectedBrief, currentRevision }
 }
 
 function actionFailureMessage(status: number) {
@@ -56,16 +71,20 @@ function actionFailureMessage(status: number) {
   return campaignAgentActionUnavailableMessage
 }
 
-function canonicalPlanResponse(data: unknown, expectedBrief: CampaignBrief) {
-  if (!isRecord(data) || !hasExactKeys(data, planResponseKeys)) return null
-  const state = normalizeCampaignAgentState(data.state)
+function canonicalPlanState(value: unknown, expectedBrief: CampaignBrief, currentRevision: number) {
+  const state = normalizeCampaignAgentState(value)
   if (!state
     || (state.stage !== 'needs-input' && state.stage !== 'awaiting-approval')
-    || state.revision <= 0
+    || state.revision <= currentRevision
     || state.approvedAt !== null
     || !state.brief
     || JSON.stringify(state.brief) !== JSON.stringify(expectedBrief)) return null
   return state
+}
+
+function canonicalPlanResponse(data: unknown, expectedBrief: CampaignBrief, currentRevision: number) {
+  if (!isRecord(data) || !hasExactKeys(data, planResponseKeys)) return null
+  return canonicalPlanState(data.state, expectedBrief, currentRevision)
 }
 
 function canonicalApprovalResponse(data: unknown, revision: number) {
@@ -81,36 +100,81 @@ function canonicalApprovalResponse(data: unknown, revision: number) {
   return state
 }
 
-export async function submitCampaignAgentAction(request: CampaignAgentActionRequest): Promise<CampaignAgentState> {
-  const { body, expectedBrief } = serializeAgentRequest(request)
-  let response: Response
-  try {
-    response = await fetch(`/api/campaign-agent/${request.action}`, {
+async function submitCampaignAgentAttempt(
+  request: CampaignAgentActionRequest,
+  body: string,
+  expectedBrief: CampaignBrief | null,
+  currentRevision: number | null
+) {
+  return fetchWithTimeout(
+    `/api/campaign-agent/${request.action}`,
+    {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body
-    })
-  } catch {
-    throw new Error(campaignAgentActionUnavailableMessage)
+    },
+    request.action === 'plan' ? CAMPAIGN_PLAN_TIMEOUT_MS : CAMPAIGN_APPROVAL_TIMEOUT_MS,
+    async (response, signal) => {
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new CampaignAgentAttemptError(
+          actionFailureMessage(response.status),
+          response.status === 408 || response.status >= 500
+        )
+      }
+      if (response.status !== 200) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, false)
+      }
+      const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      if (contentType !== 'application/json') {
+        await response.body?.cancel().catch(() => undefined)
+        throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, false)
+      }
+      const data = await readBoundedJsonResponse(response, MAX_AGENT_ACTION_RESPONSE_BYTES)
+      if (signal.aborted) throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, true)
+      const state = request.action === 'plan'
+        ? expectedBrief && currentRevision !== null && canonicalPlanResponse(data, expectedBrief, currentRevision)
+        : request.action === 'approve' && canonicalApprovalResponse(data, request.revision)
+      if (!state) throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, false)
+      return state
+    }
+  )
+}
+
+export async function submitCampaignAgentAction(request: CampaignAgentActionRequest): Promise<CampaignAgentState> {
+  const { body, expectedBrief, currentRevision } = serializeAgentRequest(request)
+
+  if (request.action === 'plan') {
+    try {
+      return await submitCampaignAgentAttempt(request, body, expectedBrief, currentRevision)
+    } catch (error) {
+      const retryable = !(error instanceof CampaignAgentAttemptError) || error.retryable
+      if (!retryable) {
+        throw new Error(error instanceof CampaignAgentAttemptError ? error.message : campaignAgentActionUnavailableMessage)
+      }
+      try {
+        const state = await loadCampaignAgentState()
+        const reconciled = expectedBrief && currentRevision !== null
+          ? canonicalPlanState(state, expectedBrief, currentRevision)
+          : null
+        if (reconciled) return reconciled
+      } catch {
+        // A failed bounded reconciliation must not trigger a second non-idempotent plan mutation.
+      }
+      throw new Error(campaignAgentActionUnavailableMessage)
+    }
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(actionFailureMessage(response.status))
+
+  for (let attempt = 0; attempt < CAMPAIGN_APPROVAL_ATTEMPTS; attempt += 1) {
+    try {
+      return await submitCampaignAgentAttempt(request, body, expectedBrief, currentRevision)
+    } catch (error) {
+      const retryable = !(error instanceof CampaignAgentAttemptError) || error.retryable
+      if (retryable && attempt + 1 < CAMPAIGN_APPROVAL_ATTEMPTS) continue
+      throw new Error(error instanceof CampaignAgentAttemptError ? error.message : campaignAgentActionUnavailableMessage)
+    }
   }
-  if (response.status !== 200) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignAgentActionUnavailableMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignAgentActionUnavailableMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_AGENT_ACTION_RESPONSE_BYTES)
-  const state = request.action === 'plan'
-    ? expectedBrief && canonicalPlanResponse(data, expectedBrief)
-    : canonicalApprovalResponse(data, request.revision)
-  if (!state) throw new Error(campaignAgentActionUnavailableMessage)
-  return state
+  throw new Error(campaignAgentActionUnavailableMessage)
 }

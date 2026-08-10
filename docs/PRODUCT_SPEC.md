@@ -92,7 +92,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 idle -> needs-input -> awaiting-approval -> approved
 ```
 
-Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區 GET、plan 及 approve 都要求 exact `200 application/json`；GET 另要求 exact one-field state envelope，GET／plan／approve 再只套用完整、bounded 且 check／plan／message ID 唯一的 Agent state。Plan 回應須對應同一 canonical brief，approve 回應須確認要求的 revision、approved timestamp 及 replay 狀態。網絡、非成功、非 canonical success status、錯誤 media type、額外外層欄位、任意 server error detail 或 malformed payload 保留目前計劃並提示暫時不可用，不會把故障畫成真正 `idle` state。
+Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區 GET、plan 及 approve 都要求 exact `200 application/json`；GET 另要求 exact one-field state envelope，GET／plan／approve 再只套用完整、bounded 且 check／plan／message ID 唯一的 Agent state。Plan 回應須對應同一 canonical brief、planning stage，且 revision 高於送出時版本；approve 回應須確認要求的 revision、approved timestamp 及 replay 狀態。Plan 的單次 attempt 連完整 response 有 40 秒 deadline；因 plan 會推進 revision，transport／deadline、`408` 或 `5xx` 後不會再送第二次 mutation，只以 bounded GET 接受同 brief 且 revision 已前進的 authoritative state。Approve 每次 attempt 有 15 秒 deadline，並只會就上述暫時故障以相同 revision 重試一次。Validation／authorization／conflict、非 canonical success、錯誤 media type、額外外層欄位、任意 server error detail 或 malformed payload 不會重送或對帳，並保留目前計劃。Agent 動作完成前，畫面會鎖定 brief、來源圖、重複 planning／approval 及 Campaign Pack 建立，避免提交內容在途中改變。
 
 - instance name 由 Worker 使用 session workspace ID 決定；
 - browser 不可以直接讀寫 Durable Object storage；

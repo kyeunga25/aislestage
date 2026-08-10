@@ -14,7 +14,7 @@ type Props = {
 export function CampaignAgentPanel({ state, busy, generationBusy, generationAvailable, onPlan, onApprove, onGenerate }: Props) {
   const canApprove = state.stage === 'awaiting-approval'
 
-  return <section className="agent-panel" aria-labelledby="campaign-agent-title" aria-busy={generationBusy}>
+  return <section className="agent-panel" aria-labelledby="campaign-agent-title" aria-busy={busy || generationBusy}>
     <div className="agent-heading">
       <span className="agent-mark"><Bot size={19} /></span>
       <div><h2 id="campaign-agent-title">Campaign Agent</h2><p>先核對資料，再等待你批准</p></div>

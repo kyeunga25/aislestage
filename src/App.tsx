@@ -68,6 +68,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationDeleteLock = useRef(false)
   const generationReviewLock = useRef(false)
   const campaignPackLock = useRef(false)
+  const campaignAgentLock = useRef(false)
 
   function applyCampaignState(nextState: CampaignAgentState) {
     setAgentState(nextState)
@@ -141,63 +142,74 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setAgentState((current) => current.stage === 'idle' ? current : initialCampaignAgentState())
   }
 
+  function campaignIdentityLocked() {
+    return campaignPackLock.current || campaignAgentLock.current
+  }
+
   function changeBrand(next: BrandPack) {
-    if (campaignPackLock.current) return
+    if (campaignIdentityLocked()) return
     setBrand(next)
     invalidatePlan()
   }
 
   function changeProduct(next: Product) {
-    if (campaignPackLock.current) return
+    if (campaignIdentityLocked()) return
     setProduct(next)
     invalidatePlan()
   }
 
   function changeIntent(next: string) {
-    if (campaignPackLock.current) return
+    if (campaignIdentityLocked()) return
     setIntent(next)
     invalidatePlan()
   }
 
   async function planCampaign() {
-    if (campaignPackLock.current) return
+    if (campaignIdentityLocked()) return
+    campaignAgentLock.current = true
+    const brief = campaignBrief()
+    const currentRevision = agentState.revision
     generationRequestKey.current = null
     setAgentBusy(true)
     setNotice('')
     try {
       if (session?.user.id === 'demo-user') {
         await new Promise((resolve) => window.setTimeout(resolve, 620))
-        setAgentState(buildCampaignPlan(campaignBrief(), agentState.revision + 1, 'deterministic'))
+        setAgentState(buildCampaignPlan(brief, currentRevision + 1, 'deterministic'))
       } else {
-        setAgentState(await submitCampaignAgentAction({ action: 'plan', brief: campaignBrief() }))
+        setAgentState(await submitCampaignAgentAction({ action: 'plan', brief, currentRevision }))
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Campaign Agent 暫時未能完成規劃。')
     } finally {
       setAgentBusy(false)
+      campaignAgentLock.current = false
     }
   }
 
   async function approveCampaign() {
-    if (campaignPackLock.current) return
+    if (campaignIdentityLocked() || agentState.stage !== 'awaiting-approval') return
+    campaignAgentLock.current = true
+    const revision = agentState.revision
     setAgentBusy(true)
     setNotice('')
     try {
       if (session?.user.id === 'demo-user') {
         await new Promise((resolve) => window.setTimeout(resolve, 420))
-        setAgentState((current) => ({ ...current, stage: 'approved', approvedAt: new Date().toISOString(), messages: [...current.messages, { id: `approved-${current.revision}`, role: 'user', text: '已批准這個輸出計劃。' }] }))
+        setAgentState((current) => ({ ...current, stage: 'approved', approvedAt: new Date().toISOString(), messages: [...current.messages, { id: `approved-${revision}`, role: 'user', text: '已批准這個輸出計劃。' }] }))
       } else {
-        setAgentState(await submitCampaignAgentAction({ action: 'approve', revision: agentState.revision }))
+        setAgentState(await submitCampaignAgentAction({ action: 'approve', revision }))
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能批准計劃。')
     } finally {
       setAgentBusy(false)
+      campaignAgentLock.current = false
     }
   }
 
   async function uploadProductImage(file: File) {
-    if (campaignPackLock.current) return
+    if (campaignIdentityLocked()) return
     generationRequestKey.current = null
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
       setNotice(productAssetTypeMessage)
@@ -234,7 +246,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function deleteProductImage() {
-    if (campaignPackLock.current || productImageDeleteLock.current) return
+    if (campaignIdentityLocked() || productImageDeleteLock.current) return
     const confirmation = demoMode
       ? '移除這張本機 Demo 圖片？引用此圖的 Agent 計劃亦會重設。 Remove this local demo image? A plan using it will also reset.'
       : '刪除這張私人商品圖片？只有引用此圖的 Agent 計劃會重設。 Delete this private product image? Only a plan using it will reset.'
@@ -317,7 +329,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function generatePack() {
-    if (!session || agentState.stage !== 'approved' || campaignPackLock.current) return
+    if (!session || agentState.stage !== 'approved' || campaignIdentityLocked()) return
     if (!platformStatus.generationEnabled) {
       setNotice('計劃已保存；這個部署目前不接受外部 AI 生成請求。')
       return

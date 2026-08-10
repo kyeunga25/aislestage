@@ -115,6 +115,39 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toMatch(/<button[^>]+aria-label="刪除圖片"[^>]+disabled=""/)
   })
 
+  it('locks the submitted brief and source image while an Agent action is in progress', () => {
+    const planned = buildCampaignPlan({
+      assetId: 'synthetic-asset',
+      intent: '新品推廣',
+      brand: starterBrand,
+      product: starterProduct
+    })
+    const markup = renderToStaticMarkup(<CampaignWorkspace
+      brand={starterBrand}
+      product={starterProduct}
+      intent="新品推廣"
+      image={{ name: 'synthetic.png', url: '/synthetic.png', asset: null, status: 'demo', error: '' }}
+      agentState={planned}
+      agentBusy
+      generationAvailable={true}
+      onBrandChange={vi.fn()}
+      onProductChange={vi.fn()}
+      onIntentChange={vi.fn()}
+      onImageSelected={vi.fn()}
+      onImageDelete={vi.fn()}
+      onPlan={vi.fn()}
+      onApprove={vi.fn()}
+      onGenerate={vi.fn()}
+    />)
+
+    expect(markup).toMatch(/<fieldset[^>]+class="compact-fields"[^>]+disabled=""/)
+    expect(markup).toContain('Agent 正在處理… Agent action in progress…')
+    expect(markup).toContain('商品圖片已鎖定至 Agent 動作 · Product image locked to the Agent action')
+    expect(markup).toContain('正在批准…')
+    expect(markup).toMatch(/<button[^>]+aria-label="更換圖片"[^>]+disabled=""/)
+    expect(markup).toMatch(/<button[^>]+aria-label="刪除圖片"[^>]+disabled=""/)
+  })
+
   it('keeps the Agent at needs-input until the required category is present', () => {
     const state = buildCampaignPlan({
       assetId: 'synthetic-asset',
