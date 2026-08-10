@@ -589,6 +589,63 @@ describe('restricted registration authentication', () => {
     })
   })
 
+  it('reports session authorization unavailable when the password session row cannot be read', async () => {
+    const account = await registerAccount('Unreadable Session Row')
+    const sessionReadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM sessions s')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic session row read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: sessionReadFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('set-cookie')).toBeNull()
+    expect(await response.json()).toEqual({
+      authenticated: false,
+      code: 'unavailable',
+      error: '登入工作階段暫時無法確認。 Session authorization is temporarily unavailable.'
+    })
+  })
+
+  it('reports session authorization unavailable when password workspace membership cannot be read', async () => {
+    const account = await registerAccount('Unreadable Session Workspace')
+    const workspaceReadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM workspace_memberships wm')) return statement
+        return {
+          bind: () => ({
+            all: async () => { throw new TypeError('synthetic session workspace read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/workspaces', {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: workspaceReadFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('set-cookie')).toBeNull()
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '登入工作階段暫時無法確認。 Session authorization is temporarily unavailable.'
+    })
+  })
+
   it('rejects expired sessions and expires the browser cookie', async () => {
     const account = await registerAccount('Expired User')
     await env.DB.prepare("UPDATE sessions SET expires_at = datetime('now', '-1 minute') WHERE user_id = ?").bind(account.user.id).run()

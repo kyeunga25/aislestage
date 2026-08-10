@@ -816,6 +816,13 @@ function sessionUnavailable() {
   return json({ error: '未能建立登入工作階段。 Unable to create session.' }, { status: 503 })
 }
 
+function sessionAuthorizationUnavailable(includeAuthenticationState = false) {
+  const error = '登入工作階段暫時無法確認。 Session authorization is temporarily unavailable.'
+  return json(includeAuthenticationState
+    ? { authenticated: false, code: 'unavailable', error }
+    : { code: 'unavailable', error }, { status: 503 })
+}
+
 async function removeUndeliveredSession(env: Env, tokenHash: string) {
   try {
     await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
@@ -1020,7 +1027,13 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
   if (authMode(env) === 'access') return accessSession(request, env)
   const token = parseCookie(request, SESSION_COOKIE)
   if (!token) return json({ error: 'Authentication required.' }, { status: 401 })
-  const session = await loadSessionByHash(env, await sha256(token))
+  let session: SessionContext | null
+  try {
+    session = await loadSessionByHash(env, await sha256(token))
+  } catch {
+    console.error('session-authorization-read-failed')
+    return sessionAuthorizationUnavailable()
+  }
   if (!session) return json({ error: 'Authentication required.' }, { status: 401, headers: { 'set-cookie': expiredSessionCookie(request) } })
   return session
 }
@@ -2571,7 +2584,12 @@ export default {
     }
     if (url.pathname === '/api/session' && request.method === 'GET') {
       const session = await requireSession(request, env)
-      if (session instanceof Response) return activeAuthMode === 'access' ? session : json({ authenticated: false }, { headers: session.headers })
+      if (session instanceof Response) {
+        if (activeAuthMode === 'access') return session
+        return session.status === 503
+          ? sessionAuthorizationUnavailable(true)
+          : json({ authenticated: false }, { headers: session.headers })
+      }
       return json({ authenticated: true, user: session.user, currentWorkspace: session.currentWorkspace })
     }
     if (url.pathname === '/api/workspaces' && request.method === 'GET') {
