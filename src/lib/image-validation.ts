@@ -72,6 +72,7 @@ export function hasValidPngStructure(bytes: Uint8Array) {
   let sawImageData = false
   let endedImageData = false
   let imageDataBytes = 0
+  let bitDepth = -1
   let colorType = -1
 
   while (offset < bytes.length) {
@@ -95,7 +96,7 @@ export function hasValidPngStructure(bytes: Uint8Array) {
       if (sawHeader || offset !== 8 || length !== 13) return false
       const width = uint32BigEndian(bytes, dataOffset)
       const height = uint32BigEndian(bytes, dataOffset + 4)
-      const bitDepth = bytes[dataOffset + 8]
+      bitDepth = bytes[dataOffset + 8]
       colorType = bytes[dataOffset + 9]
       const validBitDepth = (colorType === 0 && [1, 2, 4, 8, 16].includes(bitDepth))
         || (colorType === 2 && [8, 16].includes(bitDepth))
@@ -105,7 +106,10 @@ export function hasValidPngStructure(bytes: Uint8Array) {
       if (bytes[dataOffset + 10] !== 0 || bytes[dataOffset + 11] !== 0 || bytes[dataOffset + 12] > 1) return false
       sawHeader = true
     } else if (name === 'PLTE') {
-      if (sawPalette || sawImageData || colorType === 0 || colorType === 4 || length === 0 || length > 768 || length % 3 !== 0) return false
+      const paletteEntries = length / 3
+      if (sawPalette || sawImageData || colorType === 0 || colorType === 4
+        || length === 0 || length > 768 || length % 3 !== 0
+        || (colorType === 3 && paletteEntries > 2 ** bitDepth)) return false
       sawPalette = true
     } else if (name === 'IDAT') {
       if (!sawHeader || endedImageData || (colorType === 3 && !sawPalette)) return false

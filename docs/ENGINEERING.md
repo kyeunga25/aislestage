@@ -146,7 +146,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 
 - 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB、單邊 8192 px 及 32 MP；
 - MIME type 與檔案 signature 必須相符；
-- PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC 與完整結尾；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
+- PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC、完整結尾，以及 indexed-color PLTE entry 數不超過 IHDR bit depth 容量；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
 - upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱，並附上 client-generated UUID v4 idempotency key；只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，hidden file input、主要上載、更換與刪除控制會一併鎖定，避免同一 UI 啟動競爭的私人 asset mutation；
 - R2 object key 只由 server 生成；

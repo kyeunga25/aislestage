@@ -76,16 +76,53 @@ function writeUint32BigEndian(bytes: Uint8Array, offset: number, value: number) 
   bytes[offset + 3] = value & 0xff
 }
 
+function pngCrc(bytes: Uint8Array, start: number, end: number) {
+  let crc = 0xffffffff
+  for (let offset = start; offset < end; offset += 1) {
+    crc ^= bytes[offset]
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function pngChunk(type: string, data: Uint8Array) {
+  const chunk = new Uint8Array(12 + data.byteLength)
+  writeUint32BigEndian(chunk, 0, data.byteLength)
+  chunk.set(Uint8Array.from(type, (character) => character.charCodeAt(0)), 4)
+  chunk.set(data, 8)
+  writeUint32BigEndian(chunk, 8 + data.byteLength, pngCrc(chunk, 4, 8 + data.byteLength))
+  return chunk
+}
+
+function indexedPngWithPaletteEntries(entries: number) {
+  const header = new Uint8Array(13)
+  writeUint32BigEndian(header, 0, 1)
+  writeUint32BigEndian(header, 4, 1)
+  header[8] = 1
+  header[9] = 3
+  const palette = new Uint8Array(entries * 3)
+  for (let index = 0; index < entries; index += 1) palette.set([index * 40, index * 40, index * 40], index * 3)
+  const parts = [
+    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    pngChunk('PLTE', palette),
+    pngChunk('IDAT', new Uint8Array([120, 156, 99, 96, 0, 0, 0, 2, 0, 1])),
+    pngChunk('IEND', new Uint8Array())
+  ]
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0))
+  let offset = 0
+  for (const part of parts) {
+    output.set(part, offset)
+    offset += part.byteLength
+  }
+  return output
+}
+
 function pngWithDimensions(width: number, height: number) {
   const bytes = validPngBytes()
   writeUint32BigEndian(bytes, 16, width)
   writeUint32BigEndian(bytes, 20, height)
-  let crc = 0xffffffff
-  for (let offset = 12; offset < 29; offset += 1) {
-    crc ^= bytes[offset]
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
-  }
-  writeUint32BigEndian(bytes, 29, (crc ^ 0xffffffff) >>> 0)
+  writeUint32BigEndian(bytes, 29, pngCrc(bytes, 12, 29))
   return bytes
 }
 
@@ -411,6 +448,24 @@ describe('private product assets', () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('accepts an indexed-color PNG whose palette fits its bit depth', async () => {
+    const owner = await registerAccount('Valid Indexed PNG Palette')
+    const response = await uploadImage(owner.cookie, indexedPngWithPaletteEntries(2), 'indexed.png', 'image/png')
+
+    expect(response.status).toBe(201)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 1 })
+  })
+
+  it('rejects an indexed-color PNG whose palette exceeds its bit depth before storage', async () => {
+    const owner = await registerAccount('Invalid Indexed PNG Palette')
+    const response = await uploadImage(owner.cookie, indexedPngWithPaletteEntries(3), 'indexed.png', 'image/png')
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(0)
   })
 
   it('accepts a bounded static WebP container with image data', async () => {
