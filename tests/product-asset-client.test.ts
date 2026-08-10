@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { uploadProductAsset } from '../src/lib/product-asset-client'
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -14,6 +15,10 @@ describe('product asset upload client', () => {
     sizeBytes: 4,
     previewUrl: `/api/assets/${assetId}`
   }
+
+  beforeEach(() => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue(assetId)
+  })
 
   it('accepts a canonical asset and replaces the transmitted original filename', async () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'private-original-name.png', { type: 'image/png' })
@@ -30,6 +35,18 @@ describe('product asset upload client', () => {
     expect((transmitted as File).name).toBe('product-image.png')
     expect((transmitted as File).type).toBe(file.type)
     expect(new Uint8Array(await (transmitted as File).arrayBuffer())).toEqual(new Uint8Array(await file.arrayBuffer()))
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('idempotency-key')).toBe(assetId)
+  })
+
+  it('rejects an asset identity that is not bound to the upload idempotency key', async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      asset: { ...canonicalAsset, id: '223e4567-e89b-42d3-a456-426614174000', previewUrl: '/api/assets/223e4567-e89b-42d3-a456-426614174000' }
+    }, { status: 201 })))
+
+    await expect(uploadProductAsset(file)).rejects.toThrow(
+      '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
+    )
   })
 
   it('rejects an external preview URL', async () => {
@@ -83,6 +100,17 @@ describe('product asset upload client', () => {
 
     await expect(uploadProductAsset(file)).rejects.toThrow(
       '商品圖片上載暫時無法使用。 Product image upload is temporarily unavailable.'
+    )
+  })
+
+  it('maps an idempotency conflict to a fixed retry message', async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      error: 'synthetic private idempotency detail'
+    }, { status: 409 })))
+
+    await expect(uploadProductAsset(file)).rejects.toThrow(
+      '商品圖片上載識別資料已被使用，請重新選擇圖片。 Product image upload identity was already used; select the image again.'
     )
   })
 

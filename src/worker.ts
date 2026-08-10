@@ -72,6 +72,7 @@ const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const MAX_IMAGE_CONTAINER_CHUNKS = 4_096
 const MAX_PRODUCT_IMAGE_DIMENSION = 8_192
 const MAX_PRODUCT_IMAGE_PIXELS = 32_000_000
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const MAX_USED_INVITE_DAYS = 30
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
@@ -1086,6 +1087,11 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
 
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
   if (!hasMediaType(request, 'multipart/form-data')) return unsupportedMediaType(request, 'multipart/form-data')
+  const assetId = request.headers.get('idempotency-key')?.trim().toLowerCase() || ''
+  if (!UUID_V4_PATTERN.test(assetId)) {
+    await cancelRequestBody(request)
+    return json({ error: '商品圖片 idempotency key 無效。 Product image idempotency key is invalid.' }, { status: 400 })
+  }
 
   const bounded = await readBoundedRequestBytes(request, MAX_UPLOAD_REQUEST_BYTES)
   if (bounded.tooLarge) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
@@ -1110,11 +1116,10 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     return json({ error: '圖片尺寸不可超過 8192 px 單邊或 3,200 萬像素。 Image dimensions must not exceed 8192 px per side or 32 megapixels.' }, { status: 413 })
   }
 
-  const assetId = crypto.randomUUID()
   const storedFilename = `product-image.${extensionForContentType(value.type)}`
-  const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}.${extensionForContentType(value.type)}`
   const contentDigest = await sha256Bytes(bytes)
   const contentSha256 = base64Url(new Uint8Array(contentDigest))
+  const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}/${contentSha256}.${extensionForContentType(value.type)}`
   const createdResponse = () => json({
     asset: {
       id: assetId,
@@ -1124,6 +1129,27 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
       previewUrl: `/api/assets/${assetId}`
     }
   }, { status: 201 })
+  const conflictResponse = () => json({
+    error: '這個 idempotency key 已綁定另一張商品圖片。 This idempotency key is already bound to another product image.'
+  }, { status: 409 })
+
+  let existing: StoredProductAsset | null
+  try {
+    existing = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  } catch {
+    console.error('product-asset-upload-preflight-failed')
+    return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+  }
+  if (existing) {
+    if (!matchesProductAssetUpload(existing, objectKey, value.type, value.size, contentSha256)) return conflictResponse()
+    try {
+      const stored = await env.MEDIA_BUCKET.head(existing.objectKey)
+      if (stored && hasCanonicalProductAssetMetadata(existing, stored)) return createdResponse()
+    } catch {
+      console.error('product-asset-upload-replay-read-failed')
+      return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+    }
+  }
 
   try {
     const stored = await env.MEDIA_BUCKET.put(objectKey, bytes, {
@@ -1133,7 +1159,12 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     })
     if (!stored || r2Sha256(stored) !== contentSha256) throw new TypeError('Product asset storage integrity verification failed.')
   } catch {
-    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    try {
+      const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+      if (!committed || committed.objectKey !== objectKey) await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    } catch {
+      console.error('product-asset-upload-storage-reconciliation-failed')
+    }
     return json({ error: '未能儲存商品圖片。' }, { status: 503 })
   }
 
@@ -1149,11 +1180,9 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     try {
       const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
       if (committed) {
-        if (committed.objectKey === objectKey
-          && committed.contentType === value.type
-          && committed.sizeBytes === value.size
-          && committed.contentSha256 === contentSha256) return createdResponse()
-        return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+        if (matchesProductAssetUpload(committed, objectKey, value.type, value.size, contentSha256)) return createdResponse()
+        if (committed.objectKey !== objectKey) await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+        return conflictResponse()
       }
     } catch {
       console.error('product-asset-upload-reconciliation-failed')
@@ -1184,6 +1213,19 @@ async function productAssetForWorkspace(env: Env, workspaceId: string, assetId: 
     WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source'
       AND w.access_status = 'active'
   `).bind(assetId, workspaceId).first<StoredProductAsset>()
+}
+
+function matchesProductAssetUpload(
+  asset: StoredProductAsset,
+  objectKey: string,
+  contentType: string,
+  sizeBytes: number,
+  contentSha256: string
+) {
+  return asset.objectKey === objectKey
+    && asset.contentType === contentType
+    && asset.sizeBytes === sizeBytes
+    && asset.contentSha256 === contentSha256
 }
 
 function hasCanonicalProductAssetMetadata(asset: StoredProductAsset, object: R2Object) {

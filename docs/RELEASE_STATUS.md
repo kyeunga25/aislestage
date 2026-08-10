@@ -21,7 +21,7 @@
 - [x] Queue completion batch 的 ambiguous commit 會核對 completed row、R2 metadata、draft state 與 settlement ledger；已提交保留 output，明確未提交才清理及重試；
 - [x] 來源商品圖 SHA-256 經 R2 寫入驗收；Agent plan 在 DO mutation／provider work 前核對 workspace ownership 與 D1／R2 digest、大小、MIME、provenance，preview／approve／Queue 亦再次核對；missing／跨 workspace／失配不覆蓋既有 revision；
 - [x] 私人商品圖 GET 的 scoped D1 metadata 或 R2 object 暫時不可讀時回雙語 no-store `503 unavailable`；不存在／跨 workspace 保持 `404`，固定 log 不包含私人識別資料；
-- [x] 商品圖 D1 insert 的 ambiguous commit 會以 asset ID 與 canonical 欄位 reconciliation；已提交不刪 R2，明確未提交才補償刪除 object；
+- [x] 商品圖 D1 insert 的 ambiguous commit 會以 request-bound asset ID 與 canonical 欄位 reconciliation；已提交不刪 R2，明確未提交才補償刪除 object；
 - [x] pre-onboarded Access subject UPDATE ambiguous commit 以 exact user／email／name／subject hash／auth mode／status post-read reconciliation；未提交返回 `unavailable` 並可安全重試；
 - [x] PNG critical chunk／CRC／結尾及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；signature-only、truncated、checksum／length 失配與無 image data 上傳均 fail closed；
 - [x] PNG IHDR、JPEG frame、WebP VP8X／VP8／VP8L header 尺寸在解碼前限制為單邊 8192 px 及 32 MP；三種 oversized fixture 均不建立 D1／R2 asset；
@@ -91,6 +91,7 @@
 - [x] email-bound one-time invite hash contract；
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
 - [x] browser multipart 不傳送本機原始檔名；upload success 只接受 exact `201 application/json` 及與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；upload pending 時所有圖片 file-input／更換／刪除入口都鎖定，避免競爭 mutation；
+- [x] product upload 要求 client UUID v4 idempotency key 並綁定 asset ID；同 workspace 同 key／同 canonical content replay 原 `201`，不同內容固定 `409`，跨 workspace 不可 replay；digest-separated 候選 R2 object 令並發 conflict 不互相覆寫，敗方只清理未被 D1 引用的 object；
 - [x] workspace-scoped Campaign Agent 與 revision approval；
 - [x] 繁中／英文商業資料由使用者明確提供；
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；

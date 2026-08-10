@@ -30,18 +30,25 @@ function validBrief(assetId: string) {
   }
 }
 
-async function uploadImage(cookie: string, bytes: Uint8Array, name: string, contentType: 'image/png' | 'image/jpeg' | 'image/webp', envOverride = env) {
+async function uploadImage(
+  cookie: string,
+  bytes: Uint8Array,
+  name: string,
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp',
+  envOverride = env,
+  idempotencyKey = crypto.randomUUID()
+) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: contentType }))
   return dispatch('/api/assets/product', {
     method: 'POST',
-    headers: { cookie, origin: 'https://app.test' },
+    headers: { cookie, origin: 'https://app.test', 'idempotency-key': idempotencyKey },
     body: form
   }, envOverride)
 }
 
-async function uploadPng(cookie: string, name = 'speaker.png', envOverride = env) {
-  return uploadImage(cookie, validPngBytes(), name, 'image/png', envOverride)
+async function uploadPng(cookie: string, name = 'speaker.png', envOverride = env, idempotencyKey = crypto.randomUUID()) {
+  return uploadImage(cookie, validPngBytes(), name, 'image/png', envOverride, idempotencyKey)
 }
 
 async function uploadWebp(cookie: string, bytes = validWebpBytes(), name = 'product.webp') {
@@ -133,6 +140,98 @@ describe('private product assets', () => {
     expect(forbidden.status).toBe(404)
     const forbiddenDelete = await dispatch(payload.asset.previewUrl, { method: 'DELETE', headers: { cookie: otherOwner.cookie, origin: 'https://app.test' } })
     expect(forbiddenDelete.status).toBe(404)
+  })
+
+  it('requires a canonical upload idempotency key before reading or storing a product image', async () => {
+    const owner = await registerAccount('Asset Idempotency Required')
+    const form = new FormData()
+    form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
+
+    const response = await dispatch('/api/assets/product', {
+      method: 'POST',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' },
+      body: form
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/idempotency/i) })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(0)
+  })
+
+  it('replays the same product upload key without creating another row or object', async () => {
+    const owner = await registerAccount('Asset Idempotent Replay')
+    const idempotencyKey = crypto.randomUUID()
+
+    const first = await uploadPng(owner.cookie, 'first-name.png', env, idempotencyKey)
+    const replay = await uploadPng(owner.cookie, 'second-name.png', env, idempotencyKey)
+
+    expect(first.status).toBe(201)
+    expect(replay.status).toBe(201)
+    const firstPayload = await first.json() as { asset: { id: string; previewUrl: string } }
+    const replayPayload = await replay.json()
+    expect(firstPayload.asset.id).toBe(idempotencyKey)
+    expect(replayPayload).toEqual(firstPayload)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(idempotencyKey, owner.currentWorkspace.id).first()).toEqual({ count: 1 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(1)
+  })
+
+  it('does not delete a committed retry anchor when replay storage repair is unavailable', async () => {
+    const owner = await registerAccount('Asset Replay Storage Failure')
+    const idempotencyKey = crypto.randomUUID()
+    const first = await uploadPng(owner.cookie, 'replay-anchor.png', env, idempotencyKey)
+    const { asset } = await first.json() as { asset: { previewUrl: string } }
+    let deleteCalls = 0
+    const unavailableBucket = {
+      head: async () => null,
+      put: async () => { throw new TypeError('synthetic replay storage failure') },
+      delete: async () => { deleteCalls += 1 }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    const replay = await uploadPng(owner.cookie, 'replay-anchor.png', { ...env, MEDIA_BUCKET: unavailableBucket }, idempotencyKey)
+
+    expect(replay.status).toBe(503)
+    expect(deleteCalls).toBe(0)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(idempotencyKey, owner.currentWorkspace.id).first()).toEqual({ count: 1 })
+    expect((await dispatch(asset.previewUrl, { headers: { cookie: owner.cookie } })).status).toBe(200)
+  })
+
+  it('allows only one canonical payload when different files race on the same upload key', async () => {
+    const owner = await registerAccount('Asset Idempotent Conflict')
+    const idempotencyKey = crypto.randomUUID()
+    const [first, second] = await Promise.all([
+      uploadImage(owner.cookie, pngWithDimensions(1, 1), 'first.png', 'image/png', env, idempotencyKey),
+      uploadImage(owner.cookie, pngWithDimensions(2, 1), 'second.png', 'image/png', env, idempotencyKey)
+    ])
+
+    expect([first.status, second.status].sort()).toEqual([201, 409])
+    const created = first.status === 201 ? first : second
+    const conflict = first.status === 409 ? first : second
+    expect(await conflict.json()).toMatchObject({ error: expect.stringMatching(/idempotency/i) })
+    const { asset } = await created.json() as { asset: { id: string; previewUrl: string } }
+    expect(asset.id).toBe(idempotencyKey)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(idempotencyKey, owner.currentWorkspace.id).first()).toEqual({ count: 1 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(1)
+    expect((await dispatch(asset.previewUrl, { headers: { cookie: owner.cookie } })).status).toBe(200)
+  })
+
+  it('does not replay an upload key across workspaces or disturb the original asset', async () => {
+    const firstOwner = await registerAccount('Asset Key First Workspace')
+    const secondOwner = await registerAccount('Asset Key Second Workspace')
+    const idempotencyKey = crypto.randomUUID()
+    const first = await uploadPng(firstOwner.cookie, 'first-workspace.png', env, idempotencyKey)
+    const second = await uploadPng(secondOwner.cookie, 'second-workspace.png', env, idempotencyKey)
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(503)
+    const { asset } = await first.json() as { asset: { previewUrl: string } }
+    expect((await dispatch(asset.previewUrl, { headers: { cookie: firstOwner.cookie } })).status).toBe(200)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?')
+      .bind(secondOwner.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${secondOwner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(0)
   })
 
   it('reports private product metadata unavailable without weakening workspace scoping', async () => {
@@ -272,7 +371,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Invalid Asset')
     const form = new FormData()
     form.set('file', new File(['not-a-png'], 'fake.png', { type: 'image/png' }))
-    const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
+    const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
     expect(response.status).toBe(415)
   })
 
@@ -305,7 +404,7 @@ describe('private product assets', () => {
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
-      headers: { cookie: owner.cookie, origin: 'https://app.test' },
+      headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() },
       body: form
     })
 
@@ -368,7 +467,7 @@ describe('private product assets', () => {
     const form = new FormData()
     form.set('file', new File([bytes], 'private-details.png', { type: 'image/png' }))
 
-    const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test' }, body: form })
+    const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('metadata') })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })

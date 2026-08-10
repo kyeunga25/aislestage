@@ -131,7 +131,7 @@ describe('bounded request body consumption', () => {
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
-      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `multipart/form-data; boundary=${boundary}`, 'idempotency-key': crypto.randomUUID() },
       body: streamingBody([body.subarray(0, 1_024), body.subarray(1_024)], () => { cancelled = true }, true)
     })
 
@@ -151,7 +151,7 @@ describe('bounded request body consumption', () => {
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
-      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `multipart/form-data; boundary=${boundary}`, 'idempotency-key': crypto.randomUUID() },
       body: streamingBody([body.subarray(0, 2_048), body.subarray(2_048)])
     })
 
@@ -178,7 +178,7 @@ describe('bounded request body consumption', () => {
     }])
     const upload = await dispatch('/api/assets/product', {
       method: 'POST',
-      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `Multipart/Form-Data; boundary=${boundary}` },
+      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `Multipart/Form-Data; boundary=${boundary}`, 'idempotency-key': crypto.randomUUID() },
       body: streamingBody([uploadBody])
     })
 

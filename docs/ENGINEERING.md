@@ -140,11 +140,12 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - MIME type 與檔案 signature 必須相符；
 - PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC 與完整結尾；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
-- upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱；只接受 exact `201 application/json` asset envelope，並把 UUID、canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，hidden file input、主要上載、更換與刪除控制會一併鎖定，避免同一 UI 啟動競爭的私人 asset mutation；
+- upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱，並附上 client-generated UUID v4 idempotency key；只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，hidden file input、主要上載、更換與刪除控制會一併鎖定，避免同一 UI 啟動競爭的私人 asset mutation；
 - R2 object key 只由 server 生成；
 - 私人商品圖 GET 先做 workspace-scoped D1 metadata 查詢，再讀取私人 R2 object；真正不存在或跨 workspace 保持 `404`，D1 或 R2 暫時不可讀則回雙語 no-store `503 unavailable`，固定 log 不包含 object key、workspace ID 或原始錯誤；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；
-- R2 驗收後若 D1 insert 拋錯，Worker 會以 server-generated asset ID 重新讀取 workspace-scoped 記錄：完整 canonical row 已提交時返回同一 `201` 並保留 object，明確沒有 row 時才補償刪除 R2；reconciliation 本身不可用時返回不含識別資料的 `503`，不做可能破壞已提交記錄的盲目刪除；
+- Worker 在讀 multipart body 前要求 canonical upload idempotency key，並把它用作 asset identity。同 workspace 重送只有在 object key、MIME、size 及 SHA-256 完全相同時返回原 `201` asset；同 key 不同內容回固定 `409`，跨 workspace key collision 不會返回或覆寫原 asset。候選私人 object identity 加入內容 digest，因此同 key 不同 payload 的併發寫入互不覆蓋；唯一 D1 row 的敗方只清理已確認未被 row 引用的候選 object；
+- R2 驗收後若 D1 insert 拋錯，Worker 會以 request-bound asset ID 重新讀取 workspace-scoped 記錄：完整 canonical row 已提交時返回同一 `201` 並保留 object，明確沒有 row 時才補償刪除 R2；reconciliation 本身不可用時返回不含識別資料的 `503`，不做可能破壞已提交記錄的盲目刪除；
 - Agent plan 在 Durable Object mutation／provider work 前核對來源圖的 workspace ownership 與 D1／R2 digest、大小、MIME、asset kind、workspace metadata；preview、Agent 批准及 Queue 取圖亦再次核對。找不到或失配不改寫既有 Agent revision，並在任何 provider work 前 fail closed；
 - 確定性 compositor 把已批准原圖位元組嵌入 SVG，不重新繪製商品；
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；

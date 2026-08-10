@@ -79,7 +79,7 @@ async function createCampaignPack(cookie: string, input: Awaited<ReturnType<type
 async function approvedInput(cookie: string, workspaceId: string) {
   const form = new FormData()
   form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
-  const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test' }, body: form })
+  const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
   const { asset } = await upload.json() as { asset: { id: string } }
   const seed = generationInput(workspaceId, asset.id)
   const planned = await dispatch('/api/campaign-agent/plan', {
