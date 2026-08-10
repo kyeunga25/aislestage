@@ -236,6 +236,70 @@ describe('restricted registration authentication', () => {
     expect(login.headers.get('set-cookie')).toContain('Secure')
   })
 
+  it('reconciles a logout delete that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Logout Delete')
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM sessions WHERE token_hash')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after logout commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const logout = await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: ambiguousDb })
+
+    expect(logout.status).toBe(200)
+    expect(logout.headers.get('set-cookie')).toContain('Max-Age=0')
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?')
+      .bind(account.user.id)
+      .first()).toEqual({ count: 0 })
+    expect(await dispatch('/api/session', { headers: { cookie: account.cookie } }).then((response) => response.json()))
+      .toEqual({ authenticated: false })
+  })
+
+  it('keeps the retryable session when logout deletion does not commit', async () => {
+    const account = await registerAccount('Rejected Logout Delete')
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM sessions WHERE token_hash')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before logout commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const logout = await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: rejectingDb })
+
+    expect(logout.status).toBe(503)
+    expect(logout.headers.get('set-cookie')).toBeNull()
+    expect(await logout.json()).toEqual({ error: '未能確認登出狀態。 Unable to confirm logout.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?')
+      .bind(account.user.id)
+      .first()).toEqual({ count: 1 })
+    expect((await dispatch('/api/session', { headers: { cookie: account.cookie } })).status).toBe(200)
+  })
+
   it('reconciles a session insert that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Session Insert')
     const logout = await dispatch('/api/auth/logout', {

@@ -1464,7 +1464,22 @@ async function login(request: Request, env: Env) {
 
 async function logout(request: Request, env: Env) {
   const token = parseCookie(request, SESSION_COOKIE)
-  if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(await sha256(token)).run()
+  if (token) {
+    const tokenHash = await sha256(token)
+    try {
+      await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
+    } catch {
+      try {
+        const existing = await env.DB.prepare('SELECT 1 AS existing FROM sessions WHERE token_hash = ?')
+          .bind(tokenHash)
+          .first<{ existing: number }>()
+        if (existing) return json({ error: '未能確認登出狀態。 Unable to confirm logout.' }, { status: 503 })
+      } catch {
+        console.error('session-delete-reconciliation-failed')
+        return json({ error: '未能確認登出狀態。 Unable to confirm logout.' }, { status: 503 })
+      }
+    }
+  }
   return json({ ok: true }, { headers: { 'set-cookie': expiredSessionCookie(request) } })
 }
 
