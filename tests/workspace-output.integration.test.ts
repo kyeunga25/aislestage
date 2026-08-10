@@ -1444,6 +1444,55 @@ describe('explicit private output deletion', () => {
 })
 
 describe('human output review and controlled delivery', () => {
+  it('keeps a draft unchanged when review metadata cannot be read', async () => {
+    const account = await registerAccount('Review Metadata Availability')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const metadataFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations g') || !query.includes('g.output_key AS outputKey')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic review metadata read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, DB: metadataFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
+  })
+
+  it('keeps a draft unchanged when approval object metadata cannot be read', async () => {
+    const account = await registerAccount('Review Object Availability')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const unavailableBucket = {
+      head: async () => { throw new TypeError('synthetic review object metadata failure') }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    const response = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, MEDIA_BUCKET: unavailableBucket })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
+  })
+
   it('reconciles a review update that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Output Review')
     const { id, input } = await completedDeterministicGeneration(account)

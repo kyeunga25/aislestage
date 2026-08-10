@@ -2408,6 +2408,10 @@ function privateOutputUnavailable() {
   }, { status: 503 })
 }
 
+function outputReviewUnavailable() {
+  return json({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' }, { status: 503 })
+}
+
 async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
   let row: StoredGenerationRow | null
   try {
@@ -2478,7 +2482,13 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
     return json({ error: 'Invalid review decision.' }, { status: 400 })
   }
 
-  const current = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  let current: StoredGenerationRow | null
+  try {
+    current = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-review-metadata-read-failed')
+    return outputReviewUnavailable()
+  }
   if (!current) return json({ error: 'Output not found.' }, { status: 404 })
   if (current.status !== 'completed') return json({ error: '只有已完成的輸出可以審核。' }, { status: 409 })
   if (current.approvedRevision !== expectedApprovedRevision) {
@@ -2488,7 +2498,13 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
   const targetStatus: ReviewStatus = decision === 'approve' ? 'approved' : 'rejected'
   if (targetStatus === 'approved') {
     if (!current.outputKey) return json({ error: '輸出檔案不存在，請重新建立。 Output file is missing; recreate this output.' }, { status: 409 })
-    const object = await env.MEDIA_BUCKET.head(current.outputKey)
+    let object: R2Object | null
+    try {
+      object = await env.MEDIA_BUCKET.head(current.outputKey)
+    } catch {
+      console.error('generation-review-object-read-failed')
+      return outputReviewUnavailable()
+    }
     if (!object) return json({ error: '輸出檔案不存在，請重新建立。 Output file is missing; recreate this output.' }, { status: 409 })
     if (!hasCanonicalOutputMetadata(current, object)) return invalidOutputFormat()
   }
@@ -2533,10 +2549,10 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
         return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
       }
       console.error('generation-review-reconciliation-conflict')
-      return json({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' }, { status: 503 })
+      return outputReviewUnavailable()
     } catch {
       console.error('generation-review-reconciliation-failed')
-      return json({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' }, { status: 503 })
+      return outputReviewUnavailable()
     }
   }
   const latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
