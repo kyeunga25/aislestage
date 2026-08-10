@@ -46,7 +46,7 @@ describe('password authentication client', () => {
   })
 
   it('normalizes registration fields and omits an unused invitation code', async () => {
-    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json(canonicalSession))
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json(canonicalSession, { status: 201 }))
     vi.stubGlobal('fetch', fetchMock)
 
     await submitPasswordAuth({
@@ -70,6 +70,46 @@ describe('password authentication client', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       ...canonicalSession,
       currentWorkspace: { ...canonicalSession.currentWorkspace, role: 'super-admin' }
+    })))
+
+    await expect(submitPasswordAuth({
+      mode: 'login',
+      email: 'owner@example.test',
+      password: 'correct-password'
+    })).rejects.toThrow(
+      '登入服務暫時無法使用。 Authentication service is temporarily unavailable.'
+    )
+  })
+
+  it('rejects a canonical session returned with the wrong authentication status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalSession, { status: 201 })))
+
+    await expect(submitPasswordAuth({
+      mode: 'login',
+      email: 'owner@example.test',
+      password: 'correct-password'
+    })).rejects.toThrow(
+      '登入服務暫時無法使用。 Authentication service is temporarily unavailable.'
+    )
+  })
+
+  it('requires the canonical registration status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalSession)))
+
+    await expect(submitPasswordAuth({
+      mode: 'register',
+      name: '測試商戶',
+      workspaceName: '測試工作區',
+      email: 'owner@example.test',
+      password: 'correct-password'
+    })).rejects.toThrow(
+      '登入服務暫時無法使用。 Authentication service is temporarily unavailable.'
+    )
+  })
+
+  it('rejects a canonical session returned with the wrong response media type', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(canonicalSession), {
+      headers: { 'content-type': 'text/plain' }
     })))
 
     await expect(submitPasswordAuth({

@@ -74,6 +74,16 @@ export async function submitPasswordAuth(request: PasswordAuthRequest): Promise<
     await response.body?.cancel().catch(() => undefined)
     throw new Error(authFailureMessage(response.status))
   }
+  const expectedStatus = request.mode === 'register' ? 201 : 200
+  if (response.status !== expectedStatus) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(authServiceUnavailableMessage)
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(authServiceUnavailableMessage)
+  }
   const data = await response.json().catch(() => null)
   const session = normalizeAuthSessionPayload(data)
   if (!session) throw new Error(authServiceUnavailableMessage)

@@ -45,7 +45,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 建立 session 的 D1 回應若不確定，只在本次隨機 token hash 對應同一 user、exact expiry，且 active user／workspace authorization 重讀成功時才發出原 token cookie；任何其他狀態均返回雙語 `503` 而不返回 cookie 或 token 識別資料，reconciliation／authorization 不可讀時並最佳努力移除未交付 session row；
 - password session 的 session／active user／workspace membership 不可讀時返回雙語 no-store `503 unavailable` 並保留 cookie 作重試錨點；只有已確認無效、過期或無 active workspace 的 session 才回未登入及清 cookie；
 - 工作區 bootstrap 只接受 exact `200 application/json`，且包含 active user、active workspace、合法角色、bounded identity 文字與非負整數額度的完整 session envelope；health success 亦須符合同一 transport 條件、restricted release 及 registration／generation 跨欄位關係。Session 非成功回應不解析 body，只使用 bounded `x-aislestage-access-failure` header 分類固定 Access 錯誤；malformed 或矛盾資料 fail closed，不可打開註冊、生成或審核 UI；
-- password 登入只提交 email／password；切換過的註冊姓名、workspace 名稱及 invite code 不會被一併送出。註冊只在 invite mode 傳送邀請碼，所有欄位均有 UI／runtime／UTF-8 總量界限；成功回應仍須通過 active session schema，失敗只顯示按狀態分類的固定雙語訊息；
+- password 登入只提交 email／password；切換過的註冊姓名、workspace 名稱及 invite code 不會被一併送出。註冊只在 invite mode 傳送邀請碼，所有欄位均有 UI／runtime／UTF-8 總量界限；login 要求 exact `200 application/json`，register 要求 exact `201 application/json`，成功回應仍須通過 active session schema，失敗只顯示按狀態分類的固定雙語訊息；
 - session `last_seen_at` 是不延長 expiry 的 best-effort telemetry；它只在 user、expiry 與 active workspace authorization 完成後更新，寫入失敗不會拒絕已核實的 session；
 - logout 的 session DELETE 回應不確定時，只在同一 token hash 已不存在時清除 browser cookie；password browser client 亦只在收到 exact `200 application/json { "ok": true }` 後清空私人 workspace state，其他結果保持可見登入狀態、顯示固定雙語錯誤並可重試。Access 模式直接前往固定同源 `/cdn-cgi/access/logout`，不接受 response-controlled redirect；
 - 登入／註冊 abuse event 只保存單向 email／IP keys；寫入回應不確定時只接受本次 event ID 之 exact hashed fields 與 event type。同一 event identity 可在 missing／首輪不可讀狀態做一次有界重試；唯一鍵與再次 post-read 確保已提交 event 不重複，衝突不覆寫。最終未確認或 rate-limit 狀態不可讀時返回雙語 `503`，不建立登入 session，亦不繼續帳號／密碼流程；
@@ -92,7 +92,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 idle -> needs-input -> awaiting-approval -> approved
 ```
 
-Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區 GET 先要求 `application/json` 及 exact one-field state envelope；GET／plan／approve 再只套用完整、bounded 且 check／plan／message ID 唯一的 Agent state。Plan 回應須對應同一 canonical brief，approve 回應須確認要求的 revision、approved timestamp 及 replay 狀態。網絡、非成功、錯誤 media type、額外外層欄位、任意 server error detail 或 malformed payload 保留目前計劃並提示暫時不可用，不會把故障畫成真正 `idle` state。
+Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區 GET 先要求 `application/json` 及 exact one-field state envelope；plan／approve 另要求 exact `200 application/json`，GET／plan／approve 再只套用完整、bounded 且 check／plan／message ID 唯一的 Agent state。Plan 回應須對應同一 canonical brief，approve 回應須確認要求的 revision、approved timestamp 及 replay 狀態。網絡、非成功、非 canonical success status、錯誤 media type、額外外層欄位、任意 server error detail 或 malformed payload 保留目前計劃並提示暫時不可用，不會把故障畫成真正 `idle` state。
 
 - instance name 由 Worker 使用 session workspace ID 決定；
 - browser 不可以直接讀寫 Durable Object storage；

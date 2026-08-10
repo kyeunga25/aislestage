@@ -96,6 +96,15 @@ export async function submitCampaignAgentAction(request: CampaignAgentActionRequ
     await response.body?.cancel().catch(() => undefined)
     throw new Error(actionFailureMessage(response.status))
   }
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(campaignAgentActionUnavailableMessage)
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(campaignAgentActionUnavailableMessage)
+  }
   const data = await response.json().catch(() => null)
   const state = request.action === 'plan'
     ? expectedBrief && canonicalPlanResponse(data, expectedBrief)

@@ -54,6 +54,26 @@ describe('Campaign Agent action client', () => {
     )
   })
 
+  it('rejects a canonical action response with a non-canonical success status', async () => {
+    const state = buildCampaignPlan(brief, 1)
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ state }, { status: 201 })))
+
+    await expect(submitCampaignAgentAction({ action: 'plan', brief })).rejects.toThrow(
+      'Campaign Agent 暫時未能完成這個動作。 Campaign Agent action is temporarily unavailable.'
+    )
+  })
+
+  it('rejects a canonical action response with the wrong response media type', async () => {
+    const state = buildCampaignPlan(brief, 1)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ state }), {
+      headers: { 'content-type': 'text/plain' }
+    })))
+
+    await expect(submitCampaignAgentAction({ action: 'plan', brief })).rejects.toThrow(
+      'Campaign Agent 暫時未能完成這個動作。 Campaign Agent action is temporarily unavailable.'
+    )
+  })
+
   it('accepts an approval for the requested revision', async () => {
     const planned = buildCampaignPlan(brief, 1)
     const state = { ...planned, stage: 'approved' as const, approvedAt: '2026-08-10T12:00:00.000Z' }
