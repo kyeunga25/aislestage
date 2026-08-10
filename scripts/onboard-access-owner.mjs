@@ -10,6 +10,33 @@ const execFileAsync = promisify(execFile)
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const bindingPattern = /^[A-Z][A-Z0-9_]{0,63}$/
 const protectedConfigPattern = /^wrangler(?:\.[a-z0-9_-]+)?\.local\.jsonc$/i
+const argumentErrorCodes = new Set([
+  'unsupported-onboarding-option',
+  'duplicate-onboarding-option',
+  'mixed-self-test-mode',
+  'explicit-onboarding-target-required'
+])
+
+function parseArgs(args) {
+  const allowed = new Set(['--self-test', '--dry-run', '--local', '--remote'])
+  const seen = new Set()
+  for (const argument of args) {
+    if (!allowed.has(argument)) throw new Error('unsupported-onboarding-option')
+    if (seen.has(argument)) throw new Error('duplicate-onboarding-option')
+    seen.add(argument)
+  }
+  const selfTest = seen.has('--self-test')
+  if (selfTest && seen.size !== 1) throw new Error('mixed-self-test-mode')
+  if (selfTest) return { selfTest: true, dryRun: false, mode: null }
+  const local = seen.has('--local')
+  const remote = seen.has('--remote')
+  if (local === remote) throw new Error('explicit-onboarding-target-required')
+  return {
+    selfTest: false,
+    dryRun: seen.has('--dry-run'),
+    mode: local ? '--local' : '--remote'
+  }
+}
 
 function sqlString(value) {
   return `'${value.replaceAll("'", "''")}'`
@@ -136,6 +163,20 @@ function containsOnboardingSuccess(value) {
   return Object.values(value).some(containsOnboardingSuccess)
 }
 
+function assertSelfCheck(condition, message) {
+  if (!condition) throw new Error(`Owner onboarding self-check failed: ${message}`)
+}
+
+function assertArgsRejected(args, message) {
+  let rejected = false
+  try {
+    parseArgs(args)
+  } catch {
+    rejected = true
+  }
+  assertSelfCheck(rejected, message)
+}
+
 async function removeFile(path) {
   await unlink(path).catch((error) => {
     if (error?.code !== 'ENOENT') throw error
@@ -155,14 +196,27 @@ async function runSelfCheck() {
     "THEN 'ok' ELSE 'error' END AS onboarding_status",
     "Owner''s Workspace"
   ]
-  if (!requiredFragments.every((fragment) => sql.includes(fragment))) throw new Error('self-check-failed')
-  process.stdout.write('Owner onboarding self-check passed.\n')
+  assertSelfCheck(requiredFragments.every((fragment) => sql.includes(fragment)), 'required SQL safeguards must be present')
+  assertArgsRejected(['--unknown'], 'unknown options must be rejected')
+  assertArgsRejected(['unexpected-value'], 'positional arguments must be rejected')
+  assertArgsRejected(['--local', '--local'], 'duplicate options must be rejected')
+  assertArgsRejected(['--dry-run=true'], 'boolean options must reject values')
+  assertArgsRejected(['--self-test', '--local'], 'self-test mode must reject operational options')
+  assertArgsRejected([], 'operational mode must require an explicit D1 target')
+  assertArgsRejected(['--dry-run'], 'dry-run must require an explicit D1 target')
+  assertArgsRejected(['--local', '--remote'], 'local and remote targets must be mutually exclusive')
+
+  const localDryRun = parseArgs(['--local', '--dry-run'])
+  assertSelfCheck(localDryRun.mode === '--local' && localDryRun.dryRun, 'local dry-run options must be parsed exactly')
+  const remote = parseArgs(['--remote'])
+  assertSelfCheck(remote.mode === '--remote' && !remote.dryRun, 'remote execution must require an explicit target')
+  process.stdout.write('首次 owner 自測通過。 Owner onboarding self-check passed.\n')
 }
 
-async function onboardOwner() {
+async function onboardOwner(options) {
   const input = validatedInput()
-  if (process.argv.includes('--dry-run')) {
-    process.stdout.write('Owner onboarding input accepted; no remote changes were made.\n')
+  if (options.dryRun) {
+    process.stdout.write('首次 owner 輸入已通過格式核對；沒有 D1 變更。 Owner onboarding input accepted; no D1 changes were made.\n')
     return
   }
 
@@ -178,15 +232,14 @@ async function onboardOwner() {
   const logPath = join(directory, 'wrangler.log')
   try {
     await writeFile(sqlPath, ownerOnboardingSql(input), { encoding: 'utf8', mode: 0o600 })
-    const mode = process.argv.includes('--local') ? '--local' : '--remote'
     const args = [
       resolve('node_modules/wrangler/bin/wrangler.js'),
-      'd1', 'execute', input.binding, mode,
+      'd1', 'execute', input.binding, options.mode,
       '--file', sqlPath,
       '--config', input.config,
       '--yes', '--json'
     ]
-    if (mode === '--local' && input.persistTo) args.push('--persist-to', input.persistTo)
+    if (options.mode === '--local' && input.persistTo) args.push('--persist-to', input.persistTo)
     const childEnv = { ...process.env, WRANGLER_LOG_PATH: logPath }
     delete childEnv.OWNER_LOGIN_IDENTITY
     delete childEnv.OWNER_WORKSPACE_NAME
@@ -199,7 +252,7 @@ async function onboardOwner() {
     })
     const result = JSON.parse(stdout)
     if (!containsOnboardingSuccess(result)) throw new Error('onboarding-verification-failed')
-    process.stdout.write('Owner workspace onboarding completed.\n')
+    process.stdout.write('首次 owner workspace 建立完成。 Owner workspace onboarding completed.\n')
   } finally {
     await removeFile(sqlPath)
     await removeFile(logPath)
@@ -208,13 +261,18 @@ async function onboardOwner() {
 }
 
 async function main() {
-  if (process.argv.includes('--self-test')) return runSelfCheck()
-  return onboardOwner()
+  const options = parseArgs(process.argv.slice(2))
+  if (options.selfTest) return runSelfCheck()
+  return onboardOwner(options)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => {
-    process.stderr.write('Owner onboarding failed. Verify the protected identity input, Wrangler configuration, migrations, and D1 permissions.\n')
+  main().catch((error) => {
+    if (error instanceof Error && argumentErrorCodes.has(error.message)) {
+      process.stderr.write('首次 owner 指令選項無效；請只選一個 --local 或 --remote，並只在需要時加入 --dry-run。 Invalid owner onboarding options; choose exactly one target and optional dry-run.\n')
+    } else {
+      process.stderr.write('首次 owner 建立失敗；請核對受保護 identity、Wrangler 設定、migrations 與 D1 權限。 Owner onboarding failed; verify protected inputs and D1 access.\n')
+    }
     process.exitCode = 1
   })
 }
