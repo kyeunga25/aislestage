@@ -18,7 +18,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 產品不是自由 prompt 圖片工具，也不是通用設計編輯器。Agent 不可以新增未提供的產品宣稱、替使用者批准、發佈廣告或繞過 workspace 授權。
 
-公開主頁只解釋產品、合作流程與私隱邊界，不讀取私人 session，也不提供公開註冊、公開生成或 checkout。只有已通過營運確認及 Access policy 的受邀身份才可進入 `/app`；正式 Access 模式下，Worker 在返回工作區 shell 前仍會核對簽章與 active D1 membership。
+公開主頁只解釋產品、合作流程與私隱邊界，不讀取私人 session，也不提供公開註冊、公開生成或 checkout。只有已通過營運確認及 Access policy 的受邀身份才可進入 `/app`；正式 Access 模式下，Worker 在返回工作區 shell 前仍會核對簽章與 active D1 membership。無論 Static Assets 回應是否附帶標頭，Worker 都會固定套用 no-store、同源資源政策、CSP anti-framing／base／form 邊界、`X-Frame-Options: DENY`、no-referrer、no-sniff 及停用敏感 browser permissions。
 
 ## 2. 核心工作流
 

@@ -72,6 +72,15 @@ function withWorkspaceShell(baseEnv: Env) {
   return { assetEnv, fetchAsset }
 }
 
+function expectWorkspaceShellSecurityHeaders(response: Response) {
+  expect(response.headers.get('x-frame-options')).toBe('DENY')
+  expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+  expect(response.headers.get('permissions-policy')).toBe('camera=(), microphone=(), geolocation=(), payment=()')
+  expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
+  expect(response.headers.get('content-security-policy')).toContain("base-uri 'self'")
+  expect(response.headers.get('content-security-policy')).toContain("form-action 'self'")
+}
+
 describe('Cloudflare Access authentication', () => {
   it('fails closed when protected Access configuration is missing', async () => {
     const response = await dispatch('/api/session', {}, {
@@ -130,6 +139,7 @@ describe('Cloudflare Access authentication', () => {
     expect(allowed.headers.get('cache-control')).toBe('private, no-store')
     expect(allowed.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(allowed.headers.get('x-content-type-options')).toBe('nosniff')
+    expectWorkspaceShellSecurityHeaders(allowed)
     expect(await allowed.text()).toContain('AisleStage workspace')
     expect(fetchAsset).toHaveBeenCalledOnce()
   })
@@ -139,6 +149,7 @@ describe('Cloudflare Access authentication', () => {
     const response = await dispatch('/app', {}, assetEnv)
 
     expect(response.status).toBe(200)
+    expectWorkspaceShellSecurityHeaders(response)
     expect(fetchAsset).toHaveBeenCalledOnce()
   })
 

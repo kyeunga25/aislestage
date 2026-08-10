@@ -54,7 +54,7 @@ npm run cf:types:check
 ## Authentication and workspace boundary
 
 - 公開 `/` 與私人 `/app` 分開；正式 Access policy 亦保護受保護 API；
-- Static Assets 對 `/app` 及 `/app/*` 採 Worker-first；Access 模式先完成 JWT 與 active D1 membership 驗證，才經 `ASSETS` binding 返回 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin` 的 SPA shell；
+- Static Assets 對 `/app` 及 `/app/*` 採 Worker-first；Access 模式先完成 JWT 與 active D1 membership 驗證，才經 `ASSETS` binding 返回 SPA shell。Worker 不依賴 asset response，會固定覆蓋 `private, no-store`、CSP `frame-ancestors 'none'`／`base-uri 'self'`／`form-action 'self'`、`X-Frame-Options: DENY`、same-origin CORP、no-referrer、no-sniff 及停用 camera／microphone／geolocation／payment 的 Permissions Policy；
 - Worker 以 remote JWKS 驗證 RS256、issuer、audience、有效期、subject 與電郵；
 - Access subject 只保存單向 hash，身份與帳戶不符時 fail closed；
 - Access subject hash 及已驗證 email 的初始 D1 查詢均屬可用性邊界；任何讀取失敗回傳 no-store `503 unavailable`，不輸出資料庫細節，亦不把暫時儲存故障誤判為 membership denial；

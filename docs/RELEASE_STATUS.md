@@ -124,7 +124,7 @@
 - [x] Queue batch failure 全數退回、duplicate delivery 冪等；
 - [x] deterministic 1:1、4:5、9:16 private SVG；
 - [x] raw OpenAI Responses structured-output 解析與 validator；
-- [x] protected workspace shell、private product preview、output preview 及 approved download 均使用 `private, no-store` 與 `Cross-Origin-Resource-Policy: same-origin`；browser 不可跨 logout／account change 重用私人 body，跨來源頁面亦不可作為子資源嵌入；
+- [x] protected workspace shell、private product preview、output preview 及 approved download 均使用 `private, no-store` 與 `Cross-Origin-Resource-Policy: same-origin`；shell 另由 Worker 固定 CSP anti-framing／base／form、`X-Frame-Options: DENY`、no-referrer、no-sniff 及 restrictive Permissions Policy，不依賴 ASSETS response；browser 不可跨 logout／account change 重用私人 body，跨來源頁面亦不可作為子資源嵌入；
 - [x] 單一私人商品圖／已完成輸出刪除與跨 workspace 拒絕；
 - [x] Campaign Packs、商品、品牌、素材及使用指引視圖；
 - [x] desktop／mobile responsive browser flow；

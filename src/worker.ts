@@ -71,6 +71,8 @@ const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const WORKSPACE_SHELL_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+const WORKSPACE_SHELL_PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()'
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const MAX_USED_INVITE_DAYS = 30
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
@@ -973,7 +975,11 @@ async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access'
     const assetResponse = await env.ASSETS.fetch(request)
     const headers = new Headers(assetResponse.headers)
     headers.set('cache-control', 'private, no-store')
+    headers.set('content-security-policy', WORKSPACE_SHELL_CONTENT_SECURITY_POLICY)
     headers.set('cross-origin-resource-policy', 'same-origin')
+    headers.set('permissions-policy', WORKSPACE_SHELL_PERMISSIONS_POLICY)
+    headers.set('referrer-policy', 'no-referrer')
+    headers.set('x-frame-options', 'DENY')
     headers.set('x-content-type-options', 'nosniff')
     return new Response(assetResponse.body, {
       status: assetResponse.status,
