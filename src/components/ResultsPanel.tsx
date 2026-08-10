@@ -14,6 +14,7 @@ type Props = {
   demoMode: boolean
   canReview: boolean
   reviewingId: string | null
+  reviewingDecision: 'approve' | 'reject' | null
   onGenerate: () => void
   onReview: (result: GenerationResult, decision: 'approve' | 'reject') => void
 }
@@ -24,7 +25,7 @@ const outputs = [
   { ratio: '9:16', label: '限時動態', className: 'story' }
 ] as const
 
-export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGenerating, generationAvailable, demoMode, canReview, reviewingId, onGenerate, onReview }: Props) {
+export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGenerating, generationAvailable, demoMode, canReview, reviewingId, reviewingDecision, onGenerate, onReview }: Props) {
   const [language, setLanguage] = useState<'zh-Hant' | 'en'>('zh-Hant')
   const [copied, setCopied] = useState(false)
   const latestPackId = results.find((item) => item.campaignPackId)?.campaignPackId
@@ -34,6 +35,7 @@ export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGener
   const zhCaption = `${product.name}\n${product.promotion}\n${product.benefits.filter(Boolean).map((item) => `✓ ${item}`).join('\n')}\n${product.price} · ${cta}`
   const enCaption = `${product.nameEn}\n${product.promotionEn}\n${product.benefitsEn.filter(Boolean).map((item) => `✓ ${item}`).join('\n')}\n${product.price} · ${ctaEn}`
   const caption = language === 'zh-Hant' ? zhCaption : enCaption
+  const reviewMutationBusy = reviewingId !== null
 
   async function copyCaption() {
     try {
@@ -58,6 +60,8 @@ export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGener
           const hasGeneratedImage = Boolean(result?.imageUrl) && !demoMode
           const reviewStatus = result?.reviewStatus || 'draft'
           const reviewBusy = reviewingId === result?.id
+          const approveBusy = reviewBusy && reviewingDecision === 'approve'
+          const rejectBusy = reviewBusy && reviewingDecision === 'reject'
           const statusLabel = result?.status === 'failed' ? '生成失敗' : result?.status === 'processing' ? '處理中' : result?.status === 'queued' ? '排隊中' : demoMode && result ? '示範預覽' : '待生成'
           const extension = result?.contentType === 'image/svg+xml' ? 'svg' : 'png'
           const reviewLabel = reviewStatus === 'approved' ? '已核准' : reviewStatus === 'rejected' ? '需要修改' : '草稿待審核'
@@ -71,11 +75,11 @@ export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGener
               <span><strong>{output.ratio}</strong>{output.label}</span>
               {hasGeneratedImage ? <span className={`review-state ${reviewStatus}`} role="status">{reviewLabel}</span> : <span className={`result-status ${result?.status || ''}`} title={result?.errorMessage || undefined}>{isGenerating && !result ? '處理中' : statusLabel}</span>}
             </div>
-            {hasGeneratedImage && result ? <div className="result-review-panel">
+            {hasGeneratedImage && result ? <div className="result-review-panel" aria-busy={reviewBusy}>
               {result.provenance ? <small className="result-provenance">{result.provenance.compositionVersion || 'legacy-composition'} · {result.provenance.generationMode || 'mode-unavailable'} · plan v{result.provenance.approvedRevision}</small> : null}
               {reviewStatus === 'draft' && canReview ? <div className="result-review-actions" aria-label={`${output.ratio} ${output.label} 審核動作`}>
-                <button className="approve" type="button" aria-label={`核准 ${output.ratio} ${output.label}`} onClick={() => onReview(result, 'approve')} disabled={reviewBusy}><ShieldCheck size={15} />{reviewBusy ? '處理中…' : '核准'}</button>
-                <button className="reject" type="button" aria-label={`標記 ${output.ratio} ${output.label}需要修改`} onClick={() => onReview(result, 'reject')} disabled={reviewBusy}><RotateCcw size={15} />需要修改</button>
+                <button className="approve" type="button" aria-label={`核准 ${output.ratio} ${output.label}`} onClick={() => onReview(result, 'approve')} disabled={reviewMutationBusy}><ShieldCheck size={15} />{approveBusy ? <>處理中…<span className="visually-hidden"> Processing…</span></> : '核准'}</button>
+                <button className="reject" type="button" aria-label={`標記 ${output.ratio} ${output.label}需要修改`} onClick={() => onReview(result, 'reject')} disabled={reviewMutationBusy}><RotateCcw size={15} />{rejectBusy ? <>處理中…<span className="visually-hidden"> Processing…</span></> : '需要修改'}</button>
               </div> : null}
               {reviewStatus === 'draft' && !canReview ? <p className="review-guidance">等待 owner 或 admin 核准</p> : null}
               {reviewStatus === 'approved' && result.downloadUrl ? <a className="approved-download" href={result.downloadUrl} download={`aislestage-${output.ratio.replace(':', 'x')}.${extension}`}><ArrowDownToLine size={16} />下載已核准素材</a> : null}

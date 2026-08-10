@@ -12,9 +12,14 @@ const approvedAgentState = {
   approvedAt: '2026-08-10T00:00:00.000Z'
 }
 
-function renderResult(result: GenerationResult, canReview = true) {
+function renderResults(
+  results: GenerationResult[],
+  canReview = true,
+  reviewingId: string | null = null,
+  reviewingDecision: 'approve' | 'reject' | null = null
+) {
   return renderToStaticMarkup(<ResultsPanel
-    results={[result]}
+    results={results}
     product={starterProduct}
     cta={starterBrand.cta}
     ctaEn={starterBrand.ctaEn}
@@ -23,10 +28,15 @@ function renderResult(result: GenerationResult, canReview = true) {
     generationAvailable={true}
     demoMode={false}
     canReview={canReview}
-    reviewingId={null}
+    reviewingId={reviewingId}
+    reviewingDecision={reviewingDecision}
     onGenerate={vi.fn()}
     onReview={vi.fn()}
   />)
+}
+
+function renderResult(result: GenerationResult, canReview = true) {
+  return renderResults([result], canReview)
 }
 
 const completedResult: GenerationResult = {
@@ -80,5 +90,21 @@ describe('ResultsPanel human review boundary', () => {
     expect(markup).toContain('等待 owner 或 admin 核准')
     expect(markup).not.toContain('核准 1:1 商品主圖')
     expect(markup).not.toContain('標記 1:1 商品主圖需要修改')
+  })
+
+  it('serializes review controls and marks the selected immutable decision as busy', () => {
+    const portraitResult: GenerationResult = {
+      ...completedResult,
+      id: 'synthetic-portrait-output',
+      workflowId: 'meta-ad',
+      aspectRatio: '4:5',
+      imageUrl: '/api/generations/synthetic-portrait-output/image',
+      title: '4:5 · 社交廣告'
+    }
+    const markup = renderResults([completedResult, portraitResult], true, completedResult.id, 'reject')
+
+    expect(markup).toContain('aria-busy="true"')
+    expect(markup.match(/disabled=""/g)).toHaveLength(4)
+    expect(markup).toContain('處理中…<span class="visually-hidden"> Processing…</span>')
   })
 })

@@ -1,4 +1,5 @@
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 import { normalizeGenerationResults } from './generation-loader'
 import type { GenerationResult } from './types'
 
@@ -8,6 +9,15 @@ export const generationReviewUnavailableMessage = '輸出審核暫時無法使�
 
 const responseKeys = new Set(['generation', 'replayed'])
 const MAX_GENERATION_REVIEW_RESPONSE_BYTES = 16 * 1024
+const GENERATION_REVIEW_TIMEOUT_MS = 15_000
+const GENERATION_REVIEW_ATTEMPTS = 2
+
+class GenerationReviewAttemptError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message)
+    this.name = 'GenerationReviewAttemptError'
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -62,52 +72,78 @@ function isSameGeneration(current: GenerationResult, reviewed: GenerationResult)
     && reviewed.provenance?.generationMode === current.provenance?.generationMode
 }
 
+async function submitGenerationReviewAttempt(
+  current: GenerationResult,
+  decision: 'approve' | 'reject',
+  body: string
+) {
+  return fetchWithTimeout(
+    `/api/generations/${encodeURIComponent(current.id)}/review`,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body
+    },
+    GENERATION_REVIEW_TIMEOUT_MS,
+    async (response, signal) => {
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new GenerationReviewAttemptError(
+          reviewFailureMessage(response.status),
+          response.status === 408 || response.status >= 500
+        )
+      }
+      if (response.status !== 200) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new GenerationReviewAttemptError(generationReviewResponseInvalidMessage, false)
+      }
+      const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      if (contentType !== 'application/json') {
+        await response.body?.cancel().catch(() => undefined)
+        throw new GenerationReviewAttemptError(generationReviewResponseInvalidMessage, false)
+      }
+      const data = await readBoundedJsonResponse(response, MAX_GENERATION_REVIEW_RESPONSE_BYTES)
+      if (signal.aborted) throw new GenerationReviewAttemptError(generationReviewUnavailableMessage, true)
+      if (!isRecord(data)
+        || !hasExactKeys(data, responseKeys)
+        || typeof data.replayed !== 'boolean') {
+        throw new GenerationReviewAttemptError(generationReviewResponseInvalidMessage, false)
+      }
+
+      let reviewed: GenerationResult
+      try {
+        const normalized = normalizeGenerationResults([data.generation])
+        if (normalized.length !== 1) throw new TypeError('Invalid generation review response')
+        reviewed = normalized[0]!
+      } catch {
+        throw new GenerationReviewAttemptError(generationReviewResponseInvalidMessage, false)
+      }
+      const targetStatus = decision === 'approve' ? 'approved' : 'rejected'
+      if (!isSameGeneration(current, reviewed) || reviewed.reviewStatus !== targetStatus) {
+        throw new GenerationReviewAttemptError(generationReviewResponseInvalidMessage, false)
+      }
+      return reviewed
+    }
+  )
+}
+
 export async function submitGenerationReview(result: GenerationResult, decision: 'approve' | 'reject') {
   const current = normalizeCurrentGeneration(result)
   if (!current || (decision !== 'approve' && decision !== 'reject')) {
     throw new Error(generationReviewSourceInvalidMessage)
   }
+  const body = JSON.stringify({ decision, expectedApprovedRevision: current.approvedRevision })
 
-  let response: Response
-  try {
-    response = await fetch(`/api/generations/${encodeURIComponent(current.id)}/review`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ decision, expectedApprovedRevision: current.approvedRevision })
-    })
-  } catch {
-    throw new Error(generationReviewUnavailableMessage)
+  for (let attempt = 0; attempt < GENERATION_REVIEW_ATTEMPTS; attempt += 1) {
+    try {
+      return await submitGenerationReviewAttempt(current, decision, body)
+    } catch (error) {
+      const retryable = !(error instanceof GenerationReviewAttemptError) || error.retryable
+      if (retryable && attempt + 1 < GENERATION_REVIEW_ATTEMPTS) continue
+      if (error instanceof GenerationReviewAttemptError) throw new Error(error.message)
+      throw new Error(generationReviewUnavailableMessage)
+    }
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(reviewFailureMessage(response.status))
-  }
-  if (response.status !== 200) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(generationReviewResponseInvalidMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(generationReviewResponseInvalidMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_GENERATION_REVIEW_RESPONSE_BYTES)
-  if (!isRecord(data)
-    || !hasExactKeys(data, responseKeys)
-    || typeof data.replayed !== 'boolean') throw new Error(generationReviewResponseInvalidMessage)
-
-  let reviewed: GenerationResult
-  try {
-    const normalized = normalizeGenerationResults([data.generation])
-    if (normalized.length !== 1) throw new Error(generationReviewResponseInvalidMessage)
-    reviewed = normalized[0]!
-  } catch {
-    throw new Error(generationReviewResponseInvalidMessage)
-  }
-  const targetStatus = decision === 'approve' ? 'approved' : 'rejected'
-  if (!isSameGeneration(current, reviewed) || reviewed.reviewStatus !== targetStatus) {
-    throw new Error(generationReviewResponseInvalidMessage)
-  }
-  return reviewed
+  throw new Error(generationReviewUnavailableMessage)
 }
