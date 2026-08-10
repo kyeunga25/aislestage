@@ -55,6 +55,7 @@
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
 - [x] workspace-scoped Campaign Agent 與 revision approval；
 - [x] 繁中／英文商業資料由使用者明確提供；
+- [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；
 - [x] 修改資料後前端計劃立即失效，Worker 再獨立比對；
 - [x] atomic + idempotent 三輸出 Campaign Pack API；
 - [x] Queue batch failure 全數退回、duplicate delivery 冪等；

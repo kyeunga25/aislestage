@@ -468,6 +468,40 @@ describe('workspace Campaign Agent', () => {
     }
   })
 
+  it('rejects lossy brief normalization without replacing the current plan', async () => {
+    const owner = await registerAccount('Exact Brief Limits')
+    const uploaded = await uploadPng(owner.cookie, 'exact-brief-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const brief = validBrief(asset.id)
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief })
+    })
+    const { state: current } = await planned.json() as { state: { stage: string; revision: number; brief: { product: { price: string } } } }
+
+    const invalidBriefs = [
+      { value: { ...brief, product: { ...brief.product, price: '9'.repeat(121) } }, error: /價格.*120/ },
+      { value: { ...brief, product: { ...brief.product, benefits: Array.from({ length: 9 }, (_, index) => `賣點 ${index + 1}`) } }, error: /產品賣點.*8/ },
+      { value: { ...brief, product: { ...brief.product, name: 42 } }, error: /商品名稱格式無效/ },
+      { value: { ...brief, brand: { ...brief.brand, locale: 'fr' } }, error: /語言設定格式無效/ }
+    ]
+
+    for (const invalidBrief of invalidBriefs) {
+      const response = await dispatch('/api/campaign-agent/plan', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+        body: JSON.stringify({ brief: invalidBrief.value })
+      })
+
+      expect(response.status).toBe(422)
+      expect(await response.json()).toMatchObject({ error: expect.stringMatching(invalidBrief.error) })
+      expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((stateResponse) => stateResponse.json())).toMatchObject({
+        state: { stage: current.stage, revision: current.revision, brief: { product: { price: current.brief.product.price } } }
+      })
+    }
+  })
+
   it('refuses approval until missing commercial facts and the product asset are supplied', async () => {
     const owner = await registerAccount('Incomplete Agent Brief')
     const incompleteBrief = validBrief('')

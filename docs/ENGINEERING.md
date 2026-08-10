@@ -81,6 +81,8 @@ idle -> needs-input -> awaiting-approval -> approved
 4. 三個 workflow／比例均在批准計劃內；
 5. 商品 asset 屬於目前 workspace。
 
+Campaign Brief 的可見輸入與 Worker 共用欄位上限。Plan route 會先驗證已提供欄位的型別、支援語言、清單項數及各項長度，再進行 sanitize、私人資產核對、可選 provider 呼叫或 Durable Object 寫入。會造成截短、清單丟失或語言回退的輸入均以不回顯內容的雙語 `422` 拒絕；既有 revision 不會被失敗的重新規劃覆蓋。未提供的欄位仍由 Agent 標記為 `needs-input`。
+
 ## Atomic Campaign Pack
 
 `POST /api/campaign-packs` 接受一個 client-generated idempotency key，以及 1–3 個已批准輸出。正式 UI 固定提交 1:1、4:5、9:16 三個輸出。

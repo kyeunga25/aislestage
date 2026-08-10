@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { CampaignWorkspace } from '../src/components/CampaignWorkspace'
-import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from '../src/lib/campaign-agent'
+import { buildCampaignPlan, campaignBriefLimits, campaignStateAfterAssetDeletion, initialCampaignAgentState, validateCampaignBrief } from '../src/lib/campaign-agent'
 import { emptyBrand, emptyProduct, starterBrand, starterProduct } from '../src/lib/demo-data'
 
 describe('Campaign Workspace product contract', () => {
@@ -26,6 +26,7 @@ describe('Campaign Workspace product contract', () => {
 
     expect(markup).toContain('商品類別')
     expect(markup).toContain('value="synthetic-category"')
+    expect(markup).toContain(`maxLength="${campaignBriefLimits.product.category}" value="synthetic-category"`)
   })
 
   it('keeps the Agent at needs-input until the required category is present', () => {
@@ -38,6 +39,22 @@ describe('Campaign Workspace product contract', () => {
 
     expect(state.stage).toBe('needs-input')
     expect(state.checks.find((check) => check.id === 'facts')?.detail).toContain('商品類別')
+  })
+
+  it('accepts exact shared Campaign Brief boundaries', () => {
+    expect(validateCampaignBrief({
+      assetId: 'a'.repeat(campaignBriefLimits.assetId),
+      intent: 'i'.repeat(campaignBriefLimits.intent),
+      brand: {
+        name: 'b'.repeat(campaignBriefLimits.brand.name),
+        colors: Array.from({ length: campaignBriefLimits.brand.colors.items }, () => 'c'.repeat(campaignBriefLimits.brand.colors.itemLength)),
+        locale: 'en'
+      },
+      product: {
+        price: '9'.repeat(campaignBriefLimits.product.price),
+        benefits: Array.from({ length: campaignBriefLimits.product.benefits.items }, () => 'x'.repeat(campaignBriefLimits.product.benefits.itemLength))
+      }
+    })).toEqual([])
   })
 
   it('resets local Agent state only when the deleted asset is the planned source', () => {

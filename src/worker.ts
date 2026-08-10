@@ -3,7 +3,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
-import { sanitizeCampaignBrief } from './lib/campaign-agent'
+import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
@@ -392,26 +392,26 @@ function validInput(value: unknown): value is GenerationInput {
     && typeof input.workflowId === 'string' && workflowIds.has(input.workflowId)
     && typeof input.aspectRatio === 'string' && ratios.has(input.aspectRatio)
     && Number.isSafeInteger(input.approvedRevision) && Number(input.approvedRevision) > 0
-    && boundedString(input.intent, 120, false)
-    && boundedString(input.brand?.name, 120)
-    && boundedString(input.brand?.tone, 240, false)
-    && boundedStringArray(input.brand?.colors, 8, 24)
-    && boundedString(input.brand?.forbiddenWords, 500, false)
+    && boundedString(input.intent, campaignBriefLimits.intent, false)
+    && boundedString(input.brand?.name, campaignBriefLimits.brand.name)
+    && boundedString(input.brand?.tone, campaignBriefLimits.brand.tone, false)
+    && boundedStringArray(input.brand?.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength)
+    && boundedString(input.brand?.forbiddenWords, campaignBriefLimits.brand.forbiddenWords, false)
     && (input.brand?.locale === 'zh-Hant' || input.brand?.locale === 'en')
-    && boundedString(input.brand?.cta, 120, false)
-    && boundedString(input.brand?.ctaEn, 120, false)
-    && boundedString(input.product?.name, 160)
-    && boundedString(input.product?.nameEn, 160)
-    && boundedString(input.product?.category, 120)
-    && boundedStringArray(input.product?.benefits, 8, 240)
-    && boundedStringArray(input.product?.benefitsEn, 8, 240)
-    && boundedString(input.product?.specifications, 1_000, false)
-    && boundedString(input.product?.price, 120, false)
-    && boundedString(input.product?.promotion, 240, false)
-    && boundedString(input.product?.promotionEn, 240, false)
-    && boundedStringArray(input.product?.channels, 12, 80)
+    && boundedString(input.brand?.cta, campaignBriefLimits.brand.cta, false)
+    && boundedString(input.brand?.ctaEn, campaignBriefLimits.brand.ctaEn, false)
+    && boundedString(input.product?.name, campaignBriefLimits.product.name)
+    && boundedString(input.product?.nameEn, campaignBriefLimits.product.nameEn)
+    && boundedString(input.product?.category, campaignBriefLimits.product.category)
+    && boundedStringArray(input.product?.benefits, campaignBriefLimits.product.benefits.items, campaignBriefLimits.product.benefits.itemLength)
+    && boundedStringArray(input.product?.benefitsEn, campaignBriefLimits.product.benefitsEn.items, campaignBriefLimits.product.benefitsEn.itemLength)
+    && boundedString(input.product?.specifications, campaignBriefLimits.product.specifications, false)
+    && boundedString(input.product?.price, campaignBriefLimits.product.price, false)
+    && boundedString(input.product?.promotion, campaignBriefLimits.product.promotion, false)
+    && boundedString(input.product?.promotionEn, campaignBriefLimits.product.promotionEn, false)
+    && boundedStringArray(input.product?.channels, campaignBriefLimits.product.channels.items, campaignBriefLimits.product.channels.itemLength)
     && Array.isArray(input.referenceImageUrls) && input.referenceImageUrls.length === 0
-    && boundedStringArray(input.referenceAssetIds, 1, 80) && input.referenceAssetIds?.length === 1
+    && boundedStringArray(input.referenceAssetIds, 1, campaignBriefLimits.assetId) && input.referenceAssetIds?.length === 1
 }
 
 function generationInputIdentity(input: GenerationInput) {
@@ -1076,6 +1076,8 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     if (parsed.tooLarge) return json({ error: 'Campaign brief is too large.' }, { status: 413 })
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
     if (action === 'plan') {
+      const briefIssues = validateCampaignBrief(body.brief)
+      if (briefIssues.length) return json({ error: briefIssues[0], issues: briefIssues }, { status: 422 })
       const brief = sanitizeCampaignBrief(body.brief)
       if (brief.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, brief.assetId)

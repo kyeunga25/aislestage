@@ -1,13 +1,101 @@
 import type { BrandPack, CampaignAgentCheck, CampaignAgentState, CampaignBrief, CampaignPlanItem, Product } from './types'
 
-const MAX_TEXT = 500
+export const campaignBriefLimits = {
+  assetId: 80,
+  intent: 120,
+  brand: {
+    name: 120,
+    tone: 240,
+    colors: { items: 8, itemLength: 24 },
+    forbiddenWords: 500,
+    cta: 120,
+    ctaEn: 120
+  },
+  product: {
+    name: 160,
+    nameEn: 160,
+    category: 120,
+    benefits: { items: 8, itemLength: 240 },
+    benefitsEn: { items: 8, itemLength: 240 },
+    specifications: 1_000,
+    price: 120,
+    promotion: 240,
+    promotionEn: 240,
+    channels: { items: 12, itemLength: 80 }
+  }
+} as const
 
-function clean(value: unknown, max = MAX_TEXT) {
+const MAX_TEXT = campaignBriefLimits.brand.forbiddenWords
+
+function clean(value: unknown, max: number = MAX_TEXT) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
 function cleanList(value: unknown, maxItems: number, maxLength: number) {
   return Array.isArray(value) ? value.slice(0, maxItems).map((item) => clean(item, maxLength)).filter(Boolean) : []
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validateTextField(issues: string[], source: Record<string, unknown>, key: string, maxLength: number, zhLabel: string, enLabel: string, allowNull = false) {
+  const value = source[key]
+  if (value === undefined || (allowNull && value === null)) return
+  if (typeof value !== 'string') {
+    issues.push(`${zhLabel}格式無效。 ${enLabel} must be text.`)
+    return
+  }
+  if (value.trim().length > maxLength) issues.push(`${zhLabel}不得超過 ${maxLength} 個字元。 ${enLabel} must be ${maxLength} characters or fewer.`)
+}
+
+function validateTextList(issues: string[], source: Record<string, unknown>, key: string, maxItems: number, maxLength: number, zhLabel: string, enLabel: string) {
+  const value = source[key]
+  if (value === undefined) return
+  if (!Array.isArray(value)) {
+    issues.push(`${zhLabel}格式無效。 ${enLabel} must be a list of text values.`)
+    return
+  }
+  if (value.length > maxItems) issues.push(`${zhLabel}最多可提供 ${maxItems} 項。 ${enLabel} accepts at most ${maxItems} items.`)
+  value.forEach((item) => {
+    if (typeof item !== 'string') issues.push(`${zhLabel}格式無效。 ${enLabel} must contain text values only.`)
+    else if (item.trim().length > maxLength) issues.push(`${zhLabel}每項不得超過 ${maxLength} 個字元。 Each item in ${enLabel.toLowerCase()} must be ${maxLength} characters or fewer.`)
+  })
+}
+
+export function validateCampaignBrief(value: unknown) {
+  if (value === undefined || value === null) return []
+  if (!isRecord(value)) return ['Campaign Brief 格式無效。Campaign Brief must be an object.']
+
+  const issues: string[] = []
+  const brandValue = value.brand
+  const productValue = value.product
+  const brand = isRecord(brandValue) ? brandValue : {}
+  const product = isRecord(productValue) ? productValue : {}
+  if (brandValue !== undefined && !isRecord(brandValue)) issues.push('品牌資料格式無效。Brand details must be an object.')
+  if (productValue !== undefined && !isRecord(productValue)) issues.push('商品資料格式無效。Product details must be an object.')
+
+  validateTextField(issues, value, 'assetId', campaignBriefLimits.assetId, '商品圖片識別碼', 'Product asset identifier', true)
+  validateTextField(issues, value, 'intent', campaignBriefLimits.intent, '推廣目的', 'Campaign intent')
+  validateTextField(issues, brand, 'name', campaignBriefLimits.brand.name, '品牌名稱', 'Brand name')
+  validateTextField(issues, brand, 'tone', campaignBriefLimits.brand.tone, '品牌語氣', 'Brand tone')
+  validateTextList(issues, brand, 'colors', campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength, '品牌顏色', 'Brand colors')
+  validateTextField(issues, brand, 'forbiddenWords', campaignBriefLimits.brand.forbiddenWords, '限制字詞', 'Forbidden words')
+  validateTextField(issues, brand, 'cta', campaignBriefLimits.brand.cta, '行動呼籲', 'Call to action')
+  validateTextField(issues, brand, 'ctaEn', campaignBriefLimits.brand.ctaEn, '英文行動呼籲', 'English call to action')
+  if (brand.locale !== undefined && brand.locale !== 'zh-Hant' && brand.locale !== 'en') issues.push('語言設定格式無效；只支援繁體中文或英文。Locale must be zh-Hant or en.')
+
+  validateTextField(issues, product, 'name', campaignBriefLimits.product.name, '商品名稱', 'Product name')
+  validateTextField(issues, product, 'nameEn', campaignBriefLimits.product.nameEn, '英文商品名稱', 'English product name')
+  validateTextField(issues, product, 'category', campaignBriefLimits.product.category, '商品類別', 'Product category')
+  validateTextList(issues, product, 'benefits', campaignBriefLimits.product.benefits.items, campaignBriefLimits.product.benefits.itemLength, '產品賣點', 'Product benefits')
+  validateTextList(issues, product, 'benefitsEn', campaignBriefLimits.product.benefitsEn.items, campaignBriefLimits.product.benefitsEn.itemLength, '英文產品賣點', 'English product benefits')
+  validateTextField(issues, product, 'specifications', campaignBriefLimits.product.specifications, '商品規格', 'Product specifications')
+  validateTextField(issues, product, 'price', campaignBriefLimits.product.price, '價格', 'Price')
+  validateTextField(issues, product, 'promotion', campaignBriefLimits.product.promotion, '促銷資訊', 'Promotion')
+  validateTextField(issues, product, 'promotionEn', campaignBriefLimits.product.promotionEn, '英文促銷資訊', 'English promotion')
+  validateTextList(issues, product, 'channels', campaignBriefLimits.product.channels.items, campaignBriefLimits.product.channels.itemLength, '渠道', 'Channels')
+  return [...new Set(issues)]
 }
 
 export function sanitizeCampaignBrief(value: unknown): CampaignBrief {
@@ -16,28 +104,28 @@ export function sanitizeCampaignBrief(value: unknown): CampaignBrief {
   const product = candidate.product && typeof candidate.product === 'object' ? candidate.product as Partial<Product> : {}
 
   return {
-    assetId: clean(candidate.assetId, 80) || null,
-    intent: clean(candidate.intent, 120),
+    assetId: clean(candidate.assetId, campaignBriefLimits.assetId) || null,
+    intent: clean(candidate.intent, campaignBriefLimits.intent),
     brand: {
-      name: clean(brand.name, 120),
-      tone: clean(brand.tone, 240),
-      colors: cleanList(brand.colors, 8, 24),
-      forbiddenWords: clean(brand.forbiddenWords, 500),
+      name: clean(brand.name, campaignBriefLimits.brand.name),
+      tone: clean(brand.tone, campaignBriefLimits.brand.tone),
+      colors: cleanList(brand.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength),
+      forbiddenWords: clean(brand.forbiddenWords, campaignBriefLimits.brand.forbiddenWords),
       locale: brand.locale === 'en' ? 'en' : 'zh-Hant',
-      cta: clean(brand.cta, 120),
-      ctaEn: clean(brand.ctaEn, 120)
+      cta: clean(brand.cta, campaignBriefLimits.brand.cta),
+      ctaEn: clean(brand.ctaEn, campaignBriefLimits.brand.ctaEn)
     },
     product: {
-      name: clean(product.name, 160),
-      nameEn: clean(product.nameEn, 160),
-      category: clean(product.category, 120),
-      benefits: cleanList(product.benefits, 8, 240),
-      benefitsEn: cleanList(product.benefitsEn, 8, 240),
-      specifications: clean(product.specifications, 1_000),
-      price: clean(product.price, 120),
-      promotion: clean(product.promotion, 240),
-      promotionEn: clean(product.promotionEn, 240),
-      channels: cleanList(product.channels, 12, 80)
+      name: clean(product.name, campaignBriefLimits.product.name),
+      nameEn: clean(product.nameEn, campaignBriefLimits.product.nameEn),
+      category: clean(product.category, campaignBriefLimits.product.category),
+      benefits: cleanList(product.benefits, campaignBriefLimits.product.benefits.items, campaignBriefLimits.product.benefits.itemLength),
+      benefitsEn: cleanList(product.benefitsEn, campaignBriefLimits.product.benefitsEn.items, campaignBriefLimits.product.benefitsEn.itemLength),
+      specifications: clean(product.specifications, campaignBriefLimits.product.specifications),
+      price: clean(product.price, campaignBriefLimits.product.price),
+      promotion: clean(product.promotion, campaignBriefLimits.product.promotion),
+      promotionEn: clean(product.promotionEn, campaignBriefLimits.product.promotionEn),
+      channels: cleanList(product.channels, campaignBriefLimits.product.channels.items, campaignBriefLimits.product.channels.itemLength)
     }
   }
 }

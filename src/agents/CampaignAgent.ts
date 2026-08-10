@@ -1,5 +1,5 @@
 import { Agent, callable, type Connection } from 'agents'
-import { buildCampaignPlan, initialCampaignAgentState, sanitizeCampaignBrief } from '../lib/campaign-agent'
+import { buildCampaignPlan, campaignBriefLimits, initialCampaignAgentState, sanitizeCampaignBrief } from '../lib/campaign-agent'
 import { OpenAICampaignPlanningProvider } from '../lib/providers'
 import { agentMode, type RuntimePolicyEnv } from '../lib/runtime-policy'
 import type { CampaignAgentState, CampaignBrief } from '../lib/types'
@@ -75,7 +75,7 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
 
   @callable()
   resetPlanForAsset(assetId: string) {
-    if (typeof assetId !== 'string' || !assetId || assetId.length > 80 || this.state.brief?.assetId !== assetId) {
+    if (typeof assetId !== 'string' || !assetId || assetId.length > campaignBriefLimits.assetId || this.state.brief?.assetId !== assetId) {
       return this.state
     }
     const next = initialCampaignAgentState()

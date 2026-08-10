@@ -84,6 +84,8 @@ idle -> needs-input -> awaiting-approval -> approved
 - deterministic mode 使用固定規則；
 - assisted mode 只可改寫 plan summary 與三個固定理由；
 - provider 失敗時不批准、不排隊、不扣用量；
+- browser 可見商業欄位與 Worker 共用同一組字元上限；Worker 會在資產查詢、可選 provider 呼叫及 Durable Object 寫入前驗證已提供欄位的型別、語言、清單項數與長度，避免靜默截短、丟棄或改寫商業資料；
+- 不合規 brief 以不回顯原值的繁中／英文 `422` 拒絕，並保留目前有效 revision；缺少欄位則繼續使用 `needs-input` 流程；
 - 每次重新規劃產生新的 revision。
 
 ## 6. 私人資產
