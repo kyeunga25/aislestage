@@ -1326,6 +1326,22 @@ async function reserveOutput(env: Env, workspaceId: string, generationId: string
   }
 }
 
+async function reconcileGenerationReservation(env: Env, workspaceId: string, generationId: string): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const ledger = await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN event_type = 'reservation' AND amount = ? THEN 1 ELSE 0 END) AS reservations,
+      SUM(CASE WHEN event_type = 'settlement' THEN 1 ELSE 0 END) AS settlements,
+      SUM(CASE WHEN event_type = 'release' THEN 1 ELSE 0 END) AS releases
+    FROM output_ledger
+    WHERE workspace_id = ? AND generation_id = ?
+  `).bind(-OUTPUT_COST, workspaceId, generationId).first<{ total: number; reservations: number; settlements: number; releases: number }>()
+  if (!ledger?.total) return 'not-committed'
+  return ledger.total === 1 && ledger.reservations === 1 && ledger.settlements === 0 && ledger.releases === 0
+    ? 'committed'
+    : 'conflict'
+}
+
 async function releaseOrphanReservation(env: Env, workspaceId: string, generationId: string, reason: string) {
   await env.DB.batch([
     env.DB.prepare(`
@@ -1723,6 +1739,51 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   return json({ campaignPackId, generations: await packGenerations(env, workspace.id, campaignPackId), reservedOutputs: outputCount }, { status: 202 })
 }
 
+async function reconcileQueuedGeneration(env: Env, workspaceId: string, generationId: string, input: GenerationInput): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const row = await env.DB.prepare(`
+    SELECT workspace_id AS workspaceId, campaign_pack_id AS campaignPackId,
+      workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
+      output_cost AS outputCost, credit_cost AS creditCost, input_json AS inputJson,
+      approved_revision AS approvedRevision, output_key AS outputKey,
+      output_content_type AS outputContentType, processing_attempt AS processingAttempt,
+      error_message AS errorMessage, review_status AS reviewStatus
+    FROM generations
+    WHERE id = ? AND workspace_id = ?
+  `).bind(generationId, workspaceId).first<{
+    workspaceId: string
+    campaignPackId: string | null
+    workflowId: string
+    aspectRatio: string
+    status: string
+    outputCost: number
+    creditCost: number
+    inputJson: string
+    approvedRevision: number
+    outputKey: string | null
+    outputContentType: string | null
+    processingAttempt: number
+    errorMessage: string | null
+    reviewStatus: string
+  }>()
+  if (!row) return 'not-committed'
+  return row.workspaceId === workspaceId
+    && row.campaignPackId === null
+    && row.workflowId === input.workflowId
+    && row.aspectRatio === input.aspectRatio
+    && row.status === 'queued'
+    && row.outputCost === OUTPUT_COST
+    && row.creditCost === OUTPUT_COST
+    && row.inputJson === JSON.stringify(input)
+    && row.approvedRevision === input.approvedRevision
+    && row.outputKey === null
+    && row.outputContentType === null
+    && row.processingAttempt === 0
+    && row.errorMessage === null
+    && row.reviewStatus === 'draft'
+    ? 'committed'
+    : 'conflict'
+}
+
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
@@ -1746,24 +1807,49 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
     return json({ error: 'Campaign approval state is temporarily unavailable.' }, { status: 503 })
   }
   const id = crypto.randomUUID()
-  let reservationCreated = false
-  let generationCreated = false
   try {
     await reserveOutput(env, workspace.id, id)
-    reservationCreated = true
-    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', OUTPUT_COST, OUTPUT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
-    generationCreated = true
-    await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
-    return json({ id, status: 'queued', reservedOutputs: OUTPUT_COST }, { status: 202 })
   } catch (error) {
     if (error instanceof Error && error.message === 'ACTIVE_GENERATION_LIMIT') {
       return json({ error: `同一工作區最多可同時處理 ${maxActiveGenerations(env)} 個輸出。` }, { status: 429 })
     }
     if (error instanceof Error && error.message === 'INSUFFICIENT_OUTPUT_ALLOWANCE') return json({ error: '可用輸出數不足。' }, { status: 409 })
-    if (reservationCreated) {
-      if (generationCreated) await failGenerationAndRelease(env, workspace.id, id, 'Unable to enqueue generation.').catch(() => null)
-      else await releaseOrphanReservation(env, workspace.id, id, 'Unable to create generation record.').catch(() => null)
+    try {
+      const reconciliation = await reconcileGenerationReservation(env, workspace.id, id)
+      if (reconciliation !== 'committed') {
+        if (reconciliation === 'conflict') console.error('generation-reservation-reconciliation-conflict')
+        return json({ error: 'Unable to queue generation.' }, { status: 503 })
+      }
+    } catch {
+      console.error('generation-reservation-reconciliation-failed')
+      return json({ error: 'Unable to queue generation.' }, { status: 503 })
     }
+  }
+
+  try {
+    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', OUTPUT_COST, OUTPUT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
+  } catch {
+    try {
+      const reconciliation = await reconcileQueuedGeneration(env, workspace.id, id, safeInput)
+      if (reconciliation !== 'committed') {
+        if (reconciliation === 'not-committed') {
+          await releaseOrphanReservation(env, workspace.id, id, 'Unable to create generation record.').catch(() => null)
+        } else {
+          console.error('generation-create-reconciliation-conflict')
+        }
+        return json({ error: 'Unable to queue generation.' }, { status: 503 })
+      }
+    } catch {
+      console.error('generation-create-reconciliation-failed')
+      return json({ error: 'Unable to queue generation.' }, { status: 503 })
+    }
+  }
+
+  try {
+    await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
+    return json({ id, status: 'queued', reservedOutputs: OUTPUT_COST }, { status: 202 })
+  } catch {
+    await failGenerationAndRelease(env, workspace.id, id, 'Unable to enqueue generation.').catch(() => null)
     return json({ error: 'Unable to queue generation.' }, { status: 503 })
   }
 }

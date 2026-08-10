@@ -474,6 +474,104 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(forbiddenDelete.status).toBe(404)
   })
 
+  it('reconciles a reservation batch that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Reservation Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    let reservationBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (reservationBatch) {
+          reservationBatch = false
+          throw new TypeError('synthetic response failure after reservation commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, { ...env, DB: ambiguousDb, GENERATION_QUEUE: holdingQueue })
+
+    expect(response.status).toBe(202)
+    const { id } = await response.json() as { id: string }
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first()).toEqual({ status: 'queued' })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('reconciles a generation insert that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Generation Insert')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO generations')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after generation commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, { ...env, DB: ambiguousDb, GENERATION_QUEUE: holdingQueue })
+
+    expect(response.status).toBe(202)
+    const { id } = await response.json() as { id: string }
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first()).toEqual({ status: 'queued' })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('releases a reservation when a generation insert definitely does not commit', async () => {
+    const account = await registerAccount('Rejected Generation Insert')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO generations')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before generation commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, { ...env, DB: rejectingDb, GENERATION_QUEUE: holdingQueue })
+
+    expect(response.status).toBe(503)
+    expect(send).not.toHaveBeenCalled()
+    const reservation = await env.DB.prepare(`
+      SELECT generation_id AS generationId
+      FROM output_ledger
+      WHERE workspace_id = ? AND event_type = 'reservation'
+    `).bind(account.currentWorkspace.id).first<{ generationId: string }>()
+    expect(reservation?.generationId).toBeTruthy()
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(reservation!.generationId).first()).toEqual({ count: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await ledgerCount(reservation!.generationId, 'reservation')).toBe(1)
+    expect(await ledgerCount(reservation!.generationId, 'release')).toBe(1)
+  })
+
   it('does not reserve outputs when the allowance is insufficient', async () => {
     const account = await registerAccount('Low Allowance')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

@@ -98,6 +98,8 @@ D1 batch 會在同一交易內：
 
 沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 時，Worker 會把新請求 sanitize 成 canonical GenerationInput identities，與既有 pack 的所有 `input_json` identities 排序比對；數量、revision、brief、asset、workflow 或比例任一不同均 `409`，只有完全相同才返回原 pack 且不再預留。相同 helper 亦處理 D1 唯一鍵競爭。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
 
+單輸出相容 route 亦把 reservation、generation row 及 Queue send 視為分段狀態機。Reservation batch 拋錯時會以 workspace + server-generated generation ID 核對唯一 ledger event；已提交 reservation 才繼續。Generation INSERT 拋錯時會核對完整 queued row、canonical `input_json`、成本、revision 及空白 output state；已提交才送 Queue，明確沒有 row 才釋放 reservation。Reconciliation 不可讀或發生欄位衝突時只返回通用 `503` 及無識別資料事件，不做可能造成 queued row／allowance 分離的盲目補償。
+
 ## Human output review
 
 Queue 完成只會結算 technical output allowance，並把輸出設為私人 `draft`；它不會自動開放正式下載。授權成員可經 inline preview 核對輸出，只有 `owner` 或 `admin` 可向 workspace-scoped review route 提交 `approve` 或 `reject`，並同時提交預期的批准 revision。
