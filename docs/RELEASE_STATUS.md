@@ -51,6 +51,7 @@
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
 - [x] 商品圖／已完成輸出的 scoped delete preflight metadata 不可讀時回固定雙語 no-store `503`；D1 row、私人 R2 object 及 Agent revision 均不變；
 - [x] browser delete client 每次只接受一個 bounded safe ID、same-origin route 與空 body；只把 `204`／workspace-scoped `404` 視為 absent，使用 15 秒 deadline 釋放 stalled action，逾時及其他狀態保留 UI 項目且可安全重試，不反映任意 server error detail；
+- [x] 商品圖片刪除期間鎖定所有圖片 mutation 入口；私人輸出清單同一時間只執行一個刪除並標示目標，成功或失敗都會解除 UI 鎖，避免重複確認及競爭 DELETE；
 - [x] synthetic R2 delete failure 會保留 D1 retry anchor 及 Agent revision；只有 R2 delete 完成後才按 asset identity 重設 plan；
 - [x] 商品圖 D1 DELETE ambiguous commit 會核對同 workspace／asset type row；已提交回覆冪等 `204`，未提交保留 D1 retry anchor 並可再次完成刪除；
 - [x] 已完成輸出的 D1 DELETE ambiguous commit 會以 workspace-scoped row absence reconciliation；已提交回覆冪等 `204`，未提交保留 retry anchor 並可再次刪除；

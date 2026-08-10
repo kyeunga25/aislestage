@@ -57,10 +57,14 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [agentBusy, setAgentBusy] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [isDeletingProductImage, setIsDeletingProductImage] = useState(false)
+  const [deletingGenerationId, setDeletingGenerationId] = useState<string | null>(null)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [serverResults, setServerResults] = useState<GenerationResult[]>([])
   const [notice, setNotice] = useState('')
   const generationRequestKey = useRef<string | null>(null)
+  const productImageDeleteLock = useRef(false)
+  const generationDeleteLock = useRef(false)
 
   function applyCampaignState(nextState: CampaignAgentState) {
     setAgentState(nextState)
@@ -214,10 +218,13 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function deleteProductImage() {
+    if (productImageDeleteLock.current) return
     const confirmation = demoMode
       ? '移除這張本機 Demo 圖片？引用此圖的 Agent 計劃亦會重設。 Remove this local demo image? A plan using it will also reset.'
       : '刪除這張私人商品圖片？只有引用此圖的 Agent 計劃會重設。 Delete this private product image? Only a plan using it will reset.'
     if (!window.confirm(confirmation)) return
+    productImageDeleteLock.current = true
+    setIsDeletingProductImage(true)
     setNotice('')
     try {
       const deletedAssetId = image.asset?.id || null
@@ -241,11 +248,17 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能刪除商品圖片。')
+    } finally {
+      productImageDeleteLock.current = false
+      setIsDeletingProductImage(false)
     }
   }
 
   async function deleteGeneration(result: GenerationResult) {
+    if (generationDeleteLock.current) return
     if (!window.confirm(`刪除 ${result.aspectRatio} 私人輸出？`)) return
+    generationDeleteLock.current = true
+    setDeletingGenerationId(result.id)
     setNotice('')
     try {
       if (session?.user.id !== 'demo-user') {
@@ -254,6 +267,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setServerResults((current) => current.filter((item) => item.id !== result.id))
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能刪除輸出。')
+    } finally {
+      generationDeleteLock.current = false
+      setDeletingGenerationId(null)
     }
   }
 
@@ -408,14 +424,14 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           {demoMode
             ? <p className="preview-notice" role="status"><strong>公開互動 Demo</strong><span>只在目前瀏覽器記憶體處理合成資料；不會上傳、保存或呼叫外部 AI。</span></p>
             : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
-          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
+          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
           {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'} reviewingId={reviewingId} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
           <section className="support-panel" id="support" aria-labelledby="support-title">
             <div><CircleHelp size={20} /><div><h2 id="support-title">使用指引</h2><p>先填妥繁中與英文商業資料，再上傳有權使用的商品原圖。Agent 只會建立計劃；你批准後，系統才會一次建立三個私人輸出。</p></div></div>
             <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>建立私人草稿，逐一核准後才下載。</li></ol>
           </section>
-        </> : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
+        </> : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} deletingResultId={deletingGenerationId} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
       </main>
     </div>
   </div>

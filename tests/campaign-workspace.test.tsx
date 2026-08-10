@@ -54,6 +54,33 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toMatch(/<button[^>]+aria-label="刪除圖片"[^>]+disabled=""/)
   })
 
+  it('locks every product-image mutation control while a deletion is in progress', () => {
+    const markup = renderToStaticMarkup(<CampaignWorkspace
+      brand={starterBrand}
+      product={starterProduct}
+      intent="新品推廣"
+      image={{ name: 'synthetic-private.png', url: '/api/assets/123e4567-e89b-42d3-a456-426614174000', asset: null, status: 'ready', error: '' }}
+      imageDeleteBusy
+      agentState={initialCampaignAgentState()}
+      agentBusy={false}
+      generationAvailable={true}
+      onBrandChange={vi.fn()}
+      onProductChange={vi.fn()}
+      onIntentChange={vi.fn()}
+      onImageSelected={vi.fn()}
+      onImageDelete={vi.fn()}
+      onPlan={vi.fn()}
+      onApprove={vi.fn()}
+      onGenerate={vi.fn()}
+    />)
+
+    expect(markup).toContain('aria-busy="true"')
+    expect(markup).toContain('正在安全刪除… Deleting securely…')
+    expect(markup).toContain('正在刪除這張私人商品圖片 · Deleting this private product image')
+    expect(markup.match(/disabled=""/g)).toHaveLength(4)
+    expect(markup).toMatch(/<button[^>]+aria-label="正在刪除圖片 · Deleting image"[^>]+disabled=""/)
+  })
+
   it('keeps the Agent at needs-input until the required category is present', () => {
     const state = buildCampaignPlan({
       assetId: 'synthetic-asset',
