@@ -30,7 +30,7 @@
 - [x] password／invite registration batch ambiguous commit 以 server-generated user／workspace IDs、canonical account fields、owner membership、初始 allowance 及 invite linkage reconciliation；已提交可建立 session，其他同 email 帳號不可冒充本次成功；
 - [x] session INSERT ambiguous commit 以本次 token hash、user ID 與 exact expiry reconciliation；完整相符才發出原 hardened cookie，其他狀態不回傳 token 識別資料；
 - [x] password session／active user／workspace membership 讀取不可用時，`/api/session` 及受保護 API 回雙語 no-store `503 unavailable` 並保留 cookie；只有已確認無效 session 才清 cookie；
-- [x] 前端 bootstrap normalizer 只接受 active user／workspace、合法角色、safe-integer allowance 及跨欄位一致的 restricted health envelope；malformed／矛盾成功回應 fail closed，不會開啟 client feature controls；
+- [x] 前端 bootstrap loader 要求 exact `200 application/json`，並只接受 active user／workspace、合法角色、safe-integer allowance 及跨欄位一致的 restricted health envelope；session 非成功 body 不解析，Access 分類只使用 bounded `x-aislestage-access-failure` header，malformed／矛盾成功回應 fail closed，不會開啟 client feature controls；
 - [x] password auth client 採 6 KiB UTF-8 總量及逐欄界限；login 不傳註冊／邀請欄位，register 只在 invite mode 傳邀請碼；成功 response 共用 active-session schema，任意 server error detail 不會反映到表單；
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；

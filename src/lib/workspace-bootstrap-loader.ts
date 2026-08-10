@@ -14,6 +14,7 @@ export type SessionLoadResult = {
 export const sessionDataUnavailableMessage = '登入資料暫時無法確認。 Session data is temporarily unavailable.'
 export const platformStatusUnavailableMessage = '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
 
+const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
 const authenticatedSessionKeys = new Set(['authenticated', 'user', 'currentWorkspace'])
 const authSessionKeys = new Set(['user', 'currentWorkspace'])
 const unauthenticatedSessionKeys = new Set(['authenticated'])
@@ -111,16 +112,24 @@ export async function loadSession(): Promise<SessionLoadResult> {
   } catch {
     throw new Error(sessionDataUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
   if (!response.ok) {
-    const reason = isRecord(data) && typeof data.code === 'string'
-      ? normalizeAccessFailureReason(data.code)
-      : null
+    const reason = normalizeAccessFailureReason(response.headers.get(ACCESS_FAILURE_HEADER))
+    await response.body?.cancel().catch(() => undefined)
     return {
       session: null,
       failure: reason || (response.status >= 500 ? 'unavailable' : 'authentication-required')
     }
   }
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(sessionDataUnavailableMessage)
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(sessionDataUnavailableMessage)
+  }
+  const data = await response.json().catch(() => null)
   if (!isRecord(data)) throw new Error(sessionDataUnavailableMessage)
   if (data.authenticated === false && hasExactKeys(data, unauthenticatedSessionKeys)) {
     return { session: null, failure: 'authentication-required' }
@@ -171,7 +180,15 @@ export async function loadPlatformStatus() {
   } catch {
     throw new Error(platformStatusUnavailableMessage)
   }
-  if (!response.ok) throw new Error(platformStatusUnavailableMessage)
+  if (!response.ok || response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(platformStatusUnavailableMessage)
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(platformStatusUnavailableMessage)
+  }
   const data = await response.json().catch(() => null)
   return normalizePlatformStatus(data)
 }

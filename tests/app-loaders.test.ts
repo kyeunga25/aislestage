@@ -285,16 +285,58 @@ describe('workspace bootstrap loading', () => {
     await expect(loadSession()).resolves.toEqual({ session: null, failure: 'unavailable' })
   })
 
+  it('uses the bounded Access failure header without parsing the response body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('synthetic private Access detail', {
+      status: 403,
+      headers: {
+        'content-type': 'text/plain',
+        'x-aislestage-access-failure': 'membership-required'
+      }
+    })))
+
+    await expect(loadSession()).resolves.toEqual({ session: null, failure: 'membership-required' })
+  })
+
+  it('does not trust a body-only Access failure code', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      authenticated: false,
+      code: 'membership-required',
+      error: 'synthetic private Access detail'
+    }, { status: 403 })))
+
+    await expect(loadSession()).resolves.toEqual({ session: null, failure: 'authentication-required' })
+  })
+
   it('accepts the exact unauthenticated session envelope', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ authenticated: false })))
 
     await expect(loadSession()).resolves.toEqual({ session: null, failure: 'authentication-required' })
   })
 
+  it('rejects a successful session with the wrong response media type', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(canonicalSession), {
+      headers: { 'content-type': 'text/plain' }
+    })))
+
+    await expect(loadSession()).rejects.toThrow(
+      '登入資料暫時無法確認。 Session data is temporarily unavailable.'
+    )
+  })
+
   it('accepts a canonical restricted platform status', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalPlatformStatus)))
 
     await expect(loadPlatformStatus()).resolves.toEqual(canonicalPlatformStatus)
+  })
+
+  it('rejects platform status with the wrong response media type', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(canonicalPlatformStatus), {
+      headers: { 'content-type': 'text/plain' }
+    })))
+
+    await expect(loadPlatformStatus()).rejects.toThrow(
+      '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
+    )
   })
 
   it('rejects contradictory Access registration state', async () => {
