@@ -10,6 +10,7 @@ const productKeys = new Set(['name', 'nameEn', 'category', 'benefits', 'benefits
 const checkKeys = new Set(['id', 'label', 'detail', 'status'])
 const planKeys = new Set(['id', 'workflowId', 'ratio', 'label', 'dimensions', 'rationale', 'selected'])
 const messageKeys = new Set(['id', 'role', 'text'])
+const responseKeys = new Set(['state'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -119,8 +120,14 @@ export async function loadCampaignAgentState() {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(campaignAgentUnavailableMessage)
   }
-  const data = await response.json().catch(() => null) as { state?: unknown } | null
-  const state = normalizeCampaignAgentState(data?.state)
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(campaignAgentUnavailableMessage)
+  }
+  const data = await response.json().catch(() => null)
+  if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(campaignAgentUnavailableMessage)
+  const state = normalizeCampaignAgentState(data.state)
   if (!state) throw new Error(campaignAgentUnavailableMessage)
   return state
 }

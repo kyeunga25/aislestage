@@ -20,6 +20,7 @@ const generationKeys = new Set([
   'provenance'
 ])
 const provenanceKeys = new Set(['approvedRevision', 'compositionVersion', 'generationMode'])
+const responseKeys = new Set(['generations'])
 const workflowIds = new Set(['store-main', 'detail-banner', 'promo-poster', 'meta-ad', 'package-showcase'])
 const aspectRatios = new Set(['1:1', '4:5', '9:16', '16:5'])
 const generationStatuses = new Set(['queued', 'processing', 'completed', 'failed'])
@@ -87,9 +88,18 @@ export async function loadGenerations(workspaceId: string) {
   } catch {
     throw new Error(generationListUnavailableMessage)
   }
-  const data = await response.json().catch(() => null) as { generations?: unknown } | null
-  if (!response.ok) throw new Error(generationListUnavailableMessage)
-  return normalizeGenerationResults(data?.generations)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(generationListUnavailableMessage)
+  }
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(generationListUnavailableMessage)
+  }
+  const data = await response.json().catch(() => null)
+  if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(generationListUnavailableMessage)
+  return normalizeGenerationResults(data.generations)
 }
 
 export async function loadGenerationSnapshot(workspaceId: string): Promise<{

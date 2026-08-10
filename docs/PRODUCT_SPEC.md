@@ -92,7 +92,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 idle -> needs-input -> awaiting-approval -> approved
 ```
 
-Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區的 GET／plan／approve 只套用完整、bounded 且 check／plan／message ID 唯一的 Agent state；plan 回應須對應同一 canonical brief，approve 回應須確認要求的 revision、approved timestamp 及 replay 狀態。網絡、非成功、任意 server error detail 或 malformed payload 保留目前計劃並提示暫時不可用，不會把故障畫成真正 `idle` state。
+Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區 GET 先要求 `application/json` 及 exact one-field state envelope；GET／plan／approve 再只套用完整、bounded 且 check／plan／message ID 唯一的 Agent state。Plan 回應須對應同一 canonical brief，approve 回應須確認要求的 revision、approved timestamp 及 replay 狀態。網絡、非成功、錯誤 media type、額外外層欄位、任意 server error detail 或 malformed payload 保留目前計劃並提示暫時不可用，不會把故障畫成真正 `idle` state。
 
 - instance name 由 Worker 使用 session workspace ID 決定；
 - browser 不可以直接讀寫 Durable Object storage；
@@ -147,6 +147,8 @@ Queue claim UPDATE 回應不確定時，本次 delivery 不會執行 provider �
 Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存通用 composition version、generation mode、批准 revision 及正文 SHA-256；R2 在寫入時核對同一 checksum，初始審核狀態固定為 `draft`。Completion batch 回報失敗時會重新核對 D1 completed row、R2 canonical metadata 及 settlement ledger；已原子提交則保留 output 並 ack，明確未提交才清理 object 及 bounded retry，不可判定時不盲目刪除可能已有 D1 reference 的私人輸出。審核 decision 以條件更新保持併發安全；初始 D1 generation row 或批准所需 R2 metadata 不可讀時在任何 UPDATE 前回雙語 no-store `503` 並保持 draft。同一決定可安全重送，相反決定不可覆蓋已完成的審核；review UPDATE 回應不確定時，只有同 workspace／generation、completed 狀態、目標 decision、expected revision 及 reviewed timestamp 完整相符才恢復為 replay，仍為 draft 則返回 `503` 並保持不可下載。UPDATE 已成功而最終 generation reload 不可讀時同樣返回可重試 `503`；重送相同 decision 會以 replay 恢復已提交結果。Browser 提交前會重新驗證目前 completed draft，只傳 decision 與 expected revision；成功回應須保持 generation／pack identity、workflow、比例、content metadata、created time、image route 及 provenance 不變，並精確確認目標 review state 與受控 download route，否則不更新畫面，亦不顯示任意 server error detail。每次 approve、preview 及 download 亦會核對 D1 的正式 SVG content type／SHA-256 與私人 R2 的 checksum／HTTP／provenance metadata；正文、workflow、批准 revision、composition version 或 generation mode 任一不一致都會 fail closed，不寫入核准決定或返回 object body。
 
 Preview／已批准 download 的 scoped D1 generation metadata 或 R2 output object 暫時不可讀時回雙語 no-store `503 unavailable` 且不返回 SVG；真正不存在／跨 workspace 維持 `404`，canonical integrity 失配維持 `409`，固定 log 不包含私人識別資料。
+
+Browser generation list 在任何 JSON parse 前拒絕非成功狀態及非 `application/json`，成功亦只接受 exact `{ generations }` envelope，再套用最多 20 項、唯一 ID、完整 review／provenance 與同源 route normalizer；額外 outer fields 不會進入 workspace。
 
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
 

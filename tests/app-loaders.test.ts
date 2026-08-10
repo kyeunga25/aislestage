@@ -101,6 +101,27 @@ describe('workspace generation loading', () => {
     )
   })
 
+  it('rejects an expanded generation-list envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      generations: [canonicalGeneration],
+      privateCursor: 'synthetic-private-cursor'
+    })))
+
+    await expect(loadGenerations('workspace-expanded-test')).rejects.toThrow(
+      '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    )
+  })
+
+  it('rejects a generation list with the wrong response media type', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ generations: [] }), {
+      headers: { 'content-type': 'text/plain' }
+    })))
+
+    await expect(loadGenerations('workspace-media-type-test')).rejects.toThrow(
+      '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    )
+  })
+
   it('uses the bounded bilingual error when the request cannot reach the API', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('synthetic network failure') }))
 
@@ -162,6 +183,27 @@ describe('Campaign Agent state loading', () => {
 
   it('rejects malformed Agent state instead of replacing the current plan', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ state: { stage: 'idle' } })))
+
+    await expect(loadCampaignAgentState()).rejects.toThrow(
+      'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    )
+  })
+
+  it('rejects an expanded Agent-state envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      state: initialCampaignAgentState(),
+      durableObjectId: 'synthetic-private-object-id'
+    })))
+
+    await expect(loadCampaignAgentState()).rejects.toThrow(
+      'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    )
+  })
+
+  it('rejects Agent state with the wrong response media type', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ state: initialCampaignAgentState() }), {
+      headers: { 'content-type': 'text/plain' }
+    })))
 
     await expect(loadCampaignAgentState()).rejects.toThrow(
       'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'

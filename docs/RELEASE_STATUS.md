@@ -34,7 +34,7 @@
 - [x] password auth client 採 6 KiB UTF-8 總量及逐欄界限；login 不傳註冊／邀請欄位，register 只在 invite mode 傳邀請碼；成功 response 共用 active-session schema，任意 server error detail 不會反映到表單；
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
-- [x] 前端 generation normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes；清單與 Pack response 共用，網絡、非成功、外部 URL 或 malformed 回應保留 session／既有輸出；
+- [x] 前端 generation list 先要求 `application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非成功、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
@@ -44,7 +44,7 @@
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
 - [x] JSON／multipart 寫入只接受精確、大小寫不敏感的 base media type；合法 charset／boundary 參數保留，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；
 - [x] Campaign Agent stub acquisition／state RPC 失敗回固定雙語 no-store `503`；前端只套用完整 bounded state envelope，暫時或 malformed 回應保留目前計劃而不偽裝成 `idle`；
-- [x] Agent GET／plan／approve 共用 bounded、unique-ID state normalizer；plan success 綁定 canonical brief，approve success 綁定 requested revision／timestamp／replay marker；40 KiB client request cap 與固定錯誤避免套用 malformed state 或反映 server detail；
+- [x] Agent GET 先要求 `application/json` 及 exact `{ state }` envelope；GET／plan／approve 共用 bounded、unique-ID normalizer，plan／approve 分別綁定 canonical brief 與 requested revision／timestamp／replay marker；錯誤 media type、額外 outer field、malformed state 或 server detail 不會套用；
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
 - [x] 商品圖／已完成輸出的 scoped delete preflight metadata 不可讀時回固定雙語 no-store `503`；D1 row、私人 R2 object 及 Agent revision 均不變；
 - [x] browser delete client 每次只接受一個 bounded safe ID、same-origin route 與空 body；只把 `204`／workspace-scoped `404` 視為 absent，其他狀態保留 UI 項目且不反映任意 server error detail；
