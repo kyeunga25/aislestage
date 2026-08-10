@@ -86,7 +86,7 @@ idle -> needs-input -> awaiting-approval -> approved
 - provider 失敗時不批准、不排隊、不扣用量；
 - browser 可見商業欄位與 Worker 共用同一組字元上限；Worker 會在資產查詢、可選 provider 呼叫及 Durable Object 寫入前驗證已提供欄位的型別、語言、清單項數與長度，避免靜默截短、丟棄或改寫商業資料；
 - 不合規 brief 以不回顯原值的繁中／英文 `422` 拒絕，並保留目前有效 revision；缺少欄位則繼續使用 `needs-input` 流程；
-- Agent 與確定性 compositor 共用文字 normalization 及安全區規則；超出安全區的商品名稱、價格、優惠、CTA、賣點或規格會提供雙語修正原因並停在 `needs-input`，更正及重新規劃後才可批准；
+- Agent 與確定性 compositor 共用文字 normalization、三比例換行參數及合併明細行數預算；超出安全區的商品名稱、價格、優惠、CTA、賣點或規格會提供雙語修正原因並停在 `needs-input`，更正及重新規劃後才可批准；
 - 每次重新規劃產生新的 revision。
 
 ## 6. 私人資產

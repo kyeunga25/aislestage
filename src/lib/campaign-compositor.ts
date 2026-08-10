@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer'
-import { campaignTextVisualUnits, normalizeCampaignText, validateCampaignCopy } from './campaign-copy'
+import { campaignDetailLines, campaignTextLayouts, normalizeCampaignText, validateCampaignCopy, wrapCampaignText } from './campaign-copy'
 import type { AspectRatio, GenerationInput } from './types'
 
 export const CAMPAIGN_COMPOSITION_VERSION = 'deterministic-svg-v1'
@@ -89,36 +89,15 @@ function safeColor(value: string | undefined) {
   return value && /^#[0-9a-f]{6}$/i.test(value) ? value : '#155eef'
 }
 
-function chunkText(value: string, maxUnits: number, maxLines: number) {
-  const tokens = normalizeCampaignText(value).match(/[A-Za-z0-9][A-Za-z0-9.+/%:-]*|\s+|./gu) || []
-  const lines: string[] = []
-  let current = ''
-  for (const token of tokens) {
-    const next = `${current}${token}`
-    if (current && campaignTextVisualUnits(next) > maxUnits) {
-      lines.push(current.trimEnd())
-      current = token.trimStart()
-    } else {
-      current = next
-    }
-  }
-  if (current) lines.push(current.trimEnd())
-  if (lines.length > maxLines) throw new Error('Commercial text exceeds the deterministic composition safe area.')
-  return lines
-}
-
 function textLines(lines: string[], x: number, y: number, lineHeight: number, anchor: Layout['align'] = 'start') {
   return lines.map((line, index) => `<tspan x="${x}" y="${y + index * lineHeight}" text-anchor="${anchor}">${escapeXml(line)}</tspan>`).join('')
 }
 
 function campaignCopy(input: GenerationInput) {
-  const benefits = input.product.benefits.filter(Boolean).slice(0, 3)
   return {
     brand: normalizeCampaignText(input.brand.name),
     name: normalizeCampaignText(input.product.name),
     promotion: normalizeCampaignText(input.product.promotion),
-    benefits: benefits.map(normalizeCampaignText).filter(Boolean),
-    specification: normalizeCampaignText(input.product.specifications),
     price: normalizeCampaignText(input.product.price),
     cta: normalizeCampaignText(input.brand.cta)
   }
@@ -142,20 +121,14 @@ export function composeCampaignSvg({ input, source, background }: CompositionOpt
   if (!layout) throw new Error('Unsupported deterministic composition ratio.')
   const copy = campaignCopy(input)
   const accent = safeColor(input.brand.colors[0])
+  const textLayout = campaignTextLayouts[ratio]
   const productHref = `data:${source.contentType};base64,${source.base64}`
   const backgroundImage = background
     ? `<image href="data:${background.contentType};base64,${background.base64}" x="0" y="0" width="${layout.width}" height="${layout.height}" preserveAspectRatio="xMidYMid slice" opacity="0.42"/><rect width="${layout.width}" height="${layout.height}" fill="url(#background-wash)"/>`
     : `<circle cx="${layout.width * 0.84}" cy="${layout.height * 0.2}" r="${Math.round(layout.width * 0.42)}" fill="${accent}" opacity="0.08"/><path d="M0 ${Math.round(layout.height * 0.76)} C ${Math.round(layout.width * 0.3)} ${Math.round(layout.height * 0.65)}, ${Math.round(layout.width * 0.68)} ${Math.round(layout.height * 0.92)}, ${layout.width} ${Math.round(layout.height * 0.72)} L ${layout.width} ${layout.height} L 0 ${layout.height} Z" fill="${accent}" opacity="0.055"/>`
-  const headingCharacters = ratio === '1:1' ? 5 : ratio === '4:5' ? 18 : 15
-  const detailCharacters = ratio === '1:1' ? 14 : ratio === '4:5' ? 34 : 25
   const productRadius = ratio === '9:16' ? 42 : 32
   const brandX = layout.align === 'middle' ? layout.width / 2 : layout.padding
-  const detailValues = ratio === '1:1'
-    ? [...copy.benefits, copy.specification]
-    : [copy.benefits.join(' · '), copy.specification]
-  const detailLines = detailValues.filter(Boolean).flatMap((detail) => chunkText(detail, detailCharacters, ratio === '1:1' ? 7 : 4))
-  const detailLineLimit = ratio === '1:1' ? 7 : 4
-  if (detailLines.length > detailLineLimit) throw new Error('Commercial text exceeds the deterministic composition safe area.')
+  const detailLines = campaignDetailLines(input.product, ratio)
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-labelledby="title description">
@@ -171,8 +144,8 @@ export function composeCampaignSvg({ input, source, background }: CompositionOpt
   ${backgroundImage}
   <text x="${brandX}" y="${layout.padding}" fill="#172033" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="24" font-weight="700" letter-spacing="2" text-anchor="${layout.align}">${escapeXml(copy.brand)}</text>
   <rect x="${layout.padding}" y="${layout.padding + 30}" width="78" height="5" rx="2.5" fill="${accent}"/>
-  <text fill="#172033" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="${layout.headingSize}" font-weight="800" letter-spacing="-1">${textLines(chunkText(copy.name, headingCharacters, 2), layout.padding, layout.headingY, layout.headingSize * 1.12, layout.align)}</text>
-  <text fill="${accent}" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="${ratio === '9:16' ? 34 : 30}" font-weight="700">${textLines(chunkText(copy.promotion, ratio === '1:1' ? 12 : 24, 2), layout.padding, layout.promotionY, 42, layout.align)}</text>
+  <text fill="#172033" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="${layout.headingSize}" font-weight="800" letter-spacing="-1">${textLines(wrapCampaignText(copy.name, textLayout.headingLineUnits, 2), layout.padding, layout.headingY, layout.headingSize * 1.12, layout.align)}</text>
+  <text fill="${accent}" font-family="Arial, 'Noto Sans TC', sans-serif" font-size="${ratio === '9:16' ? 34 : 30}" font-weight="700">${textLines(wrapCampaignText(copy.promotion, textLayout.promotionLineUnits, 2), layout.padding, layout.promotionY, 42, layout.align)}</text>
   <rect x="${layout.product.x}" y="${layout.product.y}" width="${layout.product.width}" height="${layout.product.height}" rx="${productRadius}" fill="#ffffff" filter="url(#shadow)"/>
   <image href="${productHref}" x="${layout.product.x + 24}" y="${layout.product.y + 24}" width="${layout.product.width - 48}" height="${layout.product.height - 48}" preserveAspectRatio="xMidYMid meet" clip-path="url(#product-clip)"/>
   <rect x="${layout.product.x}" y="${layout.product.y}" width="${layout.product.width}" height="${layout.product.height}" rx="${productRadius}" fill="none" stroke="#dfe6f0" stroke-width="2"/>
