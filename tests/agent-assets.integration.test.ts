@@ -492,6 +492,52 @@ describe('workspace Campaign Agent', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
   })
 
+  it('rejects a malformed plan envelope without replacing an approved revision', async () => {
+    const owner = await registerAccount('Strict Agent Plan')
+    const uploaded = await uploadPng(owner.cookie, 'strict-plan-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const brief = validBrief(asset.id)
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief })
+    })
+    const { state: plannedState } = await planned.json() as { state: { revision: number } }
+    const approved = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: plannedState.revision })
+    })
+    const { state: approvedState } = await approved.json() as { state: { revision: number; approvedAt: string } }
+    const plan = (body: BodyInit) => dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body
+    })
+
+    for (const malformed of [
+      JSON.stringify({}),
+      JSON.stringify({ brief: null }),
+      JSON.stringify({ brief: [] }),
+      JSON.stringify({ brief: 'not-an-object' }),
+      JSON.stringify({ brief, unexpected: true }),
+      JSON.stringify([]),
+      '{'
+    ]) {
+      const response = await plan(malformed)
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: expect.stringMatching(/Campaign Brief 請求格式無效.*request must contain/) })
+      expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((stateResponse) => stateResponse.json())).toMatchObject({
+        state: { stage: 'approved', revision: approvedState.revision, approvedAt: approvedState.approvedAt, brief: { assetId: asset.id } }
+      })
+    }
+
+    const partial = await plan(JSON.stringify({ brief: { product: { price: '' } } }))
+    expect(partial.status).toBe(200)
+    expect(await partial.json()).toMatchObject({ state: { stage: 'needs-input', revision: approvedState.revision + 1 } })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
   it('keeps the current revision when replanning references a missing or cross-workspace asset', async () => {
     const owner = await registerAccount('Plan Asset Scope')
     const otherOwner = await registerAccount('Other Plan Asset Scope')

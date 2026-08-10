@@ -81,7 +81,7 @@ idle -> needs-input -> awaiting-approval -> approved
 4. 三個 workflow／比例均在批准計劃內；
 5. 商品 asset 屬於目前 workspace。
 
-Campaign Brief 的可見輸入與 Worker 共用欄位上限。Plan route 會先驗證已提供欄位的型別、支援語言、清單項數及各項長度，再進行 sanitize、私人資產核對、可選 provider 呼叫或 Durable Object 寫入。會造成截短、清單丟失或語言回退的輸入均以不回顯內容的雙語 `422` 拒絕；既有 revision 不會被失敗的重新規劃覆蓋。未提供的欄位仍由 Agent 標記為 `needs-input`。
+Campaign Brief 的可見輸入與 Worker 共用欄位上限。Plan route 先要求外層恰好為 `{ brief: object }`；缺失、null、array、primitive、額外外層欄位或 malformed JSON 以雙語 `400` 拒絕。通過 envelope 後再驗證已提供欄位的型別、支援語言、清單項數及各項長度，才進行 sanitize、私人資產核對、可選 provider 呼叫或 Durable Object 寫入。會造成截短、清單丟失或語言回退的輸入均以不回顯內容的雙語 `422` 拒絕；既有 revision 不會被失敗的重新規劃覆蓋。brief object 內未提供的欄位仍由 Agent 標記為 `needs-input`。
 
 Approval route 使用同一 bounded JSON reader，並只接受恰好一個正整數 `revision`；不會把 string、boolean 或 `null` 轉成版本。Durable Object 先比較 revision，再以 `awaiting-approval -> approved` 寫入一次；同 revision 的併發或重送會返回原有 state 及 `approvedAt`，不新增第二個批准訊息，亦不觸發 output reservation。
 

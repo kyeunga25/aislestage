@@ -1076,9 +1076,14 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     if (parsed.tooLarge) return json({ error: 'Campaign Agent 請求過大。 Campaign Agent payload is too large.' }, { status: 413 })
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
     if (action === 'plan') {
-      const briefIssues = validateCampaignBrief(body.brief)
+      const keys = Object.keys(body)
+      const briefValue = body.brief
+      if (keys.length !== 1 || keys[0] !== 'brief' || !briefValue || typeof briefValue !== 'object' || Array.isArray(briefValue)) {
+        return json({ error: 'Campaign Brief 請求格式無效。 Campaign Brief request must contain exactly one brief object.' }, { status: 400 })
+      }
+      const briefIssues = validateCampaignBrief(briefValue)
       if (briefIssues.length) return json({ error: briefIssues[0], issues: briefIssues }, { status: 422 })
-      const brief = sanitizeCampaignBrief(body.brief)
+      const brief = sanitizeCampaignBrief(briefValue)
       if (brief.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, brief.assetId)
         if (!asset) return productAssetNotFound()
