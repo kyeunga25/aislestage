@@ -1226,14 +1226,22 @@ async function approvedGenerationInput(env: Env, input: GenerationInput) {
   return JSON.stringify(submittedBrief) === JSON.stringify(state.brief)
 }
 
-async function requireCurrentGenerationExecution(env: Env, input: GenerationInput) {
+async function requireCurrentGenerationExecution(
+  env: Env,
+  generationId: string,
+  processingAttempt: number,
+  input: GenerationInput
+) {
   const current = await env.DB.prepare(`
     SELECT 1 AS current
-    FROM workspaces w
+    FROM generations g
+    JOIN workspaces w ON w.id = g.workspace_id
     JOIN media_assets a ON a.workspace_id = w.id
-    WHERE w.id = ? AND w.access_status = 'active'
+    WHERE g.id = ? AND g.workspace_id = ?
+      AND g.status = 'processing' AND g.processing_attempt = ?
+      AND w.access_status = 'active'
       AND a.id = ? AND a.kind = 'product-source'
-  `).bind(input.workspaceId, input.referenceAssetIds[0]).first<{ current: number }>()
+  `).bind(generationId, input.workspaceId, processingAttempt, input.referenceAssetIds[0]).first<{ current: number }>()
   if (!current || !await approvedGenerationInput(env, input)) {
     throw new TerminalGenerationError('Generation execution approval is stale.')
   }
@@ -1573,13 +1581,30 @@ async function releaseOrphanReservation(env: Env, workspaceId: string, generatio
   ])
 }
 
-async function failGenerationAndRelease(env: Env, workspaceId: string, generationId: string, reason: string) {
+async function failGenerationAndRelease(
+  env: Env,
+  workspaceId: string,
+  generationId: string,
+  reason: string,
+  processingAttempt: number | null = null
+) {
   await env.DB.batch([
     env.DB.prepare(`
       UPDATE generations
       SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND workspace_id = ? AND status IN ('queued', 'processing')
-    `).bind(reason.slice(0, 500), generationId, workspaceId),
+      WHERE id = ? AND workspace_id = ?
+        AND (
+          (? IS NULL AND status = 'queued')
+          OR (? IS NOT NULL AND status = 'processing' AND processing_attempt = ?)
+        )
+    `).bind(
+      reason.slice(0, 500),
+      generationId,
+      workspaceId,
+      processingAttempt,
+      processingAttempt,
+      processingAttempt
+    ),
     env.DB.prepare(`
       INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'release', ?, ?
@@ -1598,20 +1623,21 @@ async function completeGenerationAndSettle(
   env: Env,
   workspaceId: string,
   generationId: string,
+  processingAttempt: number,
   outputKey: string,
   outputContentType: string,
   outputSha256: string,
   completedMode: CompletedGenerationMode
 ) {
-  await env.DB.batch([
+  const [completion] = await env.DB.batch([
     env.DB.prepare(`
       UPDATE generations
       SET status = 'completed', output_key = ?, output_content_type = ?,
         review_status = 'draft', reviewed_at = NULL, reviewed_by_user_id = NULL,
         composition_version = ?, generation_mode = ?, output_sha256 = ?, error_message = NULL,
         completed_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND workspace_id = ? AND status = 'processing'
-    `).bind(outputKey, outputContentType, CAMPAIGN_COMPOSITION_VERSION, completedMode, outputSha256, generationId, workspaceId),
+      WHERE id = ? AND workspace_id = ? AND status = 'processing' AND processing_attempt = ?
+    `).bind(outputKey, outputContentType, CAMPAIGN_COMPOSITION_VERSION, completedMode, outputSha256, generationId, workspaceId, processingAttempt),
     env.DB.prepare(`
       INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'settlement', 0, 'Generation completed'
@@ -1624,6 +1650,7 @@ async function completeGenerationAndSettle(
       WHERE workspace_id = ? AND changes() = 1
     `).bind(OUTPUT_COST, workspaceId)
   ])
+  if (!completion.meta.changes) throw new TerminalGenerationError('Generation processing attempt is stale.')
 }
 
 async function reconcileGenerationCompletion(
@@ -2554,6 +2581,7 @@ export default {
 
       let workspaceId: string | null = null
       let storedOutputKey: string | null = null
+      let claimEstablished = false
       try {
         let claimChanges: number
         try {
@@ -2592,13 +2620,14 @@ export default {
           message.ack()
           continue
         }
+        claimEstablished = true
 
         const canonical = await env.DB.prepare(`
           SELECT g.workspace_id AS workspaceId, g.input_json AS inputJson, w.access_status AS accessStatus
           FROM generations g
           LEFT JOIN workspaces w ON w.id = g.workspace_id
-          WHERE g.id = ? AND g.status = 'processing'
-        `).bind(generationId).first<{ workspaceId: string; inputJson: string; accessStatus: string | null }>()
+          WHERE g.id = ? AND g.status = 'processing' AND g.processing_attempt = ?
+        `).bind(generationId, message.attempts).first<{ workspaceId: string; inputJson: string; accessStatus: string | null }>()
         if (!canonical) throw new TerminalGenerationError('Canonical generation record is unavailable.')
         workspaceId = canonical.workspaceId
         if (canonical.accessStatus !== 'active') throw new TerminalGenerationError('Canonical workspace is inactive.')
@@ -2623,16 +2652,16 @@ export default {
         if (!workflow.ratios.includes(input.aspectRatio) || validateCompositionInput(input).length) {
           throw new TerminalGenerationError('Canonical generation input is invalid.')
         }
-        await requireCurrentGenerationExecution(env, input)
+        await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
 
         const mode = generationMode(env)
         if (mode === 'disabled') throw new TerminalGenerationError('Campaign generation is disabled for this deployment.')
         const source = await generationSourceAsset(env, input)
         let background: { base64: string; contentType: 'image/png' } | undefined
         if (mode === 'assisted' && env.OPENAI_API_KEY) {
-          await requireCurrentGenerationExecution(env, input)
+          await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
           const copy = await new OpenAICopyProvider(env.OPENAI_API_KEY).createCopy({ brand: input.brand, product: input.product, workflowTitle: workflow.title, aspectRatio: input.aspectRatio })
-          await requireCurrentGenerationExecution(env, input)
+          await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
           const generated = await new OpenAIImageProvider(env.OPENAI_API_KEY).generate({ prompt: `${copy.imagePrompt}\nBackground scene only. Do not render text, logos, prices, claims, or a replacement product.`, aspectRatio: input.aspectRatio, referenceImageUrls: [] })
           background = { base64: generated.imageBase64, contentType: 'image/png' }
         }
@@ -2641,7 +2670,7 @@ export default {
         const outputDigest = await sha256Bytes(outputBytes)
         const outputSha256 = base64Url(new Uint8Array(outputDigest))
         const key = `workspaces/${input.workspaceId}/generations/${generationId}.svg`
-        await requireCurrentGenerationExecution(env, input)
+        await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
         storedOutputKey = key
         const stored = await env.MEDIA_BUCKET.put(key, outputBytes, {
           httpMetadata: { contentType: CAMPAIGN_OUTPUT_CONTENT_TYPE },
@@ -2656,7 +2685,7 @@ export default {
         })
         if (!stored || r2Sha256(stored) !== outputSha256) throw new TypeError('Output storage integrity verification failed.')
         try {
-          await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, outputSha256, mode)
+          await completeGenerationAndSettle(env, workspaceId, generationId, message.attempts, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, outputSha256, mode)
         } catch (error) {
           try {
             const reconciliation = await reconcileGenerationCompletion(env, workspaceId, generationId, input, key, outputSha256, mode)
@@ -2693,12 +2722,12 @@ export default {
           const reset = workspaceId
             ? await env.DB.prepare(`
               UPDATE generations SET status = 'queued', error_message = ?
-              WHERE id = ? AND workspace_id = ? AND status = 'processing'
-            `).bind(RETRYING_GENERATION_MESSAGE, generationId, workspaceId).run()
+              WHERE id = ? AND workspace_id = ? AND status = 'processing' AND processing_attempt = ?
+            `).bind(RETRYING_GENERATION_MESSAGE, generationId, workspaceId, message.attempts).run()
             : await env.DB.prepare(`
               UPDATE generations SET status = 'queued', error_message = ?
-              WHERE id = ? AND status = 'processing'
-            `).bind(RETRYING_GENERATION_MESSAGE, generationId).run()
+              WHERE id = ? AND status = 'processing' AND processing_attempt = ?
+            `).bind(RETRYING_GENERATION_MESSAGE, generationId, message.attempts).run()
           if (reset.meta.changes) {
             message.retry({ delaySeconds: 60 })
             continue
@@ -2706,13 +2735,19 @@ export default {
         }
         try {
           if (!workspaceId) throw new Error('Generation workspace is unavailable.')
-          await failGenerationAndRelease(env, workspaceId, generationId, FAILED_GENERATION_MESSAGE)
+          await failGenerationAndRelease(
+            env,
+            workspaceId,
+            generationId,
+            FAILED_GENERATION_MESSAGE,
+            claimEstablished ? message.attempts : null
+          )
           message.ack()
         } catch {
           console.error('generation-settlement-failed')
           const reset = workspaceId
-            ? await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing'").bind(generationId, workspaceId).run()
-            : await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND status = 'processing'").bind(generationId).run()
+            ? await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing' AND processing_attempt = ?").bind(generationId, workspaceId, message.attempts).run()
+            : await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND status = 'processing' AND processing_attempt = ?").bind(generationId, message.attempts).run()
           if (reset.meta.changes) message.retry({ delaySeconds: 60 })
           else message.ack()
         }

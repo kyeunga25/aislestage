@@ -1069,6 +1069,117 @@ describe('workspace authorization and output allowance integrity', () => {
     await expectTerminalGenerationState(account, id)
   })
 
+  it('fences a stale queue attempt after a newer attempt takes ownership', async () => {
+    const account = await registerAccount('Queue Attempt Fence')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    let providerCalls = 0
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      providerCalls += 1
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        if (providerCalls === 2) {
+          await env.DB.prepare(`
+            UPDATE generations
+            SET processing_attempt = 2
+            WHERE id = ? AND status = 'processing' AND processing_attempt = 1
+          `).bind(id).run()
+        }
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const messageId = crypto.randomUUID()
+
+    const stale = await deliver({ generationId: id, input }, 1, messageId, assistedEnv)
+
+    expect(stale.explicitAcks).toEqual([messageId])
+    expect(stale.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await env.DB.prepare(`
+      SELECT status, processing_attempt AS processingAttempt, output_key AS outputKey
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ status: 'processing', processingAttempt: 2, outputKey: null })
+    expect(await env.MEDIA_BUCKET.head(`workspaces/${account.currentWorkspace.id}/generations/${id}.svg`)).toBeNull()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+
+    const recovered = await deliver({ generationId: id, input }, 3, messageId, assistedEnv)
+    expect(recovered.explicitAcks).toEqual([messageId])
+    expect(recovered.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'completed', processingAttempt: 3 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('cleans a stale output when ownership changes immediately before completion', async () => {
+    const account = await registerAccount('Queue Completion Fence')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const queued = await createGeneration(account.cookie, input)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    let completionBatch = true
+    const preemptingDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        if (completionBatch) {
+          completionBatch = false
+          await env.DB.prepare(`
+            UPDATE generations
+            SET processing_attempt = 2
+            WHERE id = ? AND status = 'processing' AND processing_attempt = 1
+          `).bind(id).run()
+        }
+        return env.DB.batch<T>(statements)
+      }
+    } as unknown as typeof env.DB
+    const messageId = crypto.randomUUID()
+
+    const stale = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...env, DB: preemptingDb }
+    )
+
+    expect(stale.explicitAcks).toEqual([messageId])
+    expect(stale.retryMessages).toHaveLength(0)
+    expect(await env.DB.prepare(`
+      SELECT status, processing_attempt AS processingAttempt, output_key AS outputKey
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ status: 'processing', processingAttempt: 2, outputKey: null })
+    expect(await env.MEDIA_BUCKET.head(`workspaces/${account.currentWorkspace.id}/generations/${id}.svg`)).toBeNull()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+
+    const recovered = await deliver({ generationId: id, input }, 3, messageId)
+    expect(recovered.explicitAcks).toEqual([messageId])
+    expect(recovered.retryMessages).toHaveLength(0)
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'completed', processingAttempt: 3 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
   it('rechecks workspace activity immediately before R2 put after provider execution', async () => {
     const account = await registerAccount('Queue Provider Suspension')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

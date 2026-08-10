@@ -118,7 +118,7 @@ idle -> needs-input -> awaiting-approval -> approved
 
 單輸出相容 route 的 reservation batch 或 generation INSERT 若回報失敗，會以同一 server-generated generation ID 核對唯一 reservation ledger 及完整 canonical queued row。已提交狀態會繼續至 Queue send；明確沒有 generation row 才退回 reservation；未知或衝突狀態不會盲目釋放額度或留下一筆已知未入 Queue 的 queued row。
 
-Queue claim UPDATE 回應不確定時，本次 delivery 不會執行 provider 或建立 R2 output。前三次 attempt 內，仍為 queued、同 attempt processing 或暫時無法讀取的狀態會保留 reservation 並延遲重試；terminal／missing／較新 attempt 狀態不會被舊訊息改寫。下一個較高 attempt 可重新取得 processing generation，最後仍只會 settlement 或 release 一次。
+Queue claim UPDATE 回應不確定時，本次 delivery 不會執行 provider 或建立 R2 output。前三次 attempt 內，仍為 queued、同 attempt processing 或暫時無法讀取的狀態會保留 reservation 並延遲重試；terminal／missing／較新 attempt 狀態不會被舊訊息改寫。確認 claim 後，processing attempt 會貫穿 canonical 讀取、provider 前後重核、R2 前重核、completion、retry 及 terminal mutation；較舊 delivery 即使在 R2 put 後才發現接管，也只清理未被引用的 object。下一個較高 attempt 可恢復工作，最後仍只會 settlement 或 release 一次。
 
 確定性程式負責：
 
