@@ -1396,6 +1396,55 @@ async function completeGenerationAndSettle(
   ])
 }
 
+async function reconcileGenerationCompletion(
+  env: Env,
+  workspaceId: string,
+  generationId: string,
+  input: GenerationInput,
+  outputKey: string,
+  outputSha256: string,
+  completedMode: CompletedGenerationMode
+): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const row = await env.DB.prepare(`
+    SELECT g.id, g.campaign_pack_id AS campaignPackId, g.workflow_id AS workflowId,
+      g.aspect_ratio AS aspectRatio, g.status, g.output_content_type AS contentType,
+      g.output_key AS outputKey, g.approved_revision AS approvedRevision,
+      g.error_message AS errorMessage, g.created_at AS createdAt,
+      g.review_status AS reviewStatus, g.reviewed_at AS reviewedAt,
+      g.composition_version AS compositionVersion, g.generation_mode AS generationMode,
+      g.output_sha256 AS outputSha256
+    FROM generations g
+    WHERE g.id = ? AND g.workspace_id = ?
+  `).bind(generationId, workspaceId).first<StoredGenerationRow>()
+  if (!row || row.status !== 'completed') return 'not-committed'
+  if (row.outputKey !== outputKey
+    || row.contentType !== CAMPAIGN_OUTPUT_CONTENT_TYPE
+    || row.outputSha256 !== outputSha256
+    || row.compositionVersion !== CAMPAIGN_COMPOSITION_VERSION
+    || row.generationMode !== completedMode
+    || row.workflowId !== input.workflowId
+    || row.aspectRatio !== input.aspectRatio
+    || row.approvedRevision !== input.approvedRevision
+    || row.reviewStatus !== 'draft'
+    || row.reviewedAt !== null
+    || row.errorMessage !== null) return 'conflict'
+
+  const [object, ledger] = await Promise.all([
+    env.MEDIA_BUCKET.head(outputKey),
+    env.DB.prepare(`
+      SELECT
+        SUM(CASE WHEN event_type = 'settlement' THEN 1 ELSE 0 END) AS settlements,
+        SUM(CASE WHEN event_type = 'release' THEN 1 ELSE 0 END) AS releases
+      FROM output_ledger
+      WHERE generation_id = ?
+    `).bind(generationId).first<{ settlements: number; releases: number }>()
+  ])
+  return object && hasCanonicalOutputMetadata(row, object)
+    && ledger?.settlements === 1 && ledger.releases === 0
+    ? 'committed'
+    : 'conflict'
+}
+
 type CampaignPackRequest = {
   idempotencyKey: string
   workspaceId: string
@@ -2104,7 +2153,26 @@ export default {
           sha256: outputDigest
         })
         if (!stored || r2Sha256(stored) !== outputSha256) throw new TypeError('Output storage integrity verification failed.')
-        await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, outputSha256, mode)
+        try {
+          await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, outputSha256, mode)
+        } catch (error) {
+          try {
+            const reconciliation = await reconcileGenerationCompletion(env, workspaceId, generationId, input, key, outputSha256, mode)
+            if (reconciliation === 'committed') {
+              storedOutputKey = null
+              message.ack()
+              continue
+            }
+            if (reconciliation === 'conflict') {
+              storedOutputKey = null
+              console.error('generation-completion-reconciliation-conflict')
+            }
+          } catch {
+            storedOutputKey = null
+            console.error('generation-completion-reconciliation-failed')
+          }
+          throw error
+        }
         storedOutputKey = null
         message.ack()
       } catch (error) {

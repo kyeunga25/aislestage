@@ -118,7 +118,7 @@ idle -> needs-input -> awaiting-approval -> approved
 - 1:1 1080×1080、4:5 1080×1350、9:16 1080×1920；
 - 私人 SVG 保存與 restrictive response headers。
 
-Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存通用 composition version、generation mode、批准 revision 及正文 SHA-256；R2 在寫入時核對同一 checksum，初始審核狀態固定為 `draft`。審核 decision 以條件更新保持併發安全，同一決定可安全重送，相反決定不可覆蓋已完成的審核。每次 approve、preview 及 download 亦會核對 D1 的正式 SVG content type／SHA-256 與私人 R2 的 checksum／HTTP／provenance metadata；正文、workflow、批准 revision、composition version 或 generation mode 任一不一致都會 fail closed，不寫入核准決定或返回 object body。
+Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存通用 composition version、generation mode、批准 revision 及正文 SHA-256；R2 在寫入時核對同一 checksum，初始審核狀態固定為 `draft`。Completion batch 回報失敗時會重新核對 D1 completed row、R2 canonical metadata 及 settlement ledger；已原子提交則保留 output 並 ack，明確未提交才清理 object 及 bounded retry，不可判定時不盲目刪除可能已有 D1 reference 的私人輸出。審核 decision 以條件更新保持併發安全，同一決定可安全重送，相反決定不可覆蓋已完成的審核。每次 approve、preview 及 download 亦會核對 D1 的正式 SVG content type／SHA-256 與私人 R2 的 checksum／HTTP／provenance metadata；正文、workflow、批准 revision、composition version 或 generation mode 任一不一致都會 fail closed，不寫入核准決定或返回 object body。
 
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
 

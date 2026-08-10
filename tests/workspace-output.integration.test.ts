@@ -31,12 +31,16 @@ function approvedAssistedEnv(envOverride: Env = env): Env {
   }
 }
 
-function manuallyDeliveredAssistedEnv(): Env {
+function manuallyDeliveredEnv(envOverride: Env = env): Env {
   const holdingQueue = {
     send: async () => undefined,
     sendBatch: async () => undefined
   } as unknown as Queue<GenerationMessage>
-  return approvedAssistedEnv({ ...env, GENERATION_QUEUE: holdingQueue })
+  return { ...envOverride, GENERATION_QUEUE: holdingQueue }
+}
+
+function manuallyDeliveredAssistedEnv(): Env {
+  return approvedAssistedEnv(manuallyDeliveredEnv())
 }
 
 async function createGeneration(cookie: string, input: ReturnType<typeof generationInput>, envOverride: Env = env) {
@@ -279,13 +283,13 @@ describe('workspace authorization and output allowance integrity', () => {
     const account = await registerAccount('Synthetic Campaign Pack')
     const otherOwner = await registerAccount('Synthetic Other Owner')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    const deterministicEnv = {
+    const deterministicEnv = manuallyDeliveredEnv({
       ...env,
       GENERATION_MODE: 'deterministic' as const,
       AGENT_MODE: 'deterministic' as const,
       ASSISTED_PROVIDER: 'disabled',
       OPENAI_API_KEY: undefined
-    }
+    })
 
     const created = await createCampaignPack(account.cookie, input, crypto.randomUUID(), deterministicEnv)
     expect(created.status).toBe(202)
@@ -301,15 +305,20 @@ describe('workspace authorization and output allowance integrity', () => {
 
     const fetchMock = vi.fn(async () => { throw new Error('External providers must remain disabled.') })
     vi.stubGlobal('fetch', fetchMock)
-    for (const generation of payload.generations) {
+    for (const [index, generation] of payload.generations.entries()) {
       const result = await deliver({
         generationId: generation.id,
         input: { ...input, workflowId: generation.workflowId, aspectRatio: generation.aspectRatio }
       }, 1, crypto.randomUUID(), deterministicEnv)
       expect(result.explicitAcks).toHaveLength(1)
+      expect({
+        row: await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?').bind(generation.id).first(),
+        settlement: await ledgerCount(generation.id, 'settlement'),
+        release: await ledgerCount(generation.id, 'release')
+      }, generation.aspectRatio).toEqual({ row: { status: 'completed', processingAttempt: 1 }, settlement: 1, release: 0 })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 2 - index })
     }
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
 
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
       headers: { cookie: account.cookie }
@@ -548,6 +557,78 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await output?.text()).toContain('<svg')
   })
 
+  it('reconciles a completion batch that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Completion Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const deterministicEnv = manuallyDeliveredEnv({ ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined })
+    const queued = await createGeneration(account.cookie, input, deterministicEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    let completionBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (completionBatch) {
+          completionBatch = false
+          throw new TypeError('synthetic response failure after completion commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+
+    const fetchMock = vi.fn(async () => { throw new Error('Deterministic generation must not call an external provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const delivered = await deliver(
+      { generationId: id, input },
+      1,
+      crypto.randomUUID(),
+      { ...deterministicEnv, DB: ambiguousDb }
+    )
+
+    expect(delivered.explicitAcks).toHaveLength(1)
+    expect(delivered.retryMessages).toHaveLength(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+    const generation = await env.DB.prepare('SELECT status, output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ status: string; outputKey: string }>()
+    expect(generation?.status).toBe('completed')
+    expect(await env.MEDIA_BUCKET.head(generation!.outputKey)).not.toBeNull()
+    expect(await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } }, deterministicEnv).then((response) => response.status)).toBe(200)
+  })
+
+  it('removes an uncommitted output before retrying completion', async () => {
+    const account = await registerAccount('Rejected Completion Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const deterministicEnv = manuallyDeliveredEnv({ ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined })
+    const queued = await createGeneration(account.cookie, input, deterministicEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const rejectingDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: async () => { throw new TypeError('synthetic failure before completion commit') }
+    } as unknown as typeof env.DB
+    const messageId = crypto.randomUUID()
+
+    const delivered = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...deterministicEnv, DB: rejectingDb }
+    )
+
+    expect(delivered.explicitAcks).toHaveLength(0)
+    expect(delivered.retryMessages).toEqual([{ msgId: messageId }])
+    expect(await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first()).toEqual({ status: 'queued' })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+    expect(await env.MEDIA_BUCKET.head(`workspaces/${account.currentWorkspace.id}/generations/${id}.svg`)).toBeNull()
+  })
+
   it('terminally fails a queued generation after its approved brief is replanned', async () => {
     const account = await registerAccount('Queue Replan')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
@@ -739,7 +820,7 @@ describe('workspace authorization and output allowance integrity', () => {
   it('builds a private deterministic SVG without contacting an external provider', async () => {
     const account = await registerAccount('Deterministic Output')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    const deterministicEnv = { ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined }
+    const deterministicEnv = manuallyDeliveredEnv({ ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined })
     const queued = await createGeneration(account.cookie, input, deterministicEnv)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
