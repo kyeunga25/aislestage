@@ -9,6 +9,13 @@ const MAX_STRUCTURED_OUTPUT_CHARS = 16 * 1024
 const MAX_TEXT_PROVIDER_OUTPUT_TOKENS = 1_024
 const MAX_PROVIDER_RESPONSE_CHUNKS = 16_384
 const MAX_PROVIDER_REQUEST_MS = 30_000
+const defaultProviderImageSize = { apiSize: '1024x1024', width: 1_024, height: 1_024 }
+const providerImageSizeByRatio: Record<string, typeof defaultProviderImageSize> = {
+  '1:1': defaultProviderImageSize,
+  '4:5': { apiSize: '1024x1280', width: 1_024, height: 1_280 },
+  '9:16': { apiSize: '1024x1536', width: 1_024, height: 1_536 },
+  '16:5': { apiSize: '1536x1024', width: 1_536, height: 1_024 }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -92,7 +99,11 @@ async function readBoundedJsonResponse(response: Response, maximumBytes: number,
   }
 }
 
-async function isBoundedBase64Png(value: unknown, signal: AbortSignal) {
+async function isBoundedBase64Png(
+  value: unknown,
+  signal: AbortSignal,
+  expectedDimensions: { width: number; height: number }
+) {
   if (typeof value !== 'string' || value.length < 12 || value.length % 4 !== 0) return false
   const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
   const decodedBytes = value.length / 4 * 3 - padding
@@ -112,9 +123,12 @@ async function isBoundedBase64Png(value: unknown, signal: AbortSignal) {
     if (binary.length !== decodedBytes) return false
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    const dimensions = pngImageDimensions(bytes)
     return hasValidPngStructure(bytes)
       && !hasPrivatePngMetadata(bytes)
-      && hasSafeImageDimensions(pngImageDimensions(bytes))
+      && hasSafeImageDimensions(dimensions)
+      && dimensions?.width === expectedDimensions.width
+      && dimensions.height === expectedDimensions.height
       && await hasDecodablePngImageData(bytes, signal)
   } catch {
     return false
@@ -285,12 +299,12 @@ export class OpenAIImageProvider implements ImageProvider {
   constructor(private readonly apiKey: string) {}
 
   async generate(input: { prompt: string; aspectRatio: string; referenceImageUrls: string[] }): Promise<{ imageBase64: string; revisedPrompt?: string }> {
-    const sizeByRatio: Record<string, string> = { '1:1': '1024x1024', '4:5': '1024x1280', '9:16': '1024x1536', '16:5': '1536x1024' }
+    const outputSize = providerImageSizeByRatio[input.aspectRatio] ?? defaultProviderImageSize
     return withProviderDeadline('OpenAI image', async (signal) => {
       const response = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-image-2', prompt: input.prompt, size: sizeByRatio[input.aspectRatio] ?? '1024x1024', quality: 'medium', output_format: 'png' }),
+        body: JSON.stringify({ model: 'gpt-image-2', prompt: input.prompt, size: outputSize.apiSize, quality: 'medium', output_format: 'png' }),
         signal
       })
       if (!response.ok) {
@@ -304,7 +318,7 @@ export class OpenAIImageProvider implements ImageProvider {
       const image = payload.data[0]
       const imageBase64 = image.b64_json
       if (typeof imageBase64 !== 'string'
-        || !await isBoundedBase64Png(imageBase64, signal)
+        || !await isBoundedBase64Png(imageBase64, signal, outputSize)
         || (image.revised_prompt !== undefined && !boundedText(image.revised_prompt, 4_000))) {
         throw new Error('OpenAI image response is invalid')
       }

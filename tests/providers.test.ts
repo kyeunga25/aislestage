@@ -3,8 +3,15 @@ import { hasDecodablePngImageData } from '../src/lib/image-validation'
 import { OpenAICampaignPlanningProvider, OpenAICopyProvider, OpenAIImageProvider } from '../src/lib/providers'
 import type { CampaignBrief } from '../src/lib/types'
 
-const validPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-const invalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNl+A8AAREBBWRUW6oAAAAASUVORK5CYII='
+const validPngByRatio = {
+  '1:1': 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAlklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADvBgQeAAGfIdLmAAAAAElFTkSuQmCC',
+  '4:5': 'iVBORw0KGgoAAAANSUhEUgAABAAAAAUAAQAAAADxER2aAAAAtklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAO8GhR4AAdq/xJIAAAAASUVORK5CYII=',
+  '9:16': 'iVBORw0KGgoAAAANSUhEUgAABAAAAAYAAQAAAADA+QcHAAAA1klEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA7wYGLQABqGi1PwAAAABJRU5ErkJggg==',
+  '16:5': 'iVBORw0KGgoAAAANSUhEUgAABgAAAAQAAQAAAAAPCq/vAAAA1ElEQVR4nO3BAQEAAACAkP6v7ggKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABqBC0AAUpmIOoAAAAASUVORK5CYII='
+} as const
+const validPngBase64 = validPngByRatio['1:1']
+const invalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAl0lEQVR4nO3BIQEAAAACIIv/LztEoAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3g0YtAAGs3n7/gAAAABJRU5ErkJggg=='
+const wrongSizePngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 function decodeBase64(value: string) {
   const binary = atob(value)
@@ -29,6 +36,24 @@ function pngCrc(bytes: Uint8Array, start: number, end: number) {
     for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
   }
   return (crc ^ 0xffffffff) >>> 0
+}
+
+function readUint32BigEndian(bytes: Uint8Array, offset: number) {
+  return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0
+}
+
+function pngChunk(bytes: Uint8Array, expectedType: string) {
+  let offset = 8
+  while (offset + 12 <= bytes.length) {
+    const length = readUint32BigEndian(bytes, offset)
+    const typeOffset = offset + 4
+    const type = String.fromCharCode(...bytes.slice(typeOffset, typeOffset + 4))
+    const dataOffset = offset + 8
+    const crcOffset = dataOffset + length
+    if (type === expectedType) return { typeOffset, dataOffset, crcOffset }
+    offset = crcOffset + 4
+  }
+  throw new Error(`Missing synthetic ${expectedType} chunk`)
 }
 
 function pngWithDimensions(width: number, height: number) {
@@ -58,8 +83,9 @@ function pngWithMetadataChunk(type: 'eXIf' | 'tEXt' | 'zTXt' | 'iTXt') {
 
 function pngWithCorruptedCompressedData() {
   const bytes = decodeBase64(validPngBase64)
-  bytes[41] ^= 0xff
-  writeUint32BigEndian(bytes, 52, pngCrc(bytes, 37, 52))
+  const idat = pngChunk(bytes, 'IDAT')
+  bytes[idat.dataOffset] ^= 0xff
+  writeUint32BigEndian(bytes, idat.crcOffset, pngCrc(bytes, idat.typeOffset, idat.crcOffset))
   return encodeBase64(bytes)
 }
 
@@ -383,6 +409,13 @@ describe('assisted provider privacy boundary', () => {
       .rejects.toThrow('image response is invalid')
   })
 
+  it('rejects a decodable provider PNG whose dimensions do not match the requested ratio size', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: wrongSizePngBase64 }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '4:5', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
   it('rejects a provider PNG with an invalid decoded scanline filter', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: invalidFilterPngBase64 }] })))
 
@@ -443,10 +476,17 @@ describe('assisted provider privacy boundary', () => {
       .rejects.toThrow('image response is invalid')
   })
 
-  it('accepts one bounded base64 PNG from the image adapter', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: validPngBase64, revised_prompt: 'Synthetic studio' }] })))
+  it.each([
+    { aspectRatio: '1:1', apiSize: '1024x1024', imageBase64: validPngByRatio['1:1'] },
+    { aspectRatio: '4:5', apiSize: '1024x1280', imageBase64: validPngByRatio['4:5'] },
+    { aspectRatio: '9:16', apiSize: '1024x1536', imageBase64: validPngByRatio['9:16'] },
+    { aspectRatio: '16:5', apiSize: '1536x1024', imageBase64: validPngByRatio['16:5'] }
+  ])('binds the $aspectRatio request and response to canonical $apiSize dimensions', async ({ aspectRatio, apiSize, imageBase64 }) => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ data: [{ b64_json: imageBase64, revised_prompt: 'Synthetic studio' }] }))
+    vi.stubGlobal('fetch', fetchMock)
 
-    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
-      .resolves.toEqual({ imageBase64: validPngBase64, revisedPrompt: 'Synthetic studio' })
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio, referenceImageUrls: [] }))
+      .resolves.toEqual({ imageBase64, revisedPrompt: 'Synthetic studio' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ size: apiSize })
   })
 })

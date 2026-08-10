@@ -5,9 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker, { type Env, type GenerationMessage } from '../src/worker'
 import { dispatch, generationInput, registerAccount, validPngBytes } from './helpers'
 
-const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-const syntheticMetadataPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAEnRFWHRzeW50aGV0aWMgbWV0YWRhdGE+upmKAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-const syntheticInvalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNl+A8AAREBBWRUW6oAAAAASUVORK5CYII='
+const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAlklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADvBgQeAAGfIdLmAAAAAElFTkSuQmCC'
+const syntheticMetadataPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAEnRFWHRzeW50aGV0aWMgbWV0YWRhdGE+upmKAAAAlklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADvBgQeAAGfIdLmAAAAAElFTkSuQmCC'
+const syntheticInvalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAl0lEQVR4nO3BIQEAAAACIIv/LztEoAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3g0YtAAGs3n7/gAAAABJRU5ErkJggg=='
+const syntheticWrongSizePngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 function bytesBase64Url(bytes: Uint8Array) {
   let binary = ''
@@ -1519,7 +1520,8 @@ describe('workspace authorization and output allowance integrity', () => {
 
   it.each([
     { label: 'metadata', imageBase64: syntheticMetadataPngBase64 },
-    { label: 'invalid decoded scanlines', imageBase64: syntheticInvalidFilterPngBase64 }
+    { label: 'invalid decoded scanlines', imageBase64: syntheticInvalidFilterPngBase64 },
+    { label: 'wrong dimensions', imageBase64: syntheticWrongSizePngBase64 }
   ])('never stores provider PNG $label and releases the reserved output after terminal failure', async ({ imageBase64 }) => {
     const account = await registerAccount('Provider Image Boundary')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

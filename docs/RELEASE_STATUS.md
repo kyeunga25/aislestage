@@ -9,7 +9,7 @@
 - [x] provider-neutral payment boundary 保持 disabled，沒有 checkout 或付款狀態宣稱；
 - [x] public repository egress gate 納入本機及 CI；
 - [x] workspace status、Queue、allowance、provider 與 observability 合約經測試核對；
-- [x] provider success response 具實際 byte／chunk、MIME／UTF-8、exact field、文字長度與 base64 邊界；解碼 PNG 另核對完整 container chunk order／CRC／IDAT／IEND、共用 8192 px／32 MP 尺寸上限、EXIF／文字 metadata，以及 128 MiB bounded streaming zlib／scanline／filter；無效回應不落盤並在終止失敗時只釋放一次 reservation；
+- [x] provider success response 具實際 byte／chunk、MIME／UTF-8、exact field、文字長度與 base64 邊界；解碼 PNG 另核對完整 container chunk order／CRC／IDAT／IEND、共用 8192 px／32 MP 尺寸上限、EXIF／文字 metadata，以及 128 MiB bounded streaming zlib／scanline／filter；1:1、4:5、9:16、16:5 的 request size 與回傳 IHDR 由同一 mapping 精確綁定，尺寸錯誤等無效回應不落盤並在終止失敗時只釋放一次 reservation；
 - [x] provider header／body／PNG decompression 共用 30 秒 deadline；逾時的 bounded Queue retry 及 terminal allowance release 經隔離 integration 測試核對；
 - [x] 完成輸出預設為私人草稿，owner／admin 的不可變審核決定與逐項受控下載已通過隔離 integration 及 browser QA；
 - [x] 審核前的 scoped D1 generation row 或 approve R2 `head` 暫時不可讀時回雙語 no-store `503`；不執行 review UPDATE，draft／reviewed timestamp 保持不變；
