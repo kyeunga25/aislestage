@@ -24,7 +24,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 1. 使用者登入 active workspace。
 2. 填寫繁中與英文商品資料、價格、優惠、賣點及 CTA。
-3. 上傳 PNG、JPEG 或 WebP 商品原圖。
+3. 上傳 PNG、JPEG 或靜態 WebP 商品原圖。
 4. Agent 檢查必填資料、來源圖及三個渠道輸出。
 5. Agent 停在 `awaiting-approval`。
 6. 使用者核對並批准目前 revision；修改任何資料會立即令前端計劃失效。
@@ -89,7 +89,7 @@ idle -> needs-input -> awaiting-approval -> approved
 ## 6. 私人資產
 
 - 只接受 PNG、JPEG、靜態 WebP；
-- 最大 4 MB；
+- 最大 4 MB、單邊 8192 px，總像素不超過 32 MP；
 - browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；PNG 必須具有效 critical chunk 次序、CRC、IDAT 及 IEND，WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
 - source object 存於 workspace-scoped private R2 key；

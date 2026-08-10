@@ -118,7 +118,7 @@ export function CampaignWorkspace(props: Props) {
         </div>
         <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={image.status === 'uploading'}>
           {image.status === 'uploading' ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
-          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : '更換商品圖片'}</strong><small>支援 JPG、PNG、WebP，最大 4 MB</small></span>
+          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
         </button>
         <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} />
         <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片"><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label="刪除圖片"><Trash2 size={15} /></button> : null}</div></div>

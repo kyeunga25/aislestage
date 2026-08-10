@@ -101,7 +101,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 
 ## Product fidelity
 
-- 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB；
+- 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB、單邊 8192 px 及 32 MP；
 - MIME type 與檔案 signature 必須相符；
 - PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC 與完整結尾；WebP parser 核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕，原始檔名會改為 generic 名稱；
@@ -116,7 +116,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - preview 使用 inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
 - DELETE routes 只處理一個經授權的明確 asset／generation ID；處理中的 Queue output 不可刪除。
 
-為降低 Worker CPU 及輸出體積，來源圖上限為 4 MB，base64 轉換使用 `node:buffer` 的 runtime implementation。
+為降低 browser／Worker 解碼記憶體、Worker CPU 及輸出體積，來源圖上限為 4 MB、單邊 8192 px 及 32 MP；尺寸直接從已驗證的 PNG IHDR、JPEG frame 或 WebP VP8X／VP8／VP8L header 讀取，不先解碼圖片。base64 轉換使用 `node:buffer` 的 runtime implementation。
 
 ## Local and CI verification
 

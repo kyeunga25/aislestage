@@ -30,35 +30,26 @@ function validBrief(assetId: string) {
   }
 }
 
-async function uploadPng(cookie: string, name = 'speaker.png') {
-  const bytes = validPngBytes()
+async function uploadImage(cookie: string, bytes: Uint8Array, name: string, contentType: 'image/png' | 'image/jpeg' | 'image/webp') {
   const form = new FormData()
-  form.set('file', new File([bytes], name, { type: 'image/png' }))
+  form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: contentType }))
   return dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie, origin: 'https://app.test' },
     body: form
   })
+}
+
+async function uploadPng(cookie: string, name = 'speaker.png') {
+  return uploadImage(cookie, validPngBytes(), name, 'image/png')
 }
 
 async function uploadWebp(cookie: string, bytes = validWebpBytes(), name = 'product.webp') {
-  const form = new FormData()
-  form.set('file', new File([bytes], name, { type: 'image/webp' }))
-  return dispatch('/api/assets/product', {
-    method: 'POST',
-    headers: { cookie, origin: 'https://app.test' },
-    body: form
-  })
+  return uploadImage(cookie, bytes, name, 'image/webp')
 }
 
 async function uploadJpeg(cookie: string, bytes: Uint8Array, name = 'product.jpg') {
-  const form = new FormData()
-  form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: 'image/jpeg' }))
-  return dispatch('/api/assets/product', {
-    method: 'POST',
-    headers: { cookie, origin: 'https://app.test' },
-    body: form
-  })
+  return uploadImage(cookie, bytes, name, 'image/jpeg')
 }
 
 function base64Url(bytes: ArrayBuffer) {
@@ -70,6 +61,50 @@ function base64Url(bytes: ArrayBuffer) {
 
 const jpegScanHeader = [0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]
 const jpegFrameHeader = [0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]
+
+function writeUint32BigEndian(bytes: Uint8Array, offset: number, value: number) {
+  bytes[offset] = (value >>> 24) & 0xff
+  bytes[offset + 1] = (value >>> 16) & 0xff
+  bytes[offset + 2] = (value >>> 8) & 0xff
+  bytes[offset + 3] = value & 0xff
+}
+
+function pngWithDimensions(width: number, height: number) {
+  const bytes = validPngBytes()
+  writeUint32BigEndian(bytes, 16, width)
+  writeUint32BigEndian(bytes, 20, height)
+  let crc = 0xffffffff
+  for (let offset = 12; offset < 29; offset += 1) {
+    crc ^= bytes[offset]
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+  }
+  writeUint32BigEndian(bytes, 29, (crc ^ 0xffffffff) >>> 0)
+  return bytes
+}
+
+function webpWithDimensions(width: number, height: number) {
+  const bytes = validWebpBytes()
+  const header = ((width - 1) | ((height - 1) << 14)) >>> 0
+  bytes[21] = header & 0xff
+  bytes[22] = (header >>> 8) & 0xff
+  bytes[23] = (header >>> 16) & 0xff
+  bytes[24] = (header >>> 24) & 0xff
+  return bytes
+}
+
+function jpegWithDimensions(width: number, height: number) {
+  return new Uint8Array([
+    0xff, 0xd8,
+    0xff, 0xe0, 0x00, 0x02,
+    0xff, 0xc0, 0x00, 0x0b, 0x08,
+    (height >>> 8) & 0xff, height & 0xff,
+    (width >>> 8) & 0xff, width & 0xff,
+    0x01, 0x01, 0x11, 0x00,
+    ...jpegScanHeader,
+    0x11,
+    0xff, 0xd9
+  ])
+}
 
 describe('private product assets', () => {
   it('validates, stores and privately serves a workspace product image', async () => {
@@ -192,6 +227,19 @@ describe('private product assets', () => {
 
     expect(response.status).toBe(201)
     expect(await response.json()).toMatchObject({ asset: { contentType: 'image/webp', sizeBytes: validWebpBytes().byteLength } })
+  })
+
+  it.each([
+    { label: 'PNG', bytes: pngWithDimensions(9_000, 4_000), name: 'oversized.png', contentType: 'image/png' as const },
+    { label: 'JPEG', bytes: jpegWithDimensions(9_000, 4_000), name: 'oversized.jpg', contentType: 'image/jpeg' as const },
+    { label: 'WebP', bytes: webpWithDimensions(8_192, 8_192), name: 'oversized.webp', contentType: 'image/webp' as const }
+  ])('rejects $label dimensions that exceed the bounded product image contract', async ({ bytes, name, contentType }) => {
+    const owner = await registerAccount('Oversized Image Dimensions')
+    const response = await uploadImage(owner.cookie, bytes, name, contentType)
+
+    expect(response.status).toBe(413)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('8192') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
   })
 
   it.each([

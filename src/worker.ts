@@ -70,6 +70,8 @@ const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const MAX_IMAGE_CONTAINER_CHUNKS = 4_096
+const MAX_PRODUCT_IMAGE_DIMENSION = 8_192
+const MAX_PRODUCT_IMAGE_PIXELS = 32_000_000
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
@@ -609,6 +611,54 @@ function hasValidWebpStructure(bytes: Uint8Array) {
   return true
 }
 
+function jpegImageDimensions(bytes: Uint8Array) {
+  let offset = 2
+  let markerCount = 0
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1
+    if (offset >= bytes.length) return null
+    const marker = bytes[offset++]
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    markerCount += 1
+    if (markerCount > MAX_IMAGE_CONTAINER_CHUNKS || marker === 0xd8 || marker === 0xd9 || offset + 2 > bytes.length) return null
+    const length = (bytes[offset] << 8) | bytes[offset + 1]
+    if (length < 2 || length > bytes.length - offset) return null
+    const isFrameMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+    if (isFrameMarker) {
+      if (length < 8) return null
+      return {
+        height: (bytes[offset + 3] << 8) | bytes[offset + 4],
+        width: (bytes[offset + 5] << 8) | bytes[offset + 6]
+      }
+    }
+    offset += length
+  }
+  return null
+}
+
+function productImageDimensions(contentType: string, bytes: Uint8Array) {
+  if (contentType === 'image/png') return { width: uint32BigEndian(bytes, 16), height: uint32BigEndian(bytes, 20) }
+  if (contentType === 'image/jpeg') return jpegImageDimensions(bytes)
+  if (contentType === 'image/webp') {
+    const name = chunkName(bytes, 12)
+    if (name === 'VP8X') return { width: uint24LittleEndian(bytes, 24) + 1, height: uint24LittleEndian(bytes, 27) + 1 }
+    return webpBitstreamDimensions(bytes, name, 20, uint32LittleEndian(bytes, 16))
+  }
+  return null
+}
+
+function hasSafeProductImageDimensions(contentType: string, bytes: Uint8Array) {
+  const dimensions = productImageDimensions(contentType, bytes)
+  return Boolean(dimensions
+    && dimensions.width > 0 && dimensions.height > 0
+    && dimensions.width <= MAX_PRODUCT_IMAGE_DIMENSION && dimensions.height <= MAX_PRODUCT_IMAGE_DIMENSION
+    && dimensions.width * dimensions.height <= MAX_PRODUCT_IMAGE_PIXELS)
+}
+
 function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/jpeg') {
     if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return true
@@ -872,7 +922,7 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const form = await boundedRequest.formData().catch(() => null)
   const value = form?.get('file')
   if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
-  if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或 WebP 圖片。' }, { status: 415 })
+  if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或靜態 WebP 圖片。' }, { status: 415 })
   if (value.size <= 0 || value.size > MAX_PRODUCT_IMAGE_BYTES) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
 
   const bytes = new Uint8Array(await value.arrayBuffer())
@@ -880,6 +930,9 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   if (hasPrivateImageMetadata(value.type, bytes)) return json({ error: '圖片含有 EXIF、XMP 或文字 metadata；請先移除隱藏資料再上傳。' }, { status: 400 })
   if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
     return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
+  }
+  if (!hasSafeProductImageDimensions(value.type, bytes)) {
+    return json({ error: '圖片尺寸不可超過 8192 px 單邊或 3,200 萬像素。 Image dimensions must not exceed 8192 px per side or 32 megapixels.' }, { status: 413 })
   }
 
   const assetId = crypto.randomUUID()

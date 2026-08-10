@@ -201,7 +201,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   async function uploadProductImage(file: File) {
     generationRequestKey.current = null
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      setNotice('只支援 PNG、JPEG 或 WebP 圖片。')
+      setNotice('只支援 PNG、JPEG 或靜態 WebP 圖片。')
       return
     }
     if (file.size <= 0 || file.size > 4 * 1024 * 1024) {

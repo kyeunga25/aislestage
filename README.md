@@ -31,7 +31,7 @@ AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns a
 - Session、帳號狀態及 workspace 授權；
 - 公開雙語產品主頁與獨立 `/app` 工作區；
 - Cloudflare Access JWT 驗證及受控 workspace membership；
-- 私人 R2 商品圖上傳、格式／大小／有界結構檢查及授權預覽；
+- 私人 R2 商品圖上傳、4 MB／8192 px／32 MP、格式／有界結構檢查及授權預覽；
 - Workspace-scoped Campaign Agent 與人工批准 revision；
 - 原子、具冪等鍵的三比例 Campaign Pack 建立；
 - Queue 重送安全、失敗回復及輸出額度核算；
