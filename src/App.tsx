@@ -18,7 +18,13 @@ import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } f
 import { isPublicDemoPath } from './lib/demo-mode'
 import type { AccessFailureReason } from './lib/access-login'
 import { loadGenerations, loadGenerationSnapshot, normalizeGenerationResults } from './lib/generation-loader'
-import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset } from './lib/types'
+import {
+  productAssetSizeMessage,
+  productAssetTypeMessage,
+  productAssetUploadUnavailableMessage,
+  uploadProductAsset
+} from './lib/product-asset-client'
+import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product } from './lib/types'
 import { loadPlatformStatus, loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 import { workflowById } from './lib/workflows'
 
@@ -170,11 +176,11 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   async function uploadProductImage(file: File) {
     generationRequestKey.current = null
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      setNotice('只支援 PNG、JPEG 或靜態 WebP 圖片。')
+      setNotice(productAssetTypeMessage)
       return
     }
     if (file.size <= 0 || file.size > 4 * 1024 * 1024) {
-      setNotice('圖片檔案不可超過 4 MB。')
+      setNotice(productAssetSizeMessage)
       return
     }
     setNotice('')
@@ -188,13 +194,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setAgentState(initialCampaignAgentState())
       return
     }
-    const form = new FormData()
-    form.set('file', file)
     try {
-      const response = await fetch('/api/assets/product', { method: 'POST', credentials: 'same-origin', body: form })
-      const data = await response.json().catch(() => ({})) as { asset?: ProductAsset; error?: string }
-      if (!response.ok || !data.asset) throw new Error(data.error || '未能上傳商品圖片。')
-      setImage({ name: data.asset.name, url: data.asset.previewUrl, asset: data.asset, status: 'ready', error: '' })
+      const asset = await uploadProductAsset(file)
+      setImage({ name: asset.name, url: asset.previewUrl, asset, status: 'ready', error: '' })
       setAgentState(initialCampaignAgentState())
       URL.revokeObjectURL(localUrl)
     } catch (error) {
@@ -202,7 +204,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         setImage({ name: file.name, url: localUrl, asset: null, status: 'demo', error: '' })
         setAgentState(initialCampaignAgentState())
       } else {
-        setImage({ name: file.name, url: localUrl, asset: null, status: 'error', error: error instanceof Error ? error.message : '未能上傳商品圖片。' })
+        setImage({ name: file.name, url: localUrl, asset: null, status: 'error', error: error instanceof Error ? error.message : productAssetUploadUnavailableMessage })
       }
     }
   }

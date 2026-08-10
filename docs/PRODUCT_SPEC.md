@@ -113,6 +113,7 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 - 最大 4 MB、單邊 8192 px，總像素不超過 32 MP；
 - browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；PNG 必須具有效 critical chunk 次序、CRC、IDAT 及 IEND，WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
+- browser 建立 multipart request 時已按 MIME 換成 generic 檔名，不傳送本機原始檔名；成功後只接受精確的 asset envelope，UUID、canonical 名稱、MIME、位元組數及同源 preview path 必須與本次檔案一致，否則 fail closed，亦不向 workspace 顯示 server error detail；
 - source object 存於 workspace-scoped private R2 key；
 - 私人商品圖讀取先核對 workspace-scoped D1 metadata，再讀取 R2 object；不存在或跨 workspace 維持 `404`，任一儲存層不可讀則回雙語 no-store `503 unavailable`，不輸出 object key、workspace ID 或底層錯誤；
 - Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；

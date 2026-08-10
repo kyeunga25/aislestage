@@ -83,6 +83,7 @@
 - [x] closed／invite／open registration server gates；
 - [x] email-bound one-time invite hash contract；
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
+- [x] browser multipart 不傳送本機原始檔名；upload success 只接受與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；
 - [x] workspace-scoped Campaign Agent 與 revision approval；
 - [x] 繁中／英文商業資料由使用者明確提供；
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；
