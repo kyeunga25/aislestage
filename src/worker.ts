@@ -4,7 +4,7 @@ import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
-import { hasSafeImageDimensions, hasValidPngStructure, MAX_IMAGE_CONTAINER_CHUNKS, pngImageDimensions } from './lib/image-validation'
+import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, MAX_IMAGE_CONTAINER_CHUNKS, pngImageDimensions } from './lib/image-validation'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
@@ -701,17 +701,7 @@ function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
     return true
   }
   if (contentType === 'image/png') {
-    const metadataChunks = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
-    let offset = 8
-    let chunkCount = 0
-    while (offset + 12 <= bytes.length) {
-      chunkCount += 1
-      if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
-      const length = ((bytes[offset] << 24) >>> 0) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]
-      if (metadataChunks.has(chunkName(bytes, offset + 4))) return true
-      offset += 12 + length
-    }
-    return false
+    return hasPrivatePngMetadata(bytes)
   }
   if (contentType === 'image/webp') {
     let offset = 12

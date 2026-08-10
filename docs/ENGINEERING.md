@@ -49,7 +49,7 @@ npm run cf:types:check
 | `ASSISTED_BUDGET_MODE` | `disabled` | 付費推理與相關預算未批准 |
 | `MAX_ACTIVE_GENERATIONS_PER_WORKSPACE` | `3` | 每個 workspace 最多三個 reserved Queue outputs |
 
-目前 adapter 的 credential 是 Worker-side secret。只有 `GENERATION_MODE=assisted`、provider allowlist、資料政策、固定評估、預算及 secret 六項全部通過時才會使用。文字 request 固定 output token 上限；success response 以實際串流位元組及 chunk 數限制讀取，不只信任 `Content-Length`。本機 validator 會再核對 JSON MIME／UTF-8、exact schema、欄位長度及 base64 大小；解碼 PNG 另須通過與來源上載共用的 signature、chunk order／CRC、非空 IDAT、canonical IEND，以及單邊 8192 px／32 MP 尺寸上限。拒絕、缺漏、超限、過度碎片或無效 response 均 fail closed。未使用的 error body 會立即取消。每個 provider request 連同完整 body 讀取共用 30 秒 deadline；逾時中止後會映射為可重試的 408，Queue 以 60 秒延遲最多重試三次，終止時以冪等 ledger 釋放一次 reservation。
+目前 adapter 的 credential 是 Worker-side secret。只有 `GENERATION_MODE=assisted`、provider allowlist、資料政策、固定評估、預算及 secret 六項全部通過時才會使用。文字 request 固定 output token 上限；success response 以實際串流位元組及 chunk 數限制讀取，不只信任 `Content-Length`。本機 validator 會再核對 JSON MIME／UTF-8、exact schema、欄位長度及 base64 大小；解碼 PNG 另須通過與來源上載共用的 signature、chunk order／CRC、非空 IDAT、canonical IEND、單邊 8192 px／32 MP 尺寸上限及 EXIF／文字 metadata 拒絕規則，才可進入可審核 SVG。拒絕、缺漏、超限、過度碎片或無效 response 均 fail closed。未使用的 error body 會立即取消。每個 provider request 連同完整 body 讀取共用 30 秒 deadline；逾時中止後會映射為可重試的 408，Queue 以 60 秒延遲最多重試三次，終止時以冪等 ledger 釋放一次 reservation。
 
 ## Authentication and workspace boundary
 

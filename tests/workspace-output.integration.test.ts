@@ -6,6 +6,7 @@ import worker, { type Env, type GenerationMessage } from '../src/worker'
 import { dispatch, generationInput, registerAccount, validPngBytes } from './helpers'
 
 const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+const syntheticMetadataPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAEnRFWHRzeW50aGV0aWMgbWV0YWRhdGE+upmKAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 function bytesBase64Url(bytes: Uint8Array) {
   let binary = ''
@@ -1513,6 +1514,33 @@ describe('workspace authorization and output allowance integrity', () => {
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, { headers: { cookie: account.cookie } })
     const payload = await listed.json() as { generations: Array<{ id: string; errorMessage: string }> }
     expect(payload.generations.find((item) => item.id === id)?.errorMessage).not.toContain('provider')
+  })
+
+  it('never stores provider PNG metadata and releases the reserved output after terminal failure', async () => {
+    const account = await registerAccount('Provider Metadata Boundary')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = approvedAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Synthetic background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        return Response.json({ data: [{ b64_json: syntheticMetadataPngBase64 }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 4, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(result.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expectTerminalGenerationState(account, id)
   })
 
   it('retries a provider deadline without releasing allowance, then releases exactly once after the retry limit', async () => {

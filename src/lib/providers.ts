@@ -1,5 +1,5 @@
 import type { BrandPack, CampaignBrief, CampaignPlanItem, Product } from './types'
-import { hasSafeImageDimensions, hasValidPngStructure, pngImageDimensions } from './image-validation'
+import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, pngImageDimensions } from './image-validation'
 
 const TEXT_MODEL = 'gpt-5.6-terra'
 const MAX_TEXT_PROVIDER_RESPONSE_BYTES = 64 * 1024
@@ -112,7 +112,9 @@ function isBoundedBase64Png(value: unknown): value is string {
     if (binary.length !== decodedBytes) return false
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-    return hasValidPngStructure(bytes) && hasSafeImageDimensions(pngImageDimensions(bytes))
+    return hasValidPngStructure(bytes)
+      && !hasPrivatePngMetadata(bytes)
+      && hasSafeImageDimensions(pngImageDimensions(bytes))
   } catch {
     return false
   }

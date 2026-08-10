@@ -5,6 +5,7 @@ export const MAX_SAFE_IMAGE_PIXELS = 32_000_000
 export type ImageDimensions = { width: number; height: number }
 
 const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10]
+const privatePngMetadataChunks = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
 
 function chunkName(bytes: Uint8Array, offset: number) {
   return String.fromCharCode(...bytes.slice(offset, offset + 4))
@@ -44,6 +45,19 @@ export function hasSafeImageDimensions(dimensions: ImageDimensions | null) {
     && dimensions.width <= MAX_SAFE_IMAGE_DIMENSION
     && dimensions.height <= MAX_SAFE_IMAGE_DIMENSION
     && dimensions.width * dimensions.height <= MAX_SAFE_IMAGE_PIXELS)
+}
+
+export function hasPrivatePngMetadata(bytes: Uint8Array) {
+  let offset = 8
+  let chunkCount = 0
+  while (offset + 12 <= bytes.length) {
+    chunkCount += 1
+    if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
+    const length = uint32BigEndian(bytes, offset)
+    if (privatePngMetadataChunks.has(chunkName(bytes, offset + 4))) return true
+    offset += 12 + length
+  }
+  return false
 }
 
 export function hasValidPngStructure(bytes: Uint8Array) {

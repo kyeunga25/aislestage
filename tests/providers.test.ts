@@ -20,17 +20,38 @@ function writeUint32BigEndian(bytes: Uint8Array, offset: number, value: number) 
   bytes[offset + 3] = value & 0xff
 }
 
+function pngCrc(bytes: Uint8Array, start: number, end: number) {
+  let crc = 0xffffffff
+  for (let offset = start; offset < end; offset += 1) {
+    crc ^= bytes[offset]
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
 function pngWithDimensions(width: number, height: number) {
   const bytes = decodeBase64(validPngBase64)
   writeUint32BigEndian(bytes, 16, width)
   writeUint32BigEndian(bytes, 20, height)
-  let crc = 0xffffffff
-  for (let offset = 12; offset < 29; offset += 1) {
-    crc ^= bytes[offset]
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
-  }
-  writeUint32BigEndian(bytes, 29, (crc ^ 0xffffffff) >>> 0)
+  writeUint32BigEndian(bytes, 29, pngCrc(bytes, 12, 29))
   return encodeBase64(bytes)
+}
+
+function pngWithMetadataChunk(type: 'eXIf' | 'tEXt' | 'zTXt' | 'iTXt') {
+  const source = decodeBase64(validPngBase64)
+  const data = new TextEncoder().encode('synthetic metadata')
+  const chunk = new Uint8Array(12 + data.length)
+  writeUint32BigEndian(chunk, 0, data.length)
+  for (let index = 0; index < type.length; index += 1) chunk[4 + index] = type.charCodeAt(index)
+  chunk.set(data, 8)
+  writeUint32BigEndian(chunk, 8 + data.length, pngCrc(chunk, 4, 8 + data.length))
+
+  const insertionOffset = 33
+  const output = new Uint8Array(source.length + chunk.length)
+  output.set(source.subarray(0, insertionOffset))
+  output.set(chunk, insertionOffset)
+  output.set(source.subarray(insertionOffset), insertionOffset + chunk.length)
+  return encodeBase64(output)
 }
 
 function syntheticBrief(): CampaignBrief {
@@ -341,6 +362,13 @@ describe('assisted provider privacy boundary', () => {
 
   it('rejects a structurally valid provider PNG outside the shared safe dimensions', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: pngWithDimensions(9_000, 4_000) }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it.each(['eXIf', 'tEXt', 'zTXt', 'iTXt'] as const)('rejects a structurally valid provider PNG containing %s metadata', async (type) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: pngWithMetadataChunk(type) }] })))
 
     await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
       .rejects.toThrow('image response is invalid')
