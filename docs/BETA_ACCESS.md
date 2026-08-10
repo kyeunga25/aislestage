@@ -46,6 +46,27 @@ Scheduled cleanup 會刪除已過期的 pending／revoked invite hash；已使�
 
 公開介面不提供帳號清單或邀請管理。邀請可由 `npm run cf:invite` 在受保護本機環境建立；收件電郵只由 `AISLESTAGE_INVITE_EMAIL` 環境變數提供，D1 則只使用受保護 `wrangler.local.jsonc` 內的通用 `DB` binding。script 拒絕以 command-line flags 傳入收件電郵、資料庫或 config，亦不會把這些受保護值交給 child-process argv。撤銷、帳號狀態變更及成員指派只可經受保護的操作流程完成。
 
+## 邀請指令 / Invite command
+
+先在受保護的 shell session 設定 `AISLESTAGE_INVITE_EMAIL`，不要把實際收件資料寫進 command history、文件或 repository。指令只接受以下選項：
+
+| 選項 / Option | 合約 / Contract |
+| --- | --- |
+| `--days 1..30` 或 / or `--days=1..30` | 有效日數 / lifetime；預設 / default 7，每次最多提供一次 / once only |
+| `--account-type beta\|test` 或 / or `--account-type=beta\|test` | 帳號分類 / classification；預設 / default `beta`，不授予額外權限 / grants no extra permission |
+| `--local` | 明確使用受保護 config 的本機 D1；否則使用 remote D1 / explicitly select local D1; otherwise remote |
+| `--self-test` | 只執行無網絡自測，不可與操作選項並用 / offline self-test only; cannot be combined |
+
+```bash
+npm run cf:invite:check
+npm run cf:invite -- --days 7 --account-type beta
+npm run cf:invite -- --local --days=1 --account-type=test
+```
+
+未知或位置參數、重複選項、缺值、不支援的 account type，以及 `--email`、`--database`、`--config` 都會在讀取收件環境變數、產生邀請資料或執行 Wrangler 前 fail closed。邀請碼只在成功寫入後顯示一次，應只經私人渠道交付。
+
+Set the recipient only through a protected `AISLESTAGE_INVITE_EMAIL` environment. The command accepts the documented options above exactly once, rejects malformed or protected arguments before any D1 work, and shows the resulting invite code once after a successful write.
+
 ## 隔離測試流程
 
 1. 在測試 D1 建立一個短期、綁定測試電郵 hash 的 `pending` invite。
