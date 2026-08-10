@@ -161,7 +161,7 @@ Session、health、generation list 及 Agent state GET 都有 15 秒 browser dea
 
 私人 mutation success response 同樣先限制 decoded stream：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB。超限回應只進入固定雙語錯誤，不會改變工作區狀態或人工決定。
 
-`deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。圖片比例由 server-side mapping 同時決定 provider request size 及預期 IHDR；回傳 PNG 尺寸必須精確相符，不能靠後續裁切修正。任何 provider PNG 回應在合成前都須通過 base64／8 MiB 壓縮資料上限、完整 PNG container CRC／次序／終止結構，以及與來源上載共用的單邊 8192 px／32 MP 尺寸和 EXIF／文字 metadata 拒絕規則。IDAT 另以最多 128 MiB 的 streaming decoded scanline 驗證 zlib、IHDR 長度與 filter；無效、不可解碼、超限、尺寸錯誤或帶 metadata 的回應 fail closed，不會寫入可審核輸出。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
+`deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。圖片 adapter 只接受 1–4,000 字元 prompt、空的 reference URL 清單及已知比例；其他輸入會在 provider egress 前拒絕。圖片比例由 server-side mapping 同時決定 provider request size 及預期 IHDR；回傳 PNG 尺寸必須精確相符，不能靠後續裁切修正。任何 provider PNG 回應在合成前都須通過 base64／8 MiB 壓縮資料上限、完整 PNG container CRC／次序／終止結構，以及與來源上載共用的單邊 8192 px／32 MP 尺寸和 EXIF／文字 metadata 拒絕規則。IDAT 另以最多 128 MiB 的 streaming decoded scanline 驗證 zlib、IHDR 長度與 filter；無效、不可解碼、超限、尺寸錯誤或帶 metadata 的回應 fail closed，不會寫入可審核輸出。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
 
 ## 8. Cloudflare 架構
 

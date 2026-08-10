@@ -1,4 +1,4 @@
-import type { BrandPack, CampaignBrief, CampaignPlanItem, Product } from './types'
+import type { AspectRatio, BrandPack, CampaignBrief, CampaignPlanItem, Product } from './types'
 import { hasDecodablePngImageData, hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, pngImageDimensions } from './image-validation'
 
 const TEXT_MODEL = 'gpt-5.6-terra'
@@ -9,12 +9,18 @@ const MAX_STRUCTURED_OUTPUT_CHARS = 16 * 1024
 const MAX_TEXT_PROVIDER_OUTPUT_TOKENS = 1_024
 const MAX_PROVIDER_RESPONSE_CHUNKS = 16_384
 const MAX_PROVIDER_REQUEST_MS = 30_000
-const defaultProviderImageSize = { apiSize: '1024x1024', width: 1_024, height: 1_024 }
-const providerImageSizeByRatio: Record<string, typeof defaultProviderImageSize> = {
-  '1:1': defaultProviderImageSize,
+const MAX_IMAGE_PROVIDER_PROMPT_CHARS = 4_000
+type ProviderImageSize = { apiSize: string; width: number; height: number }
+const providerImageSizeByRatio: Record<AspectRatio, ProviderImageSize> = {
+  '1:1': { apiSize: '1024x1024', width: 1_024, height: 1_024 },
   '4:5': { apiSize: '1024x1280', width: 1_024, height: 1_280 },
   '9:16': { apiSize: '1024x1536', width: 1_024, height: 1_536 },
   '16:5': { apiSize: '1536x1024', width: 1_536, height: 1_024 }
+}
+
+function providerImageSize(aspectRatio: string) {
+  if (!Object.prototype.hasOwnProperty.call(providerImageSizeByRatio, aspectRatio)) return null
+  return providerImageSizeByRatio[aspectRatio as AspectRatio]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -299,7 +305,13 @@ export class OpenAIImageProvider implements ImageProvider {
   constructor(private readonly apiKey: string) {}
 
   async generate(input: { prompt: string; aspectRatio: string; referenceImageUrls: string[] }): Promise<{ imageBase64: string; revisedPrompt?: string }> {
-    const outputSize = providerImageSizeByRatio[input.aspectRatio] ?? defaultProviderImageSize
+    const outputSize = providerImageSize(input.aspectRatio)
+    if (!outputSize
+      || !boundedText(input.prompt, MAX_IMAGE_PROVIDER_PROMPT_CHARS)
+      || !Array.isArray(input.referenceImageUrls)
+      || input.referenceImageUrls.length !== 0) {
+      throw new Error('OpenAI image input is invalid')
+    }
     return withProviderDeadline('OpenAI image', async (signal) => {
       const response = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',

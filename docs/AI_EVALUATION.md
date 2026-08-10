@@ -41,7 +41,7 @@
 
 1. `GENERATION_MODE=assisted`，以及明確的 server-side `ASSISTED_PROVIDER` allowlist；
 2. `ASSISTED_DATA_POLICY=approved`，raw prompt、response 與圖片 payload logging 關閉；
-3. 每次只使用一張商品原圖、一個候選及固定輸出尺寸，比例只會映射至 `1024x1024`、`1024x1280`、`1024x1536` 或 `1536x1024`；回傳 PNG 的 IHDR 必須精確符合該次 request，retry 與並發有上限；
+3. 圖片 adapter 只接受 1–4,000 字元 prompt、空的 reference URL 清單及四個已知比例；不支援的輸入會在任何 provider egress 前拒絕。每次只使用一個候選及固定輸出尺寸，比例只會映射至 `1024x1024`、`1024x1280`、`1024x1536` 或 `1536x1024`；回傳 PNG 的 IHDR 必須精確符合該次 request，retry 與並發有上限；
 4. provider success response 以串流實際位元組及 chunk 數限制讀取，不以 `Content-Length` 作唯一保護；文字 JSON 上限 64 KiB，image JSON 上限 12 MiB，base64 解碼後的壓縮 PNG 上限 8 MiB；
 5. JSON MIME／UTF-8、exact local schema、欄位長度及 base64 全部再驗證；PNG 亦須通過 signature、chunk order／CRC、非空 IDAT、canonical IEND、共用的單邊 8192 px／32 MP 尺寸上限，並在解壓前核對 IHDR 與 server 選定的 request 尺寸完全一致，且不得含 EXIF 或文字 metadata chunks。IDAT zlib 會串流解壓並核對 IHDR 對應的 scanline 長度與 filter 0–4，decoded scanline 總量上限為 128 MiB；文字 request 的 output token 上限固定，未使用的 error body 立即取消；
 6. 每個 provider request 由送出、完整讀取 response body 至 PNG 驗證／解壓共用 30 秒 deadline；逾時會中止 request、按 408 類暫時故障以 60 秒延遲最多重試三次，之後才永久失敗並釋放一次 reservation；

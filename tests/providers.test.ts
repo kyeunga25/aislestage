@@ -371,6 +371,20 @@ describe('assisted provider privacy boundary', () => {
       .rejects.toThrow('exceeded the safe response limit')
   })
 
+  it.each([
+    { label: 'an unsupported ratio', prompt: 'Synthetic background', aspectRatio: '3:2', referenceImageUrls: [] },
+    { label: 'a reference image URL', prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: ['https://example.invalid/private-image'] },
+    { label: 'an empty prompt', prompt: '   ', aspectRatio: '1:1', referenceImageUrls: [] },
+    { label: 'an oversized prompt', prompt: 'x'.repeat(4_001), aspectRatio: '1:1', referenceImageUrls: [] }
+  ])('rejects $label before provider egress', async ({ prompt, aspectRatio, referenceImageUrls }) => {
+    const fetchMock = vi.fn(async () => Response.json({ data: [{ b64_json: validPngBase64 }] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt, aspectRatio, referenceImageUrls }))
+      .rejects.toThrow('image input is invalid')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects image data that is not a bounded base64 PNG', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: 'not-a-png' }] })))
 
