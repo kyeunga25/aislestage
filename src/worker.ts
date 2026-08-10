@@ -226,8 +226,22 @@ function getClientIp(request: Request) {
   return request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
 }
 
+function hasMediaType(request: Request, expected: string) {
+  const contentType = request.headers.get('content-type')
+  if (!contentType) return false
+  return contentType.split(';', 1)[0].trim().toLowerCase() === expected
+}
+
 function hasJsonContent(request: Request) {
-  return request.headers.get('content-type')?.toLowerCase().includes('application/json') ?? false
+  return hasMediaType(request, 'application/json')
+}
+
+async function unsupportedMediaType(request: Request, expected: 'application/json' | 'multipart/form-data') {
+  await cancelRequestBody(request)
+  const error = expected === 'application/json'
+    ? '需要 application/json。 Expected application/json.'
+    : '需要 multipart/form-data。 Expected multipart/form-data.'
+  return json({ error }, { status: 415 })
 }
 
 function validEmail(email: string) {
@@ -921,7 +935,7 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
 }
 
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
-  if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data.' }, { status: 415 })
+  if (!hasMediaType(request, 'multipart/form-data')) return unsupportedMediaType(request, 'multipart/form-data')
 
   const bounded = await readBoundedRequestBytes(request, MAX_UPLOAD_REQUEST_BYTES)
   if (bounded.tooLarge) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
@@ -1053,7 +1067,7 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
   try {
     if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
     if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
-    if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+    if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
     const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
     if (parsed.tooLarge) return json({ error: 'Campaign brief is too large.' }, { status: 413 })
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
@@ -1130,7 +1144,7 @@ async function generationSourceAsset(env: Env, input: GenerationInput) {
 async function register(request: Request, env: Env) {
   const mode = registrationMode(env)
   if (mode === 'closed') return json({ error: 'AisleStage 現時只開放已有帳號登入。' }, { status: 403 })
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
   const body = parsed.body as Record<string, unknown> | null
@@ -1204,7 +1218,7 @@ async function register(request: Request, env: Env) {
 }
 
 async function login(request: Request, env: Env) {
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
   const body = parsed.body as Record<string, unknown> | null
@@ -1440,7 +1454,7 @@ async function packGenerations(env: Env, workspaceId: string, campaignPackId: st
 
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Campaign Pack payload is too large.' }, { status: 413 })
   const parsedPack = campaignPackInputs(parsed.body)
@@ -1545,7 +1559,7 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
 
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Generation payload is too large.' }, { status: 413 })
   const input = parsed.body
@@ -1686,7 +1700,7 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
   if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
     return json({ error: '只有 owner 或 admin 可以核准正式下載。' }, { status: 403 })
   }
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_REVIEW_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Review payload is too large.' }, { status: 413 })
   if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {

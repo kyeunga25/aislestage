@@ -20,6 +20,7 @@
 - [x] scheduled auth cleanup 刪除過期 session、7 日前 auth attempt、過期 pending／revoked invite hash 及 30 日前 used invite linkage，同時保留仍有效／近期記錄；
 - [x] invite CLI 只接受明確列出的唯一參數；未知、位置、重複、缺值、不合法 account type 及受保護 flags 均在產生邀請或執行 Wrangler 前 fail closed；
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
+- [x] JSON／multipart 寫入只接受精確、大小寫不敏感的 base media type；合法 charset／boundary 參數保留，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；
 - [x] `/app` 與 `/app/*` 採 Worker-first，工作區 shell 在 Access JWT 及 active D1 membership 驗證後才返回；
 - [x] feature branch 的完整 repository checks，以及 390–1280px browser／visual QA 完成；
 - [ ] fixed-SHA PR、正式 deployment 及 live acceptance 完成。

@@ -61,6 +61,7 @@ npm run cf:types:check
 - 密碼以 PBKDF2 衍生 hash；session token 只保存 SHA-256 hash；
 - session cookie 為 HttpOnly、SameSite=Lax，非本機環境加上 Secure；
 - 所有 state-changing API 會核對 same-origin／fetch metadata；
+- JSON／multipart 寫入會先精確核對大小寫不敏感的 base media type，再進入 bounded body parser；標準 charset／boundary 參數可用，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；受保護 route 仍會先完成必要的 session／membership 核對；
 - active user 必須同時擁有 active workspace membership；
 - 無權資產與輸出一律返回 not found，避免跨 workspace 枚舉；
 - 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；

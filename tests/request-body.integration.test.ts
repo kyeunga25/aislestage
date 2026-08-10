@@ -79,6 +79,47 @@ describe('bounded request body consumption', () => {
     expect(cancelled).toBe(true)
   })
 
+  it.each(['application/json-malicious', 'text/application/json'])(
+    'rejects a non-exact JSON media type before authentication work: %s',
+    async (contentType) => {
+      const account = await registerAccount('Exact JSON Media Type')
+      let cancelled = false
+      const response = await dispatch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': contentType, 'cf-connecting-ip': '198.51.100.73', origin: 'https://app.test' },
+        body: streamingBody([
+          encoder.encode(JSON.stringify({ email: account.user.email, password: 'SecurePass123!' }))
+        ], () => { cancelled = true })
+      })
+
+      expect(response.status).toBe(415)
+      expect(cancelled).toBe(true)
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining('application/json') })
+    }
+  )
+
+  it('rejects a non-exact multipart media type before parsing or storage', async () => {
+    const account = await registerAccount('Exact Multipart Media Type')
+    const boundary = 'aislestage-exact-multipart'
+    const body = multipartBody(boundary, [{
+      disposition: 'form-data; name="file"; filename="product.png"',
+      contentType: 'image/png',
+      bytes: validPngBytes()
+    }])
+    let cancelled = false
+
+    const response = await dispatch('/api/assets/product', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `text/multipart/form-data; boundary=${boundary}` },
+      body: streamingBody([body], () => { cancelled = true })
+    })
+
+    expect(response.status).toBe(415)
+    expect(cancelled).toBe(true)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('multipart/form-data') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
   it('rejects an oversized ignored multipart field before parsing it', async () => {
     const account = await registerAccount('Ignored Multipart')
     const boundary = 'aislestage-ignored-field'
@@ -123,7 +164,7 @@ describe('bounded request body consumption', () => {
     const loginBody = encoder.encode(JSON.stringify({ email: account.user.email, password: 'SecurePass123!' }))
     const login = await dispatch('/api/auth/login', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.72', origin: 'https://app.test' },
+      headers: { 'content-type': 'Application/JSON; charset=UTF-8', 'cf-connecting-ip': '198.51.100.72', origin: 'https://app.test' },
       body: streamingBody([loginBody])
     })
     expect(login.status).toBe(200)
@@ -137,7 +178,7 @@ describe('bounded request body consumption', () => {
     }])
     const upload = await dispatch('/api/assets/product', {
       method: 'POST',
-      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: { cookie: account.cookie, origin: 'https://app.test', 'content-type': `Multipart/Form-Data; boundary=${boundary}` },
       body: streamingBody([uploadBody])
     })
 
