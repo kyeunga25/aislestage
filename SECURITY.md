@@ -18,6 +18,7 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - Generated previews and approved downloads are served only through authorized, workspace-scoped Worker routes with private caching and restrictive response headers.
 - Deterministic mode does not contact an external model provider. Assisted modes require an explicit server-side gate and never send the private asset identifier to the provider.
 - Successful provider responses are read through actual-byte and fragmentation limits rather than trusting `Content-Length`; JSON MIME, UTF-8, exact local fields, text lengths, base64 size, and PNG signature are revalidated before use.
+- Provider requests and complete response-body reads share a 30-second deadline. A timeout aborts the subrequest, follows the bounded Queue retry policy, and releases reserved allowance exactly once only after terminal failure.
 - Browser assets are same-origin and do not use third-party analytics or font requests.
 - User-facing errors and persisted observability events exclude commercial brief contents, provider payloads, deployment mappings, database diagnostics, queue details, and private object keys.
 - Workers invocation logs are disabled for protected path privacy; custom error logs use bounded event names without user, workspace, asset, brief, prompt, response, or object-key values.

@@ -7,6 +7,7 @@ const MAX_GENERATED_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_STRUCTURED_OUTPUT_CHARS = 16 * 1024
 const MAX_TEXT_PROVIDER_OUTPUT_TOKENS = 1_024
 const MAX_PROVIDER_RESPONSE_CHUNKS = 16_384
+const MAX_PROVIDER_REQUEST_MS = 30_000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -24,6 +25,19 @@ function boundedText(value: unknown, maximumCharacters: number): value is string
 
 async function cancelResponseBody(response: Response) {
   await response.body?.cancel().catch(() => undefined)
+}
+
+async function withProviderDeadline<T>(context: string, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), MAX_PROVIDER_REQUEST_MS)
+  try {
+    return await operation(controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) throw new TypeError(`${context} request failed: 408`)
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 async function readBoundedJsonResponse(response: Response, maximumBytes: number, context: string) {
@@ -206,32 +220,35 @@ export class OpenAICampaignPlanningProvider implements CampaignPlanningProvider 
 
   async createPlan(input: CampaignBrief): Promise<AssistedCampaignPlan> {
     const providerInput = { intent: input.intent, brand: input.brand, product: input.product }
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: TEXT_MODEL,
-        reasoning: { effort: 'none' },
-        max_output_tokens: MAX_TEXT_PROVIDER_OUTPUT_TOKENS,
-        input: [
-          { role: 'system', content: [{ type: 'input_text', text: 'You plan bounded ecommerce campaign assets. Use only verified facts. Never add claims. Recommend exactly store-main, social-ad, and story, and stop for human approval.' }] },
-          { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(providerInput) }] }
-        ],
-        text: { format: { type: 'json_schema', name: 'campaign_plan', strict: true, schema: {
-          type: 'object', additionalProperties: false,
-          properties: {
-            summary: { type: 'string' },
-            recommendations: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', enum: ['store-main', 'social-ad', 'story'] }, rationale: { type: 'string' } }, required: ['id', 'rationale'] } }
-          },
-          required: ['summary', 'recommendations']
-        } } }
+    return withProviderDeadline('OpenAI campaign planning', async (signal) => {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: TEXT_MODEL,
+          reasoning: { effort: 'none' },
+          max_output_tokens: MAX_TEXT_PROVIDER_OUTPUT_TOKENS,
+          input: [
+            { role: 'system', content: [{ type: 'input_text', text: 'You plan bounded ecommerce campaign assets. Use only verified facts. Never add claims. Recommend exactly store-main, social-ad, and story, and stop for human approval.' }] },
+            { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(providerInput) }] }
+          ],
+          text: { format: { type: 'json_schema', name: 'campaign_plan', strict: true, schema: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              summary: { type: 'string' },
+              recommendations: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'object', additionalProperties: false, properties: { id: { type: 'string', enum: ['store-main', 'social-ad', 'story'] }, rationale: { type: 'string' } }, required: ['id', 'rationale'] } }
+            },
+            required: ['summary', 'recommendations']
+          } } }
+        }),
+        signal
       })
+      if (!response.ok) {
+        await cancelResponseBody(response)
+        throw new Error(`OpenAI campaign planning request failed: ${response.status}`)
+      }
+      return parseAssistedPlan(responseOutputText(await readBoundedJsonResponse(response, MAX_TEXT_PROVIDER_RESPONSE_BYTES, 'OpenAI campaign planning response')))
     })
-    if (!response.ok) {
-      await cancelResponseBody(response)
-      throw new Error(`OpenAI campaign planning request failed: ${response.status}`)
-    }
-    return parseAssistedPlan(responseOutputText(await readBoundedJsonResponse(response, MAX_TEXT_PROVIDER_RESPONSE_BYTES, 'OpenAI campaign planning response')))
   }
 }
 
@@ -239,22 +256,25 @@ export class OpenAICopyProvider implements CopyProvider {
   constructor(private readonly apiKey: string) {}
 
   async createCopy(input: { brand: BrandPack; product: Product; workflowTitle: string; aspectRatio: string }): Promise<GeneratedCopy> {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: TEXT_MODEL,
-        reasoning: { effort: 'none' },
-        max_output_tokens: MAX_TEXT_PROVIDER_OUTPUT_TOKENS,
-        input: [{ role: 'system', content: [{ type: 'input_text', text: 'You create concise ecommerce visual briefs. Respect brand restrictions. Never make unsupported product claims.' }] }, { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(input) }] }],
-        text: { format: { type: 'json_schema', name: 'ecommerce_copy', strict: true, schema: { type: 'object', additionalProperties: false, properties: { imagePrompt: { type: 'string' }, headline: { type: 'string' }, body: { type: 'string' }, hashtags: { type: 'array', items: { type: 'string' } }, cta: { type: 'string' } }, required: ['imagePrompt', 'headline', 'body', 'hashtags', 'cta'] } } }
+    return withProviderDeadline('OpenAI copy', async (signal) => {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: TEXT_MODEL,
+          reasoning: { effort: 'none' },
+          max_output_tokens: MAX_TEXT_PROVIDER_OUTPUT_TOKENS,
+          input: [{ role: 'system', content: [{ type: 'input_text', text: 'You create concise ecommerce visual briefs. Respect brand restrictions. Never make unsupported product claims.' }] }, { role: 'user', content: [{ type: 'input_text', text: JSON.stringify(input) }] }],
+          text: { format: { type: 'json_schema', name: 'ecommerce_copy', strict: true, schema: { type: 'object', additionalProperties: false, properties: { imagePrompt: { type: 'string' }, headline: { type: 'string' }, body: { type: 'string' }, hashtags: { type: 'array', items: { type: 'string' } }, cta: { type: 'string' } }, required: ['imagePrompt', 'headline', 'body', 'hashtags', 'cta'] } } }
+        }),
+        signal
       })
+      if (!response.ok) {
+        await cancelResponseBody(response)
+        throw new Error(`OpenAI copy request failed: ${response.status}`)
+      }
+      return parseGeneratedCopy(responseOutputText(await readBoundedJsonResponse(response, MAX_TEXT_PROVIDER_RESPONSE_BYTES, 'OpenAI copy response')))
     })
-    if (!response.ok) {
-      await cancelResponseBody(response)
-      throw new Error(`OpenAI copy request failed: ${response.status}`)
-    }
-    return parseGeneratedCopy(responseOutputText(await readBoundedJsonResponse(response, MAX_TEXT_PROVIDER_RESPONSE_BYTES, 'OpenAI copy response')))
   }
 }
 
@@ -263,24 +283,27 @@ export class OpenAIImageProvider implements ImageProvider {
 
   async generate(input: { prompt: string; aspectRatio: string; referenceImageUrls: string[] }): Promise<{ imageBase64: string; revisedPrompt?: string }> {
     const sizeByRatio: Record<string, string> = { '1:1': '1024x1024', '4:5': '1024x1280', '9:16': '1024x1536', '16:5': '1536x1024' }
-    const response = await fetch('https://api.openai.com/v1/images/generations', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-image-2', prompt: input.prompt, size: sizeByRatio[input.aspectRatio] ?? '1024x1024', quality: 'medium', output_format: 'png' })
+    return withProviderDeadline('OpenAI image', async (signal) => {
+      const response = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-image-2', prompt: input.prompt, size: sizeByRatio[input.aspectRatio] ?? '1024x1024', quality: 'medium', output_format: 'png' }),
+        signal
+      })
+      if (!response.ok) {
+        await cancelResponseBody(response)
+        throw new Error(`OpenAI image request failed: ${response.status}`)
+      }
+      const payload = await readBoundedJsonResponse(response, MAX_IMAGE_PROVIDER_RESPONSE_BYTES, 'OpenAI image response')
+      if (!isRecord(payload) || !Array.isArray(payload.data) || payload.data.length !== 1 || !isRecord(payload.data[0])) {
+        throw new Error('OpenAI image response is invalid')
+      }
+      const image = payload.data[0]
+      if (!isBoundedBase64Png(image.b64_json)
+        || (image.revised_prompt !== undefined && !boundedText(image.revised_prompt, 4_000))) {
+        throw new Error('OpenAI image response is invalid')
+      }
+      return { imageBase64: image.b64_json, revisedPrompt: typeof image.revised_prompt === 'string' ? image.revised_prompt.trim() : undefined }
     })
-    if (!response.ok) {
-      await cancelResponseBody(response)
-      throw new Error(`OpenAI image request failed: ${response.status}`)
-    }
-    const payload = await readBoundedJsonResponse(response, MAX_IMAGE_PROVIDER_RESPONSE_BYTES, 'OpenAI image response')
-    if (!isRecord(payload) || !Array.isArray(payload.data) || payload.data.length !== 1 || !isRecord(payload.data[0])) {
-      throw new Error('OpenAI image response is invalid')
-    }
-    const image = payload.data[0]
-    if (!isBoundedBase64Png(image.b64_json)
-      || (image.revised_prompt !== undefined && !boundedText(image.revised_prompt, 4_000))) {
-      throw new Error('OpenAI image response is invalid')
-    }
-    return { imageBase64: image.b64_json, revisedPrompt: typeof image.revised_prompt === 'string' ? image.revised_prompt.trim() : undefined }
   }
 }

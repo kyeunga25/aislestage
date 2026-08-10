@@ -44,11 +44,12 @@
 3. 每次只使用一張商品原圖、一個候選及固定輸出尺寸，retry 與並發有上限；
 4. provider success response 以串流實際位元組及 chunk 數限制讀取，不以 `Content-Length` 作唯一保護；文字 JSON 上限 64 KiB，image JSON 上限 12 MiB，解碼 PNG 上限 8 MiB；
 5. JSON MIME／UTF-8、exact local schema、欄位長度、base64 及 PNG signature 全部再驗證；文字 request 的 output token 上限固定，未使用的 error body 立即取消；
-6. enqueue 前先完成 output reservation；成功 settle，永久失敗 release；
-7. 每個 workspace 的並發、每日 assisted output 與抽象 budget units 不超過 deployment policy；
-8. `ASSISTED_EVALUATION=approved`，固定合成 fixtures、OCR／保真檢查及人工評分全部通過；
-9. `ASSISTED_BUDGET_MODE=approved`，而且 provider credential 只存在於 server-side secret；
-10. `GENERATION_MODE=disabled` 可立即停止新請求，既有 Queue message 亦會 fail closed 並退回 reservation。
+6. 每個 provider request 由送出至完整讀取 response body 共用 30 秒 deadline；逾時會中止 request、按 408 類暫時故障以 60 秒延遲最多重試三次，之後才永久失敗並釋放一次 reservation；
+7. enqueue 前先完成 output reservation；成功 settle，永久失敗 release；
+8. 每個 workspace 的並發、每日 assisted output 與抽象 budget units 不超過 deployment policy；
+9. `ASSISTED_EVALUATION=approved`，固定合成 fixtures、OCR／保真檢查及人工評分全部通過；
+10. `ASSISTED_BUDGET_MODE=approved`，而且 provider credential 只存在於 server-side secret；
+11. `GENERATION_MODE=disabled` 可立即停止新請求，既有 Queue message 亦會 fail closed 並退回 reservation。
 
 Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 workspace 的商業保證。AI Gateway analytics 不能取代應用層的用量與一致性控制。
 
@@ -62,7 +63,7 @@ Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 
 - [FLUX.2 dev model](https://developers.cloudflare.com/workers-ai/models/flux-2-dev/) — multi-reference 候選能力；
 - [AI Gateway logging](https://developers.cloudflare.com/ai-gateway/observability/logging/) — metadata-only logging 與 payload collection 控制；
 - [AI Gateway Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/) — 支援範圍、額外費用、spend limits 與 ZDR 邊界；
-- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/) 及 [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) — 128 MB isolate 記憶體界線與避免無界 buffer 的官方依據；
+- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)、[Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) 及 [AbortController](https://developers.cloudflare.com/workers/runtime-apis/web-standards/#abortcontroller-and-abortsignal) — 128 MB isolate 記憶體界線、避免無界 buffer 及中止逾時 subrequest 的官方依據；
 - [Cloudflare Queues delivery](https://developers.cloudflare.com/queues/reference/how-queues-works/) — at-least-once delivery 及 duplicate-safe consumer 要求。
 
 這些資料易變。每次模型評估或 release 前必須重新核對官方頁面的更新日期、模型狀態、價格、輸入格式、logging policy 與限制。

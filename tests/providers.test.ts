@@ -25,6 +25,7 @@ function validCopyPayload(overrides: Record<string, unknown> = {}) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -202,6 +203,57 @@ describe('assisted provider privacy boundary', () => {
     await expect(new OpenAICampaignPlanningProvider('test-key').createPlan(syntheticBrief()))
       .rejects.toThrow('request failed: 429')
     expect(cancelled).toBe(true)
+  })
+
+  it('aborts a provider request that never returns response headers at the fixed deadline', async () => {
+    vi.useFakeTimers()
+    let aborted = false
+    vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.signal) throw new Error('Provider request did not include an abort signal')
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => {
+          aborted = true
+          reject(init.signal!.reason)
+        }, { once: true })
+      })
+    }))
+
+    const outcome = new OpenAICampaignPlanningProvider('test-key').createPlan(syntheticBrief()).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+    await vi.advanceTimersByTimeAsync(30_000)
+    const error = await outcome
+    expect(error).toBeInstanceOf(TypeError)
+    expect((error as Error).message).toContain('request failed: 408')
+    expect(aborted).toBe(true)
+  })
+
+  it('keeps the same deadline active while reading a stalled provider body', async () => {
+    vi.useFakeTimers()
+    let bodyAborted = false
+    vi.stubGlobal('fetch', vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.signal) throw new Error('Provider request did not include an abort signal')
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{'))
+          init.signal!.addEventListener('abort', () => {
+            bodyAborted = true
+            controller.error(init.signal!.reason)
+          }, { once: true })
+        }
+      }), { headers: { 'content-type': 'application/json' } })
+    }))
+
+    const outcome = new OpenAICampaignPlanningProvider('test-key').createPlan(syntheticBrief()).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+    await vi.advanceTimersByTimeAsync(30_000)
+    const error = await outcome
+    expect(error).toBeInstanceOf(TypeError)
+    expect((error as Error).message).toContain('request failed: 408')
+    expect(bodyAborted).toBe(true)
   })
 
   it('rejects copy payloads with fields outside the exact local contract', async () => {

@@ -693,6 +693,39 @@ describe('workspace authorization and output allowance integrity', () => {
     const payload = await listed.json() as { generations: Array<{ id: string; errorMessage: string }> }
     expect(payload.generations.find((item) => item.id === id)?.errorMessage).not.toContain('provider')
   })
+
+  it('retries a provider deadline without releasing allowance, then releases exactly once after the retry limit', async () => {
+    const account = await registerAccount('Provider Deadline Retry')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const messageId = crypto.randomUUID()
+    const fetchMock = vi.fn(async () => { throw new TypeError('OpenAI copy request failed: 408') })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const retry = await deliver({ generationId: id, input }, 1, messageId, assistedEnv)
+    expect(retry.retryMessages).toEqual([{ msgId: messageId }])
+    expect(retry.explicitAcks).toHaveLength(0)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'release')).toBe(0)
+    expect(await env.DB.prepare('SELECT status, error_message AS errorMessage FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'queued', errorMessage: '素材處理暫時未能完成，系統會自動重試。' })
+
+    const terminal = await deliver({ generationId: id, input }, 4, messageId, assistedEnv)
+    expect(terminal.explicitAcks).toEqual([messageId])
+    expect(terminal.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(1)
+    expect(await env.DB.prepare('SELECT status, error_message AS errorMessage FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'failed', errorMessage: '素材未能完成，可用輸出數已自動退回。' })
+  })
 })
 
 describe('human output review and controlled delivery', () => {

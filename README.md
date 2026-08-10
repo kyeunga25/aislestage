@@ -147,6 +147,7 @@ Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 bin
 - **預設及自部署基線不使用 AI 模型**：`deterministic` compositor 直接組合已批准商品圖與文字；新部署保持 generation／assisted 功能停用。
 - Repository 包含一個**可選但預設停用**的 OpenAI adapter：[`gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra) 經 [Responses API／Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) 提供受限規劃與文案結構；[`gpt-image-2`](https://developers.openai.com/api/docs/models/gpt-image-2) 經 [Image generation API](https://developers.openai.com/api/docs/guides/image-generation) 產生背景候選。
 - Adapter success response 具實際串流 byte／chunk 上限、嚴格 JSON／欄位驗證及 bounded PNG 檢查；不以 `Content-Length` 作唯一大小保護。
+- Adapter request 及完整 response body 共用 30 秒 deadline；逾時中止後只按 bounded Queue policy 重試，永久失敗才冪等退回 reserved output。
 - [Workers AI model catalog](https://developers.cloudflare.com/workers-ai/models/) 及 [AI Gateway](https://developers.cloudflare.com/ai-gateway/) 只作評估與治理參考，**不是目前已接駁的 production provider**。
 - 模型名稱、輸入資料、價格、可用地區及保留政策會變動。啟用前必須重新做合成資料評估、人工保真檢查、法律／資料處理核對及成本上限；不得把真實 prompt、response、商品圖、brief 或 key 寫入 repository 或 log。
 
