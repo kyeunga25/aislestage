@@ -773,7 +773,24 @@ async function sessionResponse(env: Env, request: Request, userId: string, statu
   const token = base64Url(crypto.getRandomValues(new Uint8Array(32)))
   const tokenHash = await sha256(token)
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString()
-  await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(tokenHash, userId, expiresAt).run()
+  try {
+    await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(tokenHash, userId, expiresAt).run()
+  } catch {
+    try {
+      const stored = await env.DB.prepare(`
+        SELECT user_id AS userId, expires_at AS expiresAt
+        FROM sessions
+        WHERE token_hash = ?
+      `).bind(tokenHash).first<{ userId: string; expiresAt: string }>()
+      if (!stored || stored.userId !== userId || stored.expiresAt !== expiresAt) {
+        if (stored) console.error('session-create-reconciliation-conflict')
+        return json({ error: 'Unable to create session.' }, { status: 503 })
+      }
+    } catch {
+      console.error('session-create-reconciliation-failed')
+      return json({ error: 'Unable to create session.' }, { status: 503 })
+    }
+  }
   const session = await loadSessionByHash(env, tokenHash)
   if (!session) return json({ error: 'Unable to create session.' }, { status: 503 })
   return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers: { 'set-cookie': sessionCookie(token, request) } })
