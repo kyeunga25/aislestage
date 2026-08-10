@@ -52,6 +52,7 @@
 - [x] desktop／mobile 無水平溢出，導覽、語言切換及 deep route browser QA；
 - [x] Cloudflare Access RS256 JWT、issuer、audience 及 identity claim 驗證；
 - [x] Access subject hash 綁定、active D1 membership 與受控 beta workspace 建立；
+- [x] Access auto-provision batch post-commit failure 以 exact active subject／email 恢復；未提交或 reconciliation 不可讀回 `503 unavailable`，不誤報 membership denial；
 - [x] Access 模式停用密碼登入／註冊，並使用同網域 Access logout；
 - [x] password auth event 未提交或 rate-limit count 不可讀時返回雙語 no-store `503`；成功憑證不建立 session，亦不以廣泛 catch 隱藏其他錯誤；
 - [x] auth event 以同一 server-generated ID／exact hashes 做一次有界重試；post-commit failure 與 transient pre-commit failure 均只留下單一 event；

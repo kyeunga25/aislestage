@@ -949,6 +949,7 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
       const workspaceId = crypto.randomUUID()
       const randomPassword = base64Url(crypto.getRandomValues(new Uint8Array(32)))
       const passwordHash = await hashPassword(randomPassword)
+      let provisionReportedFailure = false
       try {
         await env.DB.batch([
           env.DB.prepare(`
@@ -960,18 +961,33 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
           env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialOutputAllowance(env))
         ])
       } catch {
-        // A concurrent first request may have provisioned the same identity.
+        provisionReportedFailure = true
       }
-      user = await env.DB.prepare(`
-        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
-        FROM users
-        WHERE access_subject_hash = ? AND email = ? AND auth_mode = 'access' AND account_status = 'active'
-      `).bind(subjectHash, identity.email).first<AuthUser>()
+      try {
+        user = await env.DB.prepare(`
+          SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+          FROM users
+          WHERE access_subject_hash = ? AND email = ? AND auth_mode = 'access' AND account_status = 'active'
+        `).bind(subjectHash, identity.email).first<AuthUser>()
+      } catch {
+        console.error('access-provision-reconciliation-failed')
+        return accessError('unavailable', 503, 'Access workspace provisioning is temporarily unavailable.')
+      }
+      if (!user) {
+        if (provisionReportedFailure) console.error('access-provision-reconciliation-missing')
+        return accessError('unavailable', 503, 'Access workspace provisioning is temporarily unavailable.')
+      }
     }
   }
 
   if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AisleStage workspace.')
-  const workspaces = await workspacesForUser(env, user.id)
+  let workspaces: Workspace[]
+  try {
+    workspaces = await workspacesForUser(env, user.id)
+  } catch {
+    console.error('access-workspace-reconciliation-failed')
+    return accessError('unavailable', 503, 'Access workspace membership is temporarily unavailable.')
+  }
   if (!workspaces[0]) return accessError('membership-required', 403, 'This account has no active workspace membership.')
   return { user, currentWorkspace: workspaces[0] }
 }

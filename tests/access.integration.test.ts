@@ -175,6 +175,80 @@ describe('Cloudflare Access authentication', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 1 })
   })
 
+  it('reconciles Access auto-provision that commits before D1 reports failure', async () => {
+    const fixture = await accessFixture()
+    let provisionBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (provisionBatch) {
+          provisionBatch = false
+          throw new TypeError('synthetic response failure after Access provision commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: ambiguousDb })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      authenticated: true,
+      user: { email: fixture.email, accountType: 'beta' },
+      currentWorkspace: { role: 'owner', accessStatus: 'active', availableOutputs: 3, reservedOutputs: 0 }
+    })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM workspace_memberships wm
+      JOIN users u ON u.id = wm.user_id
+      WHERE u.email = ? AND wm.role = 'owner'
+    `).bind(fixture.email).first()).toEqual({ count: 1 })
+  })
+
+  it('reports Access unavailable when auto-provision definitely does not commit', async () => {
+    const fixture = await accessFixture()
+    const rejectingDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: async () => { throw new TypeError('synthetic failure before Access provision commit') }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: rejectingDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 0 })
+  })
+
+  it('reports Access unavailable when auto-provision reconciliation cannot be read', async () => {
+    const fixture = await accessFixture()
+    const unreadableDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('WHERE access_subject_hash = ? AND email = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic Access provision reconciliation failure') }
+          })
+        }
+      },
+      batch: async () => { throw new TypeError('synthetic failure before Access provision commit') }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: unreadableDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 0 })
+  })
+
   it('keeps a valid Access identity outside the app when no workspace invitation can be provisioned', async () => {
     const fixture = await accessFixture({ autoProvision: false })
     const response = await dispatch('/api/session', { headers: { 'cf-access-jwt-assertion': fixture.token } }, fixture.accessEnv)
