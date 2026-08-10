@@ -1205,10 +1205,29 @@ function productAssetNotFound() {
   return json({ error: '找不到這張商品圖片。 Product asset not found.' }, { status: 404 })
 }
 
+function productAssetUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人商品圖片暫時無法讀取。 Private product image is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function productAsset(request: Request, env: Env, session: SessionContext, assetId: string) {
-  const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  let asset: StoredProductAsset | null
+  try {
+    asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  } catch {
+    console.error('product-asset-metadata-read-failed')
+    return productAssetUnavailable()
+  }
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
-  const object = await env.MEDIA_BUCKET.get(asset.objectKey)
+  let object: R2ObjectBody | null
+  try {
+    object = await env.MEDIA_BUCKET.get(asset.objectKey)
+  } catch {
+    console.error('product-asset-object-read-failed')
+    return productAssetUnavailable()
+  }
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
   if (!hasCanonicalProductAssetMetadata(asset, object)) {
     await object.body.cancel().catch(() => undefined)

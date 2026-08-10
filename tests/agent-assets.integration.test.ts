@@ -135,6 +135,55 @@ describe('private product assets', () => {
     expect(forbiddenDelete.status).toBe(404)
   })
 
+  it('reports private product metadata unavailable without weakening workspace scoping', async () => {
+    const owner = await registerAccount('Asset Metadata Availability')
+    const uploaded = await uploadPng(owner.cookie, 'metadata-availability.png')
+    const { asset } = await uploaded.json() as { asset: { previewUrl: string } }
+    const metadataFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM media_assets a') || !query.includes("a.kind = 'product-source'")) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic product metadata read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(asset.previewUrl, {
+      headers: { cookie: owner.cookie }
+    }, { ...env, DB: metadataFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '私人商品圖片暫時無法讀取。 Private product image is temporarily unavailable.'
+    })
+  })
+
+  it('reports private product object storage unavailable after scoped metadata succeeds', async () => {
+    const owner = await registerAccount('Asset Object Availability')
+    const uploaded = await uploadPng(owner.cookie, 'object-availability.png')
+    const { asset } = await uploaded.json() as { asset: { previewUrl: string } }
+    const unavailableBucket = {
+      get: async () => { throw new TypeError('synthetic private object read failure') }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    const response = await dispatch(asset.previewUrl, {
+      headers: { cookie: owner.cookie }
+    }, { ...env, MEDIA_BUCKET: unavailableBucket })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '私人商品圖片暫時無法讀取。 Private product image is temporarily unavailable.'
+    })
+  })
+
   it('reconciles an asset insert that commits before D1 reports failure', async () => {
     const owner = await registerAccount('Ambiguous Asset Commit')
     const ambiguousDb = {
