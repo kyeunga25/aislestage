@@ -806,6 +806,18 @@ function extensionForContentType(contentType: string) {
   return 'jpg'
 }
 
+function sessionUnavailable() {
+  return json({ error: '未能建立登入工作階段。 Unable to create session.' }, { status: 503 })
+}
+
+async function removeUndeliveredSession(env: Env, tokenHash: string) {
+  try {
+    await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
+  } catch {
+    console.error('undelivered-session-cleanup-failed')
+  }
+}
+
 async function sessionResponse(env: Env, request: Request, userId: string, status = 200) {
   const token = base64Url(crypto.getRandomValues(new Uint8Array(32)))
   const tokenHash = await sha256(token)
@@ -821,15 +833,26 @@ async function sessionResponse(env: Env, request: Request, userId: string, statu
       `).bind(tokenHash).first<{ userId: string; expiresAt: string }>()
       if (!stored || stored.userId !== userId || stored.expiresAt !== expiresAt) {
         if (stored) console.error('session-create-reconciliation-conflict')
-        return json({ error: 'Unable to create session.' }, { status: 503 })
+        return sessionUnavailable()
       }
     } catch {
       console.error('session-create-reconciliation-failed')
-      return json({ error: 'Unable to create session.' }, { status: 503 })
+      await removeUndeliveredSession(env, tokenHash)
+      return sessionUnavailable()
     }
   }
-  const session = await loadSessionByHash(env, tokenHash)
-  if (!session) return json({ error: 'Unable to create session.' }, { status: 503 })
+  let session: SessionContext | null
+  try {
+    session = await loadSessionByHash(env, tokenHash)
+  } catch {
+    console.error('session-authorization-reload-failed')
+    await removeUndeliveredSession(env, tokenHash)
+    return sessionUnavailable()
+  }
+  if (!session) {
+    await removeUndeliveredSession(env, tokenHash)
+    return sessionUnavailable()
+  }
   return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers: { 'set-cookie': sessionCookie(token, request) } })
 }
 

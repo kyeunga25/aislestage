@@ -343,6 +343,72 @@ describe('restricted registration authentication', () => {
     expect(await session.json()).toMatchObject({ authenticated: true, user: { id: account.user.id } })
   })
 
+  it('returns a bilingual failure without a cookie when a session insert does not commit', async () => {
+    const account = await registerAccount('Rejected Session Insert')
+    await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    })
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO sessions')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before session commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const login = await dispatch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.22', origin: 'https://app.test' },
+      body: JSON.stringify({ email: account.user.email, password: 'SecurePass123!' })
+    }, { ...env, DB: rejectingDb })
+
+    expect(login.status).toBe(503)
+    expect(login.headers.get('set-cookie')).toBeNull()
+    expect(await login.json()).toEqual({ error: '未能建立登入工作階段。 Unable to create session.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?')
+      .bind(account.user.id)
+      .first()).toEqual({ count: 0 })
+  })
+
+  it('removes an undelivered session when authorization reload fails', async () => {
+    const account = await registerAccount('Rejected Session Reload')
+    await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    })
+    const reloadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM sessions s')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic session authorization reload failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const login = await dispatch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.23', origin: 'https://app.test' },
+      body: JSON.stringify({ email: account.user.email, password: 'SecurePass123!' })
+    }, { ...env, DB: reloadFailureDb })
+
+    expect(login.status).toBe(503)
+    expect(login.headers.get('set-cookie')).toBeNull()
+    expect(await login.json()).toEqual({ error: '未能建立登入工作階段。 Unable to create session.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?')
+      .bind(account.user.id)
+      .first()).toEqual({ count: 0 })
+  })
+
   it('reconciles an authentication event that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Auth Event')
     await dispatch('/api/auth/logout', {
