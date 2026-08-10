@@ -2336,24 +2336,42 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   }
 }
 
+function generationListUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function listGenerations(request: Request, env: Env, session: SessionContext) {
   const url = new URL(request.url)
   const workspaceId = url.searchParams.get('workspaceId') || session.currentWorkspace.id
   if (workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const workspace = await getWorkspace(env, session.user.id, workspaceId)
+  let workspace: Workspace | null
+  try {
+    workspace = await getWorkspace(env, session.user.id, workspaceId)
+  } catch {
+    console.error('generation-list-workspace-read-failed')
+    return generationListUnavailable()
+  }
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const result = await env.DB.prepare(`
-    SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
-      output_content_type AS contentType, approved_revision AS approvedRevision,
-      error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
-      reviewed_at AS reviewedAt, composition_version AS compositionVersion,
-      generation_mode AS generationMode, output_sha256 AS outputSha256
-    FROM generations
-    WHERE workspace_id = ?
-    ORDER BY created_at DESC
-    LIMIT 20
-  `).bind(workspace.id).all<GenerationRow>()
-  return json({ generations: result.results.map(generationPayload) })
+  try {
+    const result = await env.DB.prepare(`
+      SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
+        output_content_type AS contentType, approved_revision AS approvedRevision,
+        error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
+        reviewed_at AS reviewedAt, composition_version AS compositionVersion,
+        generation_mode AS generationMode, output_sha256 AS outputSha256
+      FROM generations
+      WHERE workspace_id = ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).bind(workspace.id).all<GenerationRow>()
+    return json({ generations: result.results.map(generationPayload) })
+  } catch {
+    console.error('generation-list-read-failed')
+    return generationListUnavailable()
+  }
 }
 
 type CanonicalOutputResult =

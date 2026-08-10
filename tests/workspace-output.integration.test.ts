@@ -540,6 +540,60 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = 'release'").bind(account.currentWorkspace.id).first()).toEqual({ count: 3 })
   })
 
+  it('reports the generation list unavailable when workspace scope cannot be rechecked', async () => {
+    const account = await registerAccount('Generation Scope Availability')
+    const scopeFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('WHERE wm.user_id = ? AND wm.workspace_id = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic generation workspace scope failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: scopeFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    })
+  })
+
+  it('reports the generation list unavailable after workspace scope succeeds', async () => {
+    const account = await registerAccount('Generation List Availability')
+    const listFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations') || !query.includes('ORDER BY created_at DESC')) return statement
+        return {
+          bind: () => ({
+            all: async () => { throw new TypeError('synthetic generation list failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: listFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    })
+  })
+
   it('prevents one workspace from listing, generating with, or reading another workspace assets', async () => {
     const ownerA = await registerAccount('Owner A')
     const ownerB = await registerAccount('Owner B')
