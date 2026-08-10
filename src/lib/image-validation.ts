@@ -70,9 +70,11 @@ export function hasValidPngStructure(bytes: Uint8Array) {
   let chunkCount = 0
   let sawHeader = false
   let sawPalette = false
+  let sawTransparency = false
   let sawImageData = false
   let endedImageData = false
   let imageDataBytes = 0
+  let paletteEntries = 0
   let bitDepth = -1
   let colorType = -1
 
@@ -107,11 +109,17 @@ export function hasValidPngStructure(bytes: Uint8Array) {
       if (bytes[dataOffset + 10] !== 0 || bytes[dataOffset + 11] !== 0 || bytes[dataOffset + 12] > 1) return false
       sawHeader = true
     } else if (name === 'PLTE') {
-      const paletteEntries = length / 3
-      if (sawPalette || sawImageData || colorType === 0 || colorType === 4
+      paletteEntries = length / 3
+      if (sawPalette || sawTransparency || sawImageData || colorType === 0 || colorType === 4
         || length === 0 || length > 768 || length % 3 !== 0
         || (colorType === 3 && paletteEntries > 2 ** bitDepth)) return false
       sawPalette = true
+    } else if (name === 'tRNS') {
+      const validLength = (colorType === 0 && length === 2)
+        || (colorType === 2 && length === 6)
+        || (colorType === 3 && sawPalette && length <= paletteEntries)
+      if (sawTransparency || sawImageData || !validLength) return false
+      sawTransparency = true
     } else if (name === 'IDAT') {
       if (!sawHeader || endedImageData || (colorType === 3 && !sawPalette)) return false
       sawImageData = true

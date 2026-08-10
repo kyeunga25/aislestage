@@ -116,7 +116,21 @@ function pngWithAncillaryChunk(type: string, data: Uint8Array) {
   return joinBytes([source.slice(0, 33), pngChunk(type, data), source.slice(33)])
 }
 
-function indexedPngWithPaletteEntries(entries: number) {
+function pngWithColorTypeChunks(colorType: number, beforeImageData: Uint8Array[], afterImageData: Uint8Array[] = []) {
+  const source = validPngBytes()
+  source[25] = colorType
+  writeUint32BigEndian(source, 29, pngCrc(source, 12, 29))
+  const imageDataEnd = source.byteLength - 12
+  return joinBytes([
+    source.slice(0, 33),
+    ...beforeImageData,
+    source.slice(33, imageDataEnd),
+    ...afterImageData,
+    source.slice(imageDataEnd)
+  ])
+}
+
+function indexedPngWithPaletteEntries(entries: number, transparency?: Uint8Array) {
   const header = new Uint8Array(13)
   writeUint32BigEndian(header, 0, 1)
   writeUint32BigEndian(header, 4, 1)
@@ -128,6 +142,7 @@ function indexedPngWithPaletteEntries(entries: number) {
     new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
     pngChunk('IHDR', header),
     pngChunk('PLTE', palette),
+    ...(transparency === undefined ? [] : [pngChunk('tRNS', transparency)]),
     pngChunk('IDAT', new Uint8Array([120, 156, 99, 96, 0, 0, 0, 2, 0, 1])),
     pngChunk('IEND', new Uint8Array())
   ]
@@ -503,6 +518,38 @@ describe('private product assets', () => {
   it('rejects an indexed-color PNG whose palette exceeds its bit depth before storage', async () => {
     const owner = await registerAccount('Invalid Indexed PNG Palette')
     const response = await uploadImage(owner.cookie, indexedPngWithPaletteEntries(3), 'indexed.png', 'image/png')
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(0)
+  })
+
+  it.each([
+    { label: 'greyscale', bytes: pngWithColorTypeChunks(0, [pngChunk('tRNS', new Uint8Array(2))]) },
+    { label: 'truecolor', bytes: pngWithColorTypeChunks(2, [pngChunk('tRNS', new Uint8Array(6))]) },
+    { label: 'indexed-color', bytes: indexedPngWithPaletteEntries(2, new Uint8Array([0, 255])) }
+  ])('accepts a structurally valid $label PNG transparency chunk', async ({ bytes }) => {
+    const owner = await registerAccount('Valid PNG Transparency')
+    const response = await uploadImage(owner.cookie, bytes, 'transparent.png', 'image/png')
+
+    expect(response.status).toBe(201)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 1 })
+  })
+
+  it.each([
+    { label: 'one-byte greyscale value', bytes: pngWithColorTypeChunks(0, [pngChunk('tRNS', new Uint8Array(1))]) },
+    { label: 'five-byte truecolor value', bytes: pngWithColorTypeChunks(2, [pngChunk('tRNS', new Uint8Array(5))]) },
+    { label: 'alpha table longer than its palette', bytes: indexedPngWithPaletteEntries(2, new Uint8Array(3)) },
+    { label: 'greyscale alpha channel', bytes: pngWithColorTypeChunks(4, [pngChunk('tRNS', new Uint8Array(2))]) },
+    { label: 'truecolor alpha channel', bytes: pngWithColorTypeChunks(6, [pngChunk('tRNS', new Uint8Array(6))]) },
+    { label: 'duplicate chunks', bytes: pngWithColorTypeChunks(0, [pngChunk('tRNS', new Uint8Array(2)), pngChunk('tRNS', new Uint8Array(2))]) },
+    { label: 'chunk after image data', bytes: pngWithColorTypeChunks(0, [], [pngChunk('tRNS', new Uint8Array(2))]) },
+    { label: 'indexed chunk before its palette', bytes: pngWithColorTypeChunks(3, [pngChunk('tRNS', new Uint8Array(1)), pngChunk('PLTE', new Uint8Array(3))]) },
+    { label: 'truecolor palette after transparency', bytes: pngWithColorTypeChunks(2, [pngChunk('tRNS', new Uint8Array(6)), pngChunk('PLTE', new Uint8Array(3))]) }
+  ])('rejects invalid PNG transparency semantics: $label', async ({ bytes }) => {
+    const owner = await registerAccount('Invalid PNG Transparency')
+    const response = await uploadImage(owner.cookie, bytes, 'invalid-transparency.png', 'image/png')
 
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
