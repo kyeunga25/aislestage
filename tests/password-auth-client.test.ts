@@ -121,6 +121,21 @@ describe('password authentication client', () => {
     )
   })
 
+  it('rejects an authentication response whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(16 * 1024)}${JSON.stringify(canonicalSession)}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(submitPasswordAuth({
+      mode: 'login',
+      email: 'owner@example.test',
+      password: 'correct-password'
+    })).rejects.toThrow(
+      '登入服務暫時無法使用。 Authentication service is temporarily unavailable.'
+    )
+  })
+
   it('does not expose a server error detail to the form', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: 'synthetic private database detail'

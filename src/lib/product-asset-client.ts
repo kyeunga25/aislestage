@@ -1,3 +1,4 @@
+import { readBoundedJsonResponse } from './bounded-json-response'
 import type { ProductAsset } from './types'
 
 export const productAssetTypeMessage = '只支援 PNG、JPEG 或靜態 WebP 圖片。 Only PNG, JPEG, or static WebP images are supported.'
@@ -6,6 +7,7 @@ export const productAssetResponseInvalidMessage = '未能確認商品圖片上�
 export const productAssetUploadUnavailableMessage = '商品圖片上載暫時無法使用。 Product image upload is temporarily unavailable.'
 
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
+const MAX_PRODUCT_ASSET_RESPONSE_BYTES = 4 * 1024
 const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'previewUrl'])
 const responseKeys = new Set(['asset'])
 const imageNames = new Map<ProductAsset['contentType'], string>([
@@ -87,7 +89,7 @@ export async function uploadProductAsset(file: File) {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(productAssetResponseInvalidMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_PRODUCT_ASSET_RESPONSE_BYTES)
   if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(productAssetResponseInvalidMessage)
   const asset = normalizeProductAsset(data.asset, file)
   if (!asset) throw new Error(productAssetResponseInvalidMessage)

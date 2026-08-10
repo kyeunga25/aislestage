@@ -1,7 +1,10 @@
+import { readBoundedJsonResponse } from './bounded-json-response'
+
 export const passwordLogoutInvalidResponseMessage = '未能確認登出狀態。 Unable to verify the logout state.'
 export const passwordLogoutUnavailableMessage = '登出暫時無法完成，工作區仍保持登入。 Logout is temporarily unavailable; the workspace remains signed in.'
 
 const responseKeys = new Set(['ok'])
+const MAX_LOGOUT_RESPONSE_BYTES = 1024
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -35,7 +38,7 @@ export async function logoutPasswordSession() {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(passwordLogoutInvalidResponseMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_LOGOUT_RESPONSE_BYTES)
   if (!isRecord(data) || !hasExactKeys(data, responseKeys) || data.ok !== true) {
     throw new Error(passwordLogoutInvalidResponseMessage)
   }

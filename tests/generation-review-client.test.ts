@@ -112,6 +112,20 @@ describe('generation review client', () => {
     )
   })
 
+  it('rejects a review response whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(16 * 1024)}${JSON.stringify({
+        generation: reviewedGeneration('approved'),
+        replayed: false
+      })}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(submitGenerationReview(currentDraft(), 'approve')).rejects.toThrow(
+      '未能確認輸出審核結果。 Unable to verify the output review.'
+    )
+  })
+
   it('does not expose a server error detail', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: 'synthetic private generation detail'

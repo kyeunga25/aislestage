@@ -1,3 +1,4 @@
+import { readBoundedJsonResponse } from './bounded-json-response'
 import { normalizeGenerationResults } from './generation-loader'
 import type { GenerationResult } from './types'
 
@@ -6,6 +7,7 @@ export const generationReviewResponseInvalidMessage = '未能確認輸出審核�
 export const generationReviewUnavailableMessage = '輸出審核暫時無法使用。 Output review is temporarily unavailable.'
 
 const responseKeys = new Set(['generation', 'replayed'])
+const MAX_GENERATION_REVIEW_RESPONSE_BYTES = 16 * 1024
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -90,7 +92,7 @@ export async function submitGenerationReview(result: GenerationResult, decision:
     await response.body?.cancel().catch(() => undefined)
     throw new Error(generationReviewResponseInvalidMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_GENERATION_REVIEW_RESPONSE_BYTES)
   if (!isRecord(data)
     || !hasExactKeys(data, responseKeys)
     || typeof data.replayed !== 'boolean') throw new Error(generationReviewResponseInvalidMessage)

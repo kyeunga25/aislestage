@@ -1,4 +1,5 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
+import { readBoundedJsonResponse } from './bounded-json-response'
 import { normalizeGenerationResults } from './generation-loader'
 import type { AspectRatio, BrandPack, GenerationResult, Product, WorkflowId } from './types'
 import { workflows } from './workflows'
@@ -25,6 +26,7 @@ export const campaignPackResponseInvalidMessage = '未能確認 Campaign Pack �
 export const campaignPackUnavailableMessage = 'Campaign Pack 建立暫時無法使用。 Campaign Pack creation is temporarily unavailable.'
 
 const MAX_CAMPAIGN_PACK_BODY_BYTES = 32_768
+const MAX_CAMPAIGN_PACK_RESPONSE_BYTES = 64 * 1024
 const requestKeys = new Set(['idempotencyKey', 'workspaceId', 'approvedRevision', 'intent', 'brand', 'product', 'referenceAssetIds', 'outputs'])
 const outputKeys = new Set(['workflowId', 'aspectRatio'])
 const createdResponseKeys = new Set(['campaignPackId', 'generations', 'reservedOutputs'])
@@ -174,7 +176,7 @@ export async function createCampaignPack(value: CampaignPackClientRequest): Prom
     await response.body?.cancel().catch(() => undefined)
     throw new Error(campaignPackResponseInvalidMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_PACK_RESPONSE_BYTES)
   const pack = normalizePackResponse(data, response.status, canonical.request)
   if (!pack) throw new Error(campaignPackResponseInvalidMessage)
   return pack

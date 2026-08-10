@@ -1,5 +1,6 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
 import { normalizeCampaignAgentState } from './campaign-agent-loader'
+import { readBoundedJsonResponse } from './bounded-json-response'
 import type { CampaignAgentState, CampaignBrief } from './types'
 
 export type CampaignAgentActionRequest =
@@ -10,6 +11,7 @@ export const campaignAgentRequestInvalidMessage = 'Campaign Agent 請求格式�
 export const campaignAgentActionUnavailableMessage = 'Campaign Agent 暫時未能完成這個動作。 Campaign Agent action is temporarily unavailable.'
 
 const MAX_AGENT_CLIENT_BODY_BYTES = 40 * 1024
+const MAX_AGENT_ACTION_RESPONSE_BYTES = 256 * 1024
 const planResponseKeys = new Set(['state'])
 const approvalResponseKeys = new Set(['state', 'replayed'])
 
@@ -105,7 +107,7 @@ export async function submitCampaignAgentAction(request: CampaignAgentActionRequ
     await response.body?.cancel().catch(() => undefined)
     throw new Error(campaignAgentActionUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_AGENT_ACTION_RESPONSE_BYTES)
   const state = request.action === 'plan'
     ? expectedBrief && canonicalPlanResponse(data, expectedBrief)
     : canonicalApprovalResponse(data, request.revision)

@@ -1,3 +1,4 @@
+import { readBoundedJsonResponse } from './bounded-json-response'
 import { normalizeAuthSessionPayload, type AuthedSession } from './workspace-bootstrap-loader'
 
 export type PasswordAuthRequest =
@@ -8,6 +9,7 @@ export const authInputInvalidMessage = '請核對登入資料。 Please check th
 export const authServiceUnavailableMessage = '登入服務暫時無法使用。 Authentication service is temporarily unavailable.'
 
 const MAX_AUTH_CLIENT_BODY_BYTES = 6 * 1024
+const MAX_AUTH_RESPONSE_BYTES = 16 * 1024
 
 function normalizeText(value: unknown, minLength: number, maxLength: number) {
   if (typeof value !== 'string') return null
@@ -84,7 +86,7 @@ export async function submitPasswordAuth(request: PasswordAuthRequest): Promise<
     await response.body?.cancel().catch(() => undefined)
     throw new Error(authServiceUnavailableMessage)
   }
-  const data = await response.json().catch(() => null)
+  const data = await readBoundedJsonResponse(response, MAX_AUTH_RESPONSE_BYTES)
   const session = normalizeAuthSessionPayload(data)
   if (!session) throw new Error(authServiceUnavailableMessage)
   return session

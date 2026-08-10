@@ -74,6 +74,18 @@ describe('Campaign Agent action client', () => {
     )
   })
 
+  it('rejects an action response whose streamed body exceeds the client limit', async () => {
+    const state = buildCampaignPlan(brief, 1)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(256 * 1024)}${JSON.stringify({ state })}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(submitCampaignAgentAction({ action: 'plan', brief })).rejects.toThrow(
+      'Campaign Agent 暫時未能完成這個動作。 Campaign Agent action is temporarily unavailable.'
+    )
+  })
+
   it('accepts an approval for the requested revision', async () => {
     const planned = buildCampaignPlan(brief, 1)
     const state = { ...planned, stage: 'approved' as const, approvedAt: '2026-08-10T12:00:00.000Z' }

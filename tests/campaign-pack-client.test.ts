@@ -109,6 +109,21 @@ describe('Campaign Pack client', () => {
     )
   })
 
+  it('rejects a Campaign Pack response whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(64 * 1024)}${JSON.stringify({
+        campaignPackId,
+        generations: queuedGenerations(),
+        reservedOutputs: 3
+      })}`,
+      { status: 202, headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(createCampaignPack(request)).rejects.toThrow(
+      '未能確認 Campaign Pack 建立結果。 Unable to verify the Campaign Pack creation.'
+    )
+  })
+
   it('does not expose a server error detail', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: 'synthetic allowance ledger detail'

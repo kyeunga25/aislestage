@@ -37,6 +37,17 @@ describe('password logout client', () => {
     )
   })
 
+  it('rejects a logout response whose streamed body exceeds the client limit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(1024)}${JSON.stringify({ ok: true })}`,
+      { headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(logoutPasswordSession()).rejects.toThrow(
+      '未能確認登出狀態。 Unable to verify the logout state.'
+    )
+  })
+
   it('does not expose a server error detail', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: 'synthetic session token hash detail'

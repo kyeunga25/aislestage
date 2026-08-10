@@ -63,6 +63,18 @@ describe('product asset upload client', () => {
     )
   })
 
+  it('rejects an upload response whose streamed body exceeds the client limit', async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `${' '.repeat(4 * 1024)}${JSON.stringify({ asset: canonicalAsset })}`,
+      { status: 201, headers: { 'content-type': 'application/json' } }
+    )))
+
+    await expect(uploadProductAsset(file)).rejects.toThrow(
+      '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
+    )
+  })
+
   it('does not expose a server error detail', async () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
