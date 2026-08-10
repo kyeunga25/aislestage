@@ -15,8 +15,9 @@ import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgen
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
 import { normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
+import { loadGenerations, loadGenerationSnapshot } from './lib/generation-loader'
+import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkspaceSummary } from './lib/types'
 import { workflowById } from './lib/workflows'
-import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkflowId, WorkspaceSummary } from './lib/types'
 
 type AuthedSession = {
   user: AuthUser
@@ -45,13 +46,6 @@ async function loadPlatformStatus() {
   const response = await fetch('/api/health', { credentials: 'same-origin' })
   if (!response.ok) throw new Error('Platform status is unavailable.')
   return response.json() as Promise<PlatformStatus>
-}
-
-async function loadGenerations(workspaceId: string) {
-  const response = await fetch(`/api/generations?workspaceId=${encodeURIComponent(workspaceId)}`, { credentials: 'same-origin' })
-  if (!response.ok) return []
-  const data = await response.json() as { generations?: Array<Omit<GenerationResult, 'title'> & { workflowId: WorkflowId }> }
-  return (data.generations || []).map((item) => ({ ...item, title: `${item.aspectRatio} · ${workflowById(item.workflowId).title}` }))
 }
 
 async function agentAction(path: string, body?: unknown) {
@@ -111,6 +105,16 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function hydrateWorkspace(nextSession: AuthedSession) {
+    const [generationSnapshot, campaignAgent] = await Promise.all([
+      loadGenerationSnapshot(nextSession.currentWorkspace.id),
+      agentAction('').catch(() => initialCampaignAgentState())
+    ])
+    if (generationSnapshot.results) setServerResults(generationSnapshot.results)
+    if (generationSnapshot.error) setNotice(generationSnapshot.error)
+    applyCampaignState(campaignAgent)
+  }
+
   useEffect(() => {
     if (demoMode) return
 
@@ -119,14 +123,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setSession(nextSession)
       if (sessionResult.failure) setAccessFailure(sessionResult.failure)
       setPlatformStatus(nextPlatformStatus)
-      if (nextSession) {
-        const [generations, campaignAgent] = await Promise.all([
-          loadGenerations(nextSession.currentWorkspace.id),
-          agentAction('').catch(() => initialCampaignAgentState())
-        ])
-        setServerResults(generations)
-        applyCampaignState(campaignAgent)
-      }
+      if (nextSession) await hydrateWorkspace(nextSession)
     }).catch(() => {
       setSession(import.meta.env.DEV ? demoSession : null)
       setPlatformStatus(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
@@ -434,7 +431,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
   if (!session) return <AuthPage registrationMode={platformStatus.registrationMode} onAuthenticated={(nextSession) => {
     setSession(nextSession)
-    void Promise.all([loadGenerations(nextSession.currentWorkspace.id), agentAction('').catch(() => initialCampaignAgentState())]).then(([results, campaignAgent]) => { setServerResults(results); applyCampaignState(campaignAgent) })
+    void hydrateWorkspace(nextSession)
   }} />
 
   const userInitial = session.user.name.trim().charAt(0).toUpperCase() || session.user.email.charAt(0).toUpperCase()

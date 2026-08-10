@@ -53,6 +53,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 所有受保護操作都採 server-side workspace scope；正式輸出審核另要求 `owner` 或 `admin`；
 - 已授權的 `/api/workspaces` 清單查詢不可讀時返回雙語 no-store `503 unavailable`，保留 session 並拒絕輸出不完整 workspace 資料；
 - 私人 `/api/generations` 先重核 current workspace 與 active membership，再讀最多 20 個輸出；scope 或清單不可讀時返回雙語 no-store `503 unavailable`，不輸出部分／空白假結果，跨 workspace 維持 `404`；
+- 工作區前端只有收到成功且明確的 `generations` array 才替換目前輸出；網絡錯誤、`503` 或 malformed success payload 均保留登入狀態與現有結果並顯示雙語提示，只有明確空 array 才顯示真正空清單；
 - 新邀請 workspace 取得六個技術性可用輸出，足以建立兩套 Campaign Pack。
 
 詳情見 [`BETA_ACCESS.md`](BETA_ACCESS.md)。
