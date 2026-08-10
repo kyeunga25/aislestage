@@ -157,6 +157,8 @@ Browser 對私人 hydration response 以 decoded stream 實際位元組數設定
 
 Session、health、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading，已登入 workspace 則保留現有輸出與 Agent 計劃並顯示固定雙語錯誤；不以 GET timeout 猜測任何 mutation 是否已提交。
 
+同一個 mounted workspace 的並行初始 bootstrap 會共用一個 in-flight request coordinator：session／health 各一次，只有確認登入後才讀 generation list／Agent state。完成或失敗後立即清除 promise，不跨 reload 保留私人 cache；effect teardown、登出及較新 session hydration 會使舊 epoch 失效，舊輸出或 Agent 快照不可重新進入畫面。
+
 私人 mutation success response 同樣先限制 decoded stream：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB。超限回應只進入固定雙語錯誤，不會改變工作區狀態或人工決定。
 
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。任何 provider PNG 回應在合成前都須通過 base64／8 MiB 上限、完整 PNG container CRC／次序／終止結構，以及與來源上載共用的單邊 8192 px／32 MP 尺寸和 EXIF／文字 metadata 拒絕規則；無效或帶 metadata 的回應 fail closed，不會寫入可審核輸出。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。

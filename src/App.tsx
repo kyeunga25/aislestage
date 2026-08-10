@@ -30,7 +30,8 @@ import {
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product } from './lib/types'
-import { loadPlatformStatus, loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
+import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
+import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 
 const demoSession: AuthedSession = {
   user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User', accountStatus: 'active', accountType: 'test' },
@@ -71,8 +72,11 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationReviewLock = useRef(false)
   const generationRefreshLock = useRef(false)
   const generationRefreshEpoch = useRef(0)
+  const workspaceHydrationEpoch = useRef(0)
   const campaignPackLock = useRef(false)
   const campaignAgentLock = useRef(false)
+  const workspaceBootstrapLoader = useRef<ReturnType<typeof createWorkspaceBootstrapLoader> | null>(null)
+  if (!workspaceBootstrapLoader.current) workspaceBootstrapLoader.current = createWorkspaceBootstrapLoader()
 
   function applyCampaignState(nextState: CampaignAgentState) {
     setAgentState(nextState)
@@ -98,17 +102,28 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
-  async function hydrateWorkspace(nextSession: AuthedSession) {
-    const generationEpoch = ++generationRefreshEpoch.current
-    const [generationSnapshot, campaignAgentSnapshot] = await Promise.all([
-      loadGenerationSnapshot(nextSession.currentWorkspace.id),
-      loadCampaignAgentSnapshot()
-    ])
+  function applyWorkspaceSnapshots(
+    generationSnapshot: Awaited<ReturnType<typeof loadGenerationSnapshot>>,
+    campaignAgentSnapshot: Awaited<ReturnType<typeof loadCampaignAgentSnapshot>>,
+    hydrationEpoch: number,
+    generationEpoch: number
+  ) {
+    if (hydrationEpoch !== workspaceHydrationEpoch.current) return
     const generationSnapshotCurrent = generationEpoch === generationRefreshEpoch.current
     if (generationSnapshotCurrent && generationSnapshot.results !== null) setServerResults(generationSnapshot.results)
     if (campaignAgentSnapshot.state !== null) applyCampaignState(campaignAgentSnapshot.state)
     const availabilityErrors = [generationSnapshotCurrent ? generationSnapshot.error : null, campaignAgentSnapshot.error].filter(Boolean)
     if (availabilityErrors.length) setNotice(availabilityErrors.join(' '))
+  }
+
+  async function hydrateWorkspace(nextSession: AuthedSession) {
+    const hydrationEpoch = ++workspaceHydrationEpoch.current
+    const generationEpoch = ++generationRefreshEpoch.current
+    const [generationSnapshot, campaignAgentSnapshot] = await Promise.all([
+      loadGenerationSnapshot(nextSession.currentWorkspace.id),
+      loadCampaignAgentSnapshot()
+    ])
+    applyWorkspaceSnapshots(generationSnapshot, campaignAgentSnapshot, hydrationEpoch, generationEpoch)
   }
 
   async function refreshSessionState() {
@@ -154,18 +169,31 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
 
   useEffect(() => {
     if (demoMode) return
+    let active = true
+    const hydrationEpoch = ++workspaceHydrationEpoch.current
+    const generationEpoch = ++generationRefreshEpoch.current
 
-    Promise.all([loadSession(), loadPlatformStatus()]).then(async ([sessionResult, nextPlatformStatus]) => {
+    void workspaceBootstrapLoader.current!().then(({ sessionResult, platformStatus: nextPlatformStatus, generationSnapshot, campaignAgentSnapshot }) => {
+      if (!active || hydrationEpoch !== workspaceHydrationEpoch.current) return
       const nextSession = sessionResult.session
       setSession(nextSession)
       if (sessionResult.failure) setAccessFailure(sessionResult.failure)
       setPlatformStatus(nextPlatformStatus)
-      if (nextSession) await hydrateWorkspace(nextSession)
+      if (nextSession && generationSnapshot && campaignAgentSnapshot) {
+        applyWorkspaceSnapshots(generationSnapshot, campaignAgentSnapshot, hydrationEpoch, generationEpoch)
+      }
     }).catch(() => {
+      if (!active || hydrationEpoch !== workspaceHydrationEpoch.current) return
       setSession(import.meta.env.DEV ? demoSession : null)
       setPlatformStatus(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
       if (!import.meta.env.DEV) setAccessFailure('unavailable')
-    }).finally(() => setIsLoadingSession(false))
+    }).finally(() => {
+      if (active && hydrationEpoch === workspaceHydrationEpoch.current) setIsLoadingSession(false)
+    })
+
+    return () => {
+      active = false
+    }
   }, [demoMode])
 
   function campaignBrief() {
@@ -494,6 +522,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
     setIsLoggingOut(false)
     if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
+    workspaceHydrationEpoch.current += 1
     generationRefreshEpoch.current += 1
     generationRefreshLock.current = false
     setIsRefreshingResults(false)

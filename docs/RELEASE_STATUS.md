@@ -34,6 +34,7 @@
 - [x] 前端 bootstrap loader 要求 exact `200 application/json`，並只接受 active user／workspace、合法角色、safe-integer allowance 及跨欄位一致的 restricted health envelope；session 非成功 body 不解析，Access 分類只使用 bounded `x-aislestage-access-failure` header，malformed／矛盾成功回應 fail closed，不會開啟 client feature controls；
 - [x] hydration JSON 共用 bounded stream reader：health 4 KiB、session 16 KiB、generation list 128 KiB、Agent state 256 KiB；`Content-Length` 只作預檢，實際 decoded bytes 超限仍取消 body 並保留既有 snapshot；
 - [x] session／health／generation list／Agent state GET 共用 15 秒 AbortController deadline；到期釋放 loading、保留既有 snapshot 並返回固定雙語 unavailable，mutation 仍由 endpoint reconciliation 處理；
+- [x] mounted workspace 的並行初始 bootstrap 以 settle 後清除的 single-flight coordinator 合併 StrictMode request；未登入不讀 generation／Agent，effect cleanup／logout／較新 session epoch 阻止舊私人快照回寫。合成 browser QA 證明每次 load 四條 GET 各一次、reload 重新各讀一次且 390 px 無 overflow；延遲的 workspace A 快照亦不能覆蓋登出後重新登入的 workspace B；
 - [x] mutation acknowledgement 亦使用 bounded stream reader：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB；超限 success body 不會套用狀態；
 - [x] password auth client 採 6 KiB UTF-8 總量及逐欄界限；login 不傳註冊／邀請欄位，register 只在 invite mode 傳邀請碼；login／register 分別要求 exact `200`／`201 application/json` 再共用 active-session schema，任意 server error detail 不會反映到表單；
 - [x] password login／register 只作一次 30 秒 bounded POST，不自動重送 password、invite 或 account mutation；transport／stream／deadline／`408`／`5xx` 只以 bounded session GET 對帳 exact email，以及註冊的 name／workspace／owner identity；處理期間 tabs、credentials 及重複 submit 保持鎖定；
