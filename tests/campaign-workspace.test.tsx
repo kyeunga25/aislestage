@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { CampaignWorkspace } from '../src/components/CampaignWorkspace'
-import { buildCampaignPlan, initialCampaignAgentState } from '../src/lib/campaign-agent'
+import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from '../src/lib/campaign-agent'
 import { emptyBrand, emptyProduct, starterBrand, starterProduct } from '../src/lib/demo-data'
 
 describe('Campaign Workspace product contract', () => {
@@ -38,5 +38,17 @@ describe('Campaign Workspace product contract', () => {
 
     expect(state.stage).toBe('needs-input')
     expect(state.checks.find((check) => check.id === 'facts')?.detail).toContain('商品類別')
+  })
+
+  it('resets local Agent state only when the deleted asset is the planned source', () => {
+    const state = buildCampaignPlan({
+      assetId: 'planned-asset',
+      intent: '新品推廣',
+      brand: starterBrand,
+      product: starterProduct
+    })
+
+    expect(campaignStateAfterAssetDeletion(state, 'unrelated-asset')).toBe(state)
+    expect(campaignStateAfterAssetDeletion(state, 'planned-asset')).toMatchObject({ stage: 'idle', revision: 0, brief: null })
   })
 })

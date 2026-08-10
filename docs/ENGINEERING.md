@@ -115,7 +115,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - private SVG route 加入 restrictive CSP、private cache、no-sniff 及 no-referrer headers。
 - preview／download 不採信單一 R2 header；D1 與 R2 SHA-256／format／provenance metadata 必須一致才會串流私人 body。
 - preview 使用 inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
-- DELETE routes 只處理一個經授權的明確 asset／generation ID；處理中的 Queue output 不可刪除。
+- DELETE routes 只處理一個經授權的明確 asset／generation ID；處理中的 Queue output 不可刪除。商品圖刪除會由 workspace-scoped Agent 以 asset identity 原子判斷，只重設引用同一來源圖的 plan；前端成功後重新讀取 authoritative Agent state，讀取失敗則保留安全降級狀態並清楚提示。
 
 為降低 browser／Worker 解碼記憶體、Worker CPU 及輸出體積，來源圖上限為 4 MB、單邊 8192 px 及 32 MP；尺寸直接從已驗證的 PNG IHDR、JPEG frame 或 WebP VP8X／VP8／VP8L header 讀取，不先解碼圖片。base64 轉換使用 `node:buffer` 的 runtime implementation。
 

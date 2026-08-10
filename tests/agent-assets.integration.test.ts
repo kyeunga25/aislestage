@@ -373,6 +373,40 @@ describe('private product assets', () => {
     expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json())).toMatchObject({ state: { stage: 'idle', revision: 0 } })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
   })
+
+  it('preserves the current Agent plan when deleting a different product asset', async () => {
+    const owner = await registerAccount('Unrelated Asset Delete')
+    const plannedAssetResponse = await uploadPng(owner.cookie, 'planned-source.png')
+    const unrelatedAssetResponse = await uploadPng(owner.cookie, 'unrelated-source.png')
+    const { asset: plannedAsset } = await plannedAssetResponse.json() as { asset: { id: string; previewUrl: string } }
+    const { asset: unrelatedAsset } = await unrelatedAssetResponse.json() as { asset: { id: string; previewUrl: string } }
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(plannedAsset.id) })
+    })
+    const { state: plannedState } = await planned.json() as { state: { stage: string; revision: number } }
+
+    const deleted = await dispatch(unrelatedAsset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    })
+
+    expect(deleted.status).toBe(204)
+    expect(await dispatch(unrelatedAsset.previewUrl, { headers: { cookie: owner.cookie } }).then((response) => response.status)).toBe(404)
+    expect(await dispatch(plannedAsset.previewUrl, { headers: { cookie: owner.cookie } }).then((response) => response.status)).toBe(200)
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json())).toMatchObject({
+      state: { stage: plannedState.stage, revision: plannedState.revision, brief: { assetId: plannedAsset.id } }
+    })
+    const replayedDelete = await dispatch(unrelatedAsset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    })
+    expect(replayedDelete.status).toBe(404)
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json())).toMatchObject({
+      state: { stage: plannedState.stage, revision: plannedState.revision, brief: { assetId: plannedAsset.id } }
+    })
+  })
 })
 
 describe('workspace Campaign Agent', () => {

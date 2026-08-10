@@ -72,4 +72,14 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
     this.setState(next)
     return next
   }
+
+  @callable()
+  resetPlanForAsset(assetId: string) {
+    if (typeof assetId !== 'string' || !assetId || assetId.length > 80 || this.state.brief?.assetId !== assetId) {
+      return this.state
+    }
+    const next = initialCampaignAgentState()
+    this.setState(next)
+    return next
+  }
 }

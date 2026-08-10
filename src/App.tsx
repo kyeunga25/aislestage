@@ -11,7 +11,7 @@ import type { NavigationSection } from './components/Icon'
 import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
-import { buildCampaignPlan, initialCampaignAgentState } from './lib/campaign-agent'
+import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
 import { normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
@@ -239,9 +239,13 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function deleteProductImage() {
-    if (!window.confirm(demoMode ? '移除這張本機 Demo 圖片？現有 Agent 計劃亦會重設。' : '刪除這張私人商品圖片？現有 Agent 計劃亦會重設。')) return
+    const confirmation = demoMode
+      ? '移除這張本機 Demo 圖片？引用此圖的 Agent 計劃亦會重設。 Remove this local demo image? A plan using it will also reset.'
+      : '刪除這張私人商品圖片？只有引用此圖的 Agent 計劃會重設。 Delete this private product image? Only a plan using it will reset.'
+    if (!window.confirm(confirmation)) return
     setNotice('')
     try {
+      const deletedAssetId = image.asset?.id || null
       if (image.asset) {
         const response = await fetch(`/api/assets/${encodeURIComponent(image.asset.id)}`, { method: 'DELETE', credentials: 'same-origin' })
         if (!response.ok) {
@@ -250,9 +254,20 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         }
       }
       if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
-      setImage({ name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
-      setAgentState(initialCampaignAgentState())
-      generationRequestKey.current = null
+      let planReloadFailed = false
+      const nextAgentState = demoMode
+        ? initialCampaignAgentState()
+        : await agentAction('').catch(() => {
+            planReloadFailed = true
+            return campaignStateAfterAssetDeletion(agentState, deletedAssetId)
+          })
+      applyCampaignState(nextAgentState)
+      if (!nextAgentState.brief || nextAgentState.brief.assetId === deletedAssetId) {
+        generationRequestKey.current = null
+      }
+      if (planReloadFailed) {
+        setNotice('圖片已刪除，但暫時未能重新載入 Agent 計劃。 Image deleted, but the Agent plan could not be reloaded.')
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能刪除商品圖片。')
     }

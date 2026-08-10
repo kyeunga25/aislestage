@@ -1053,7 +1053,7 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
   try {
     const agent = await getAgentByName(env.CAMPAIGN_AGENT, asset.workspaceId)
-    await agent.resetPlan()
+    await agent.resetPlanForAsset(assetId)
     await env.MEDIA_BUCKET.delete(asset.objectKey)
     await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(assetId, asset.workspaceId).run()
     return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })

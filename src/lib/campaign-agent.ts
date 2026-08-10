@@ -56,6 +56,12 @@ export function initialCampaignAgentState(): CampaignAgentState {
   }
 }
 
+export function campaignStateAfterAssetDeletion(state: CampaignAgentState, deletedAssetId: string | null) {
+  return !deletedAssetId || state.brief?.assetId === deletedAssetId
+    ? initialCampaignAgentState()
+    : state
+}
+
 export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: CampaignAgentState['mode'] = 'deterministic'): CampaignAgentState {
   const brief = sanitizeCampaignBrief(briefValue)
   const missingFacts = [
