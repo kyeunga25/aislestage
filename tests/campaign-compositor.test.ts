@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { composeCampaignSvg, validateCompositionInput } from '../src/lib/campaign-compositor'
+import { wrapCampaignText } from '../src/lib/campaign-copy'
 import type { GenerationInput } from '../src/lib/types'
 
 function input(overrides: Partial<GenerationInput> = {}): GenerationInput {
@@ -57,5 +58,16 @@ describe('deterministic Campaign Pack composition', () => {
 
     expect(() => composeCampaignSvg({ input: fragmented, source: { base64: 'iVBORw0KGgo=', contentType: 'image/png' } })).toThrow('Commercial text exceeds the deterministic composition safe area.')
     expect(validateCompositionInput(fragmented)).toEqual(expect.arrayContaining([expect.stringContaining('商品賣點與規格超出素材安全區。')]))
+  })
+
+  it('breaks an unspaced product identifier without losing exact characters', () => {
+    const identifier = 'ABCDEFGHIJKLMNOPQR'
+    const safeInput = input({ product: { ...input().product, name: identifier } })
+
+    expect(validateCompositionInput(safeInput)).toEqual([])
+    expect(wrapCampaignText(identifier, 5, 2)).toEqual(['ABCDEFGHI', 'JKLMNOPQR'])
+    const svg = composeCampaignSvg({ input: safeInput, source: { base64: 'iVBORw0KGgo=', contentType: 'image/png' } })
+    expect(svg).toContain('>ABCDEFGHI</tspan>')
+    expect(svg).toContain('>JKLMNOPQR</tspan>')
   })
 })

@@ -21,8 +21,25 @@ export function campaignTextVisualUnits(value: string) {
   return Array.from(value).reduce((total, character) => total + (/^[\u0000-\u00ff]$/.test(character) ? 0.55 : 1), 0)
 }
 
+function splitCampaignToken(token: string, maxUnits: number) {
+  if (campaignTextVisualUnits(token) <= maxUnits) return [token]
+  const parts: string[] = []
+  let current = ''
+  for (const character of Array.from(token)) {
+    if (current && campaignTextVisualUnits(`${current}${character}`) > maxUnits) {
+      parts.push(current)
+      current = character
+    } else {
+      current += character
+    }
+  }
+  if (current) parts.push(current)
+  return parts
+}
+
 export function wrapCampaignText(value: string, maxUnits: number, maxLines: number) {
-  const tokens = normalizeCampaignText(value).match(/[A-Za-z0-9][A-Za-z0-9.+/%:-]*|\s+|./gu) || []
+  const tokens = (normalizeCampaignText(value).match(/[A-Za-z0-9][A-Za-z0-9.+/%:-]*|\s+|./gu) || [])
+    .flatMap((token) => splitCampaignToken(token, maxUnits))
   const lines: string[] = []
   let current = ''
   for (const token of tokens) {

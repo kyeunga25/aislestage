@@ -113,7 +113,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - Agent plan 在 Durable Object mutation／provider work 前核對來源圖的 workspace ownership 與 D1／R2 digest、大小、MIME、asset kind、workspace metadata；preview、Agent 批准及 Queue 取圖亦再次核對。找不到或失配不改寫既有 Agent revision，並在任何 provider work 前 fail closed；
 - 確定性 compositor 把已批准原圖位元組嵌入 SVG，不重新繪製商品；
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；
-- Agent 與確定性 compositor 共用文字 normalization、1:1／4:5／9:16 換行參數及合併明細行數 validator；超出任一固定安全區的文字會先停在 `needs-input` 並顯示雙語修正原因，批准及排隊前仍會再次拒絕；
+- Agent 與確定性 compositor 共用文字 normalization、1:1／4:5／9:16 換行參數及合併明細行數 validator；無空格 SKU／型號 token 會按視覺單位安全拆行並保留原字元；超出任一固定安全區的文字會先停在 `needs-input` 並顯示雙語修正原因，批准及排隊前仍會再次拒絕；
 - private SVG route 加入 restrictive CSP、private cache、no-sniff 及 no-referrer headers。
 - preview／download 不採信單一 R2 header；D1 與 R2 SHA-256／format／provenance metadata 必須一致才會串流私人 body。
 - preview 使用 inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
