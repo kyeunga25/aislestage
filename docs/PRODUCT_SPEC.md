@@ -152,6 +152,8 @@ Browser generation list 在任何 JSON parse 前要求 exact `200 application/js
 
 Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate、輸出或 Agent 計劃。
 
+Session、health、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading，已登入 workspace 則保留現有輸出與 Agent 計劃並顯示固定雙語錯誤；不以 GET timeout 猜測任何 mutation 是否已提交。
+
 私人 mutation success response 同樣先限制 decoded stream：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB。超限回應只進入固定雙語錯誤，不會改變工作區狀態或人工決定。
 
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。

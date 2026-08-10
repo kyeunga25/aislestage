@@ -1,10 +1,12 @@
 import type { GenerationResult } from './types'
 import { workflowById } from './workflows'
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 
 export const generationListUnavailableMessage = '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
 
 const MAX_GENERATION_LIST_RESPONSE_BYTES = 128 * 1024
+const HYDRATION_REQUEST_TIMEOUT_MS = 15_000
 const generationKeys = new Set([
   'id',
   'campaignPackId',
@@ -84,28 +86,29 @@ export function normalizeGenerationResults(value: unknown) {
 }
 
 export async function loadGenerations(workspaceId: string) {
-  let response: Response
   try {
-    response = await fetch(`/api/generations?workspaceId=${encodeURIComponent(workspaceId)}`, { credentials: 'same-origin' })
+    return await fetchWithTimeout(
+      `/api/generations?workspaceId=${encodeURIComponent(workspaceId)}`,
+      { credentials: 'same-origin' },
+      HYDRATION_REQUEST_TIMEOUT_MS,
+      async (response) => {
+        if (!response.ok || response.status !== 200) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(generationListUnavailableMessage)
+        }
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(generationListUnavailableMessage)
+        }
+        const data = await readBoundedJsonResponse(response, MAX_GENERATION_LIST_RESPONSE_BYTES)
+        if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(generationListUnavailableMessage)
+        return normalizeGenerationResults(data.generations)
+      }
+    )
   } catch {
     throw new Error(generationListUnavailableMessage)
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(generationListUnavailableMessage)
-  }
-  if (response.status !== 200) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(generationListUnavailableMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(generationListUnavailableMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_GENERATION_LIST_RESPONSE_BYTES)
-  if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(generationListUnavailableMessage)
-  return normalizeGenerationResults(data.generations)
 }
 
 export async function loadGenerationSnapshot(workspaceId: string): Promise<{

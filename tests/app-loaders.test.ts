@@ -5,8 +5,19 @@ import { loadGenerations, loadGenerationSnapshot } from '../src/lib/generation-l
 import { loadPlatformStatus, loadSession } from '../src/lib/workspace-bootstrap-loader'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
+
+function fetchAfterDeadline(response: () => Response) {
+  return vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const completion = setTimeout(() => resolve(response()), 30_000)
+    init?.signal?.addEventListener('abort', () => {
+      clearTimeout(completion)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }, { once: true })
+  }))
+}
 
 describe('workspace generation loading', () => {
   const canonicalGeneration = {
@@ -148,6 +159,19 @@ describe('workspace generation loading', () => {
       '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
     )
   })
+
+  it('returns no authoritative generation snapshot when the GET deadline expires', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', fetchAfterDeadline(() => Response.json({ generations: [] })))
+
+    const snapshot = loadGenerationSnapshot('workspace-timeout-test')
+    const assertion = expect(snapshot).resolves.toEqual({
+      results: null,
+      error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+  })
 })
 
 describe('Campaign Agent state loading', () => {
@@ -248,6 +272,19 @@ describe('Campaign Agent state loading', () => {
     await expect(loadCampaignAgentState()).rejects.toThrow(
       'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
     )
+  })
+
+  it('returns no authoritative Agent snapshot when the GET deadline expires', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', fetchAfterDeadline(() => Response.json({ state: initialCampaignAgentState() })))
+
+    const snapshot = loadCampaignAgentSnapshot()
+    const assertion = expect(snapshot).resolves.toEqual({
+      state: null,
+      error: 'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
   })
 })
 
@@ -374,6 +411,18 @@ describe('workspace bootstrap loading', () => {
     )
   })
 
+  it('rejects session loading when the GET deadline expires', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', fetchAfterDeadline(() => Response.json(canonicalSession)))
+
+    const session = loadSession()
+    const assertion = expect(session).rejects.toThrow(
+      '登入資料暫時無法確認。 Session data is temporarily unavailable.'
+    )
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+  })
+
   it('accepts a canonical restricted platform status', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalPlatformStatus)))
 
@@ -399,6 +448,18 @@ describe('workspace bootstrap loading', () => {
     await expect(loadPlatformStatus()).rejects.toThrow(
       '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
     )
+  })
+
+  it('rejects platform status loading when the GET deadline expires', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', fetchAfterDeadline(() => Response.json(canonicalPlatformStatus)))
+
+    const status = loadPlatformStatus()
+    const assertion = expect(status).rejects.toThrow(
+      '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
+    )
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
   })
 
   it('rejects contradictory Access registration state', async () => {

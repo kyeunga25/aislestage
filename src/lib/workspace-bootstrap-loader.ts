@@ -1,5 +1,6 @@
 import { normalizeAccessFailureReason, type AccessFailureReason } from './access-login'
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 import type { AuthUser, PlatformStatus, WorkspaceSummary } from './types'
 
 export type AuthedSession = {
@@ -18,6 +19,7 @@ export const platformStatusUnavailableMessage = '平台狀態暫時無法確認�
 const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
 const MAX_SESSION_RESPONSE_BYTES = 16 * 1024
 const MAX_PLATFORM_STATUS_RESPONSE_BYTES = 4 * 1024
+const HYDRATION_REQUEST_TIMEOUT_MS = 15_000
 const authenticatedSessionKeys = new Set(['authenticated', 'user', 'currentWorkspace'])
 const authSessionKeys = new Set(['user', 'currentWorkspace'])
 const unauthenticatedSessionKeys = new Set(['authenticated'])
@@ -109,37 +111,42 @@ export function normalizeAuthSessionPayload(value: unknown): AuthedSession | nul
 }
 
 export async function loadSession(): Promise<SessionLoadResult> {
-  let response: Response
   try {
-    response = await fetch('/api/session', { credentials: 'same-origin' })
+    return await fetchWithTimeout(
+      '/api/session',
+      { credentials: 'same-origin' },
+      HYDRATION_REQUEST_TIMEOUT_MS,
+      async (response): Promise<SessionLoadResult> => {
+        if (!response.ok) {
+          const reason = normalizeAccessFailureReason(response.headers.get(ACCESS_FAILURE_HEADER))
+          await response.body?.cancel().catch(() => undefined)
+          return {
+            session: null,
+            failure: reason || (response.status >= 500 ? 'unavailable' : 'authentication-required')
+          }
+        }
+        if (response.status !== 200) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(sessionDataUnavailableMessage)
+        }
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(sessionDataUnavailableMessage)
+        }
+        const data = await readBoundedJsonResponse(response, MAX_SESSION_RESPONSE_BYTES)
+        if (!isRecord(data)) throw new Error(sessionDataUnavailableMessage)
+        if (data.authenticated === false && hasExactKeys(data, unauthenticatedSessionKeys)) {
+          return { session: null, failure: 'authentication-required' }
+        }
+        const session = normalizeAuthenticatedSession(data)
+        if (!session) throw new Error(sessionDataUnavailableMessage)
+        return { session, failure: null }
+      }
+    )
   } catch {
     throw new Error(sessionDataUnavailableMessage)
   }
-  if (!response.ok) {
-    const reason = normalizeAccessFailureReason(response.headers.get(ACCESS_FAILURE_HEADER))
-    await response.body?.cancel().catch(() => undefined)
-    return {
-      session: null,
-      failure: reason || (response.status >= 500 ? 'unavailable' : 'authentication-required')
-    }
-  }
-  if (response.status !== 200) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(sessionDataUnavailableMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(sessionDataUnavailableMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_SESSION_RESPONSE_BYTES)
-  if (!isRecord(data)) throw new Error(sessionDataUnavailableMessage)
-  if (data.authenticated === false && hasExactKeys(data, unauthenticatedSessionKeys)) {
-    return { session: null, failure: 'authentication-required' }
-  }
-  const session = normalizeAuthenticatedSession(data)
-  if (!session) throw new Error(sessionDataUnavailableMessage)
-  return { session, failure: null }
 }
 
 export function normalizePlatformStatus(value: unknown): PlatformStatus {
@@ -177,21 +184,26 @@ export function normalizePlatformStatus(value: unknown): PlatformStatus {
 }
 
 export async function loadPlatformStatus() {
-  let response: Response
   try {
-    response = await fetch('/api/health', { credentials: 'same-origin' })
+    return await fetchWithTimeout(
+      '/api/health',
+      { credentials: 'same-origin' },
+      HYDRATION_REQUEST_TIMEOUT_MS,
+      async (response) => {
+        if (!response.ok || response.status !== 200) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(platformStatusUnavailableMessage)
+        }
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(platformStatusUnavailableMessage)
+        }
+        const data = await readBoundedJsonResponse(response, MAX_PLATFORM_STATUS_RESPONSE_BYTES)
+        return normalizePlatformStatus(data)
+      }
+    )
   } catch {
     throw new Error(platformStatusUnavailableMessage)
   }
-  if (!response.ok || response.status !== 200) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(platformStatusUnavailableMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(platformStatusUnavailableMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_PLATFORM_STATUS_RESPONSE_BYTES)
-  return normalizePlatformStatus(data)
 }

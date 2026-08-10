@@ -1,10 +1,12 @@
 import { campaignBriefLimits } from './campaign-agent'
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 import type { CampaignAgentState, CampaignBrief } from './types'
 
 export const campaignAgentUnavailableMessage = 'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
 
 const MAX_CAMPAIGN_AGENT_RESPONSE_BYTES = 256 * 1024
+const HYDRATION_REQUEST_TIMEOUT_MS = 15_000
 const stateKeys = new Set(['stage', 'revision', 'summary', 'checks', 'plan', 'messages', 'mode', 'approvedAt', 'brief'])
 const briefKeys = new Set(['assetId', 'intent', 'brand', 'product'])
 const brandKeys = new Set(['name', 'tone', 'colors', 'forbiddenWords', 'locale', 'cta', 'ctaEn'])
@@ -112,30 +114,31 @@ export function normalizeCampaignAgentState(value: unknown): CampaignAgentState 
 }
 
 export async function loadCampaignAgentState() {
-  let response: Response
   try {
-    response = await fetch('/api/campaign-agent', { credentials: 'same-origin' })
+    return await fetchWithTimeout(
+      '/api/campaign-agent',
+      { credentials: 'same-origin' },
+      HYDRATION_REQUEST_TIMEOUT_MS,
+      async (response) => {
+        if (!response.ok || response.status !== 200) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(campaignAgentUnavailableMessage)
+        }
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(campaignAgentUnavailableMessage)
+        }
+        const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_AGENT_RESPONSE_BYTES)
+        if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(campaignAgentUnavailableMessage)
+        const state = normalizeCampaignAgentState(data.state)
+        if (!state) throw new Error(campaignAgentUnavailableMessage)
+        return state
+      }
+    )
   } catch {
     throw new Error(campaignAgentUnavailableMessage)
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignAgentUnavailableMessage)
-  }
-  if (response.status !== 200) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignAgentUnavailableMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignAgentUnavailableMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_AGENT_RESPONSE_BYTES)
-  if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(campaignAgentUnavailableMessage)
-  const state = normalizeCampaignAgentState(data.state)
-  if (!state) throw new Error(campaignAgentUnavailableMessage)
-  return state
 }
 
 export async function loadCampaignAgentSnapshot(): Promise<{
