@@ -98,6 +98,8 @@ Campaign Brief 的可見輸入與 Worker 共用欄位上限及已知欄位集合
 
 Approval route 使用同一 bounded JSON reader，並只接受恰好一個正整數 `revision`；不會把 string、boolean 或 `null` 轉成版本。Durable Object 先比較 revision，再以 `awaiting-approval -> approved` 寫入一次；同 revision 的併發或重送會返回原有 state 及 `approvedAt`，不新增第二個批准訊息，亦不觸發 output reservation。
 
+Campaign Pack 與單輸出相容 route 在任何 allowance、generation row 或 Queue mutation 前，必須重新讀取 active workspace scope 與商品 asset ownership。任一 D1 preflight 暫時不可讀時回固定雙語 no-store `503 unavailable`；不會把故障誤作 workspace／asset 不存在，亦不會留下 pack、generation、ledger、reservation 或 Queue message。
+
 ## Atomic Campaign Pack
 
 `POST /api/campaign-packs` 接受一個 client-generated idempotency key，以及 1–3 個已批准輸出。外層 JSON 必須恰好包含公開 contract 的八個欄位，每個 output 亦只能包含 `workflowId` 與 `aspectRatio`，而共用 Brief／brand／product 內層欄位同樣必須已知；未知欄位或 malformed envelope 會在批准狀態、allowance、D1 及 Queue 操作前以 `400` 拒絕。舊有單輸出 route 亦只接受完整 GenerationInput 鍵集合，不會把未知頂層或內層欄位寫入 `input_json`。正式 UI 固定提交 1:1、4:5、9:16 三個輸出。

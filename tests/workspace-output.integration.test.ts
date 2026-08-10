@@ -217,6 +217,79 @@ describe('workspace authorization and output allowance integrity', () => {
     }
   })
 
+  it('does not reserve a Campaign Pack when asset preflight state is unreadable', async () => {
+    const account = await registerAccount('Pack Asset Preflight Availability')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assetFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT COUNT(*) AS count FROM media_assets') || !query.includes('id IN')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic pack asset preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const sendBatch = vi.fn(async () => undefined)
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(account.cookie, input, crypto.randomUUID(), {
+      ...env,
+      DB: assetFailureDb,
+      GENERATION_QUEUE: holdingQueue
+    })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '素材建立前置狀態暫時無法讀取。 Generation preflight state is temporarily unavailable.'
+    })
+    expect(sendBatch).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('does not reserve a single output when workspace preflight state is unreadable', async () => {
+    const account = await registerAccount('Output Workspace Preflight Availability')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const workspaceFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM workspace_memberships wm') || !query.includes('WHERE wm.user_id = ? AND wm.workspace_id = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic generation workspace preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, {
+      ...env,
+      DB: workspaceFailureDb,
+      GENERATION_QUEUE: holdingQueue
+    })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '素材建立前置狀態暫時無法讀取。 Generation preflight state is temporarily unavailable.'
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
   it('reconciles a Campaign Pack batch that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Pack Commit')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

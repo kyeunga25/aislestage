@@ -2104,6 +2104,13 @@ async function reconcileCampaignPackCreation(
   return 'committed'
 }
 
+function generationPreflightUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '素材建立前置狀態暫時無法讀取。 Generation preflight state is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
@@ -2112,7 +2119,13 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   const parsedPack = campaignPackInputs(parsed.body)
   if (!parsedPack) return json({ error: 'Invalid Campaign Pack payload.' }, { status: 400 })
   if (parsedPack.request.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
+  let workspace: Workspace | null
+  try {
+    workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
+  } catch {
+    console.error('campaign-pack-workspace-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
 
   const brief = sanitizeCampaignBrief({
@@ -2141,7 +2154,14 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     if (issues.length) return json({ error: issues[0], issues }, { status: 422 })
     if (!workflowById(input.workflowId).ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   }
-  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)) return json({ error: 'Product asset not found.' }, { status: 400 })
+  let ownsReferenceAssets: boolean
+  try {
+    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)
+  } catch {
+    console.error('campaign-pack-asset-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
+  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
   try {
     if (!await approvedCampaignPackInputs(env, inputs)) return json({ error: 'Campaign plan approval is missing, stale, or does not match this pack.' }, { status: 409 })
   } catch {
@@ -2281,13 +2301,26 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   const input = parsed.body
   if (!strictGenerationInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
   if (input.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
+  let workspace: Workspace | null
+  try {
+    workspace = await getWorkspace(env, session.user.id, input.workspaceId)
+  } catch {
+    console.error('generation-workspace-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const brief = sanitizeCampaignBrief({ assetId: input.referenceAssetIds[0], intent: input.intent, brand: input.brand, product: input.product })
   const safeInput: GenerationInput = { ...input, workspaceId: workspace.id, intent: brief.intent, brand: brief.brand, product: brief.product, referenceImageUrls: [], referenceAssetIds: [input.referenceAssetIds[0]] }
   const compositionIssues = validateCompositionInput(safeInput)
   if (compositionIssues.length) return json({ error: compositionIssues[0], issues: compositionIssues }, { status: 422 })
-  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)) return json({ error: 'Product asset not found.' }, { status: 400 })
+  let ownsReferenceAssets: boolean
+  try {
+    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)
+  } catch {
+    console.error('generation-asset-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
+  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
   const workflow = workflowById(input.workflowId)
   if (!workflow.ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   try {
