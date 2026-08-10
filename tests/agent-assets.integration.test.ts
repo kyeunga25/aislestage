@@ -467,6 +467,47 @@ describe('private product assets', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
   })
 
+  it('keeps private asset state unchanged when delete preflight metadata is unreadable', async () => {
+    const owner = await registerAccount('Asset Delete Preflight Availability')
+    const uploaded = await uploadPng(owner.cookie, 'delete-preflight.png')
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    const { state: plannedState } = await planned.json() as { state: { stage: string; revision: number } }
+    const stored = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ?')
+      .bind(asset.id)
+      .first<{ objectKey: string }>()
+    const preflightFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT a.object_key AS objectKey') || !query.includes('JOIN workspaces w')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic asset delete preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const failed = await dispatch(asset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: preflightFailureDb })
+
+    expect(failed.status).toBe(503)
+    expect(failed.headers.get('cache-control')).toBe('no-store')
+    expect(await failed.json()).toEqual({ error: '未能刪除商品圖片。 Unable to delete product image.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 1 })
+    expect(await env.MEDIA_BUCKET.head(stored!.objectKey)).not.toBeNull()
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json())).toMatchObject({
+      state: { stage: plannedState.stage, revision: plannedState.revision, brief: { assetId: asset.id } }
+    })
+  })
+
   it('reconciles an asset delete that commits before D1 reports failure', async () => {
     const owner = await registerAccount('Ambiguous Asset Delete')
     const uploaded = await uploadPng(owner.cookie, 'ambiguous-delete.png')

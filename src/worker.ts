@@ -1237,12 +1237,19 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
 }
 
 async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
-  const asset = await env.DB.prepare(`
-    SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId
-    FROM media_assets a
-    JOIN workspaces w ON w.id = a.workspace_id
-    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
-  `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; workspaceId: string }>()
+  const unavailableResponse = () => json({ error: '未能刪除商品圖片。 Unable to delete product image.' }, { status: 503 })
+  let asset: { objectKey: string; workspaceId: string } | null
+  try {
+    asset = await env.DB.prepare(`
+      SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId
+      FROM media_assets a
+      JOIN workspaces w ON w.id = a.workspace_id
+      WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
+    `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; workspaceId: string }>()
+  } catch {
+    console.error('product-asset-delete-preflight-read-failed')
+    return unavailableResponse()
+  }
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
   const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
   try {
@@ -1264,7 +1271,7 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
     } catch {
       console.error('product-asset-delete-reconciliation-failed')
     }
-    return json({ error: '未能刪除商品圖片。 Unable to delete product image.' }, { status: 503 })
+    return unavailableResponse()
   }
 }
 
@@ -2589,12 +2596,19 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
 }
 
 async function deleteGeneration(env: Env, session: SessionContext, generationId: string) {
-  const row = await env.DB.prepare(`
-    SELECT g.output_key AS outputKey, g.status
-    FROM generations g
-    JOIN workspaces w ON w.id = g.workspace_id
-    WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
-  `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null; status: string }>()
+  const unavailableResponse = () => json({ error: '未能刪除輸出。 Unable to delete output.' }, { status: 503 })
+  let row: { outputKey: string | null; status: string } | null
+  try {
+    row = await env.DB.prepare(`
+      SELECT g.output_key AS outputKey, g.status
+      FROM generations g
+      JOIN workspaces w ON w.id = g.workspace_id
+      WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
+    `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null; status: string }>()
+  } catch {
+    console.error('generation-delete-preflight-read-failed')
+    return unavailableResponse()
+  }
   if (!row) return json({ error: 'Output not found.' }, { status: 404 })
   if (row.status === 'queued' || row.status === 'processing') return json({ error: '仍在處理的輸出不可刪除。' }, { status: 409 })
   const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
@@ -2616,7 +2630,7 @@ async function deleteGeneration(env: Env, session: SessionContext, generationId:
     } catch {
       console.error('generation-delete-reconciliation-failed')
     }
-    return json({ error: '未能刪除輸出。 Unable to delete output.' }, { status: 503 })
+    return unavailableResponse()
   }
 }
 

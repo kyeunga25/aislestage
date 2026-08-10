@@ -1424,6 +1424,37 @@ describe('workspace authorization and output allowance integrity', () => {
 })
 
 describe('explicit private output deletion', () => {
+  it('keeps private output state unchanged when delete preflight metadata is unreadable', async () => {
+    const account = await registerAccount('Output Delete Preflight Availability')
+    const { id } = await completedDeterministicGeneration(account)
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const preflightFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT g.output_key AS outputKey, g.status') || !query.includes('JOIN workspaces w')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic output delete preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const failed = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: preflightFailureDb })
+
+    expect(failed.status).toBe(503)
+    expect(failed.headers.get('cache-control')).toBe('no-store')
+    expect(await failed.json()).toEqual({ error: '未能刪除輸出。 Unable to delete output.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 1 })
+    expect(await env.MEDIA_BUCKET.head(stored!.outputKey)).not.toBeNull()
+  })
+
   it('reconciles a generation delete that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Output Delete')
     const { id } = await completedDeterministicGeneration(account)
