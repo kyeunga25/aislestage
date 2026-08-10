@@ -14,6 +14,7 @@
 - [x] 完成輸出預設為私人草稿，owner／admin 的不可變審核決定與逐項受控下載已通過隔離 integration 及 browser QA；
 - [x] 審核前的 scoped D1 generation row 或 approve R2 `head` 暫時不可讀時回雙語 no-store `503`；不執行 review UPDATE，draft／reviewed timestamp 保持不變；
 - [x] review UPDATE ambiguous commit 以 workspace-scoped generation、completed state、target decision、expected revision 及 reviewed timestamp reconciliation；已提交以 replay 回覆，未提交保持 draft／不可下載；
+- [x] review UPDATE 成功後的 authoritative reload 不可讀時回可重試 `503`；相同 decision 重送會讀取已提交不可變狀態並以 replay 恢復，不重複 mutation；
 - [x] Queue output SHA-256 經 R2 寫入驗收；approve／preview／download 在 D1 與 R2 digest、MIME 或 provenance metadata 不一致時 fail closed；
 - [x] 私人 preview／已批准 download 的 scoped D1 metadata 或 R2 object 暫時不可讀時回雙語 no-store `503 unavailable` 且不返回 SVG；404／409 語義與私隱 log 邊界保持不變；
 - [x] Queue completion batch 的 ambiguous commit 會核對 completed row、R2 metadata、draft state 與 settlement ledger；已提交保留 output，明確未提交才清理及重試；

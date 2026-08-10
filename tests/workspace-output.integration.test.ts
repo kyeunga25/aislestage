@@ -1493,6 +1493,49 @@ describe('human output review and controlled delivery', () => {
       .bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
   })
 
+  it('returns a retryable failure when a committed review cannot be reloaded', async () => {
+    const account = await registerAccount('Review Reload Availability')
+    const { id, input } = await completedDeterministicGeneration(account)
+    let metadataReads = 0
+    const reloadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations g') || !query.includes('g.output_key AS outputKey')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              first: async () => {
+                metadataReads += 1
+                if (metadataReads === 2) throw new TypeError('synthetic committed review reload failure')
+                return bound.first()
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const request = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }
+
+    const response = await dispatch(`/api/generations/${id}/review`, request, { ...env, DB: reloadFailureDb })
+
+    expect(metadataReads).toBe(2)
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id).first()).toMatchObject({ reviewStatus: 'approved', reviewedAt: expect.any(String) })
+
+    const replayed = await dispatch(`/api/generations/${id}/review`, request)
+    expect(replayed.status).toBe(200)
+    expect(await replayed.json()).toMatchObject({ generation: { reviewStatus: 'approved' }, replayed: true })
+  })
+
   it('reconciles a review update that commits before D1 reports failure', async () => {
     const account = await registerAccount('Ambiguous Output Review')
     const { id, input } = await completedDeterministicGeneration(account)

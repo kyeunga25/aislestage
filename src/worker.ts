@@ -2555,7 +2555,13 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
       return outputReviewUnavailable()
     }
   }
-  const latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  let latest: StoredGenerationRow | null
+  try {
+    latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-review-reload-failed')
+    return outputReviewUnavailable()
+  }
   if (!latest) return json({ error: 'Output not found.' }, { status: 404 })
   if (!updateChanges) {
     if (latest.reviewStatus === targetStatus) return json({ generation: generationPayload(latest), replayed: true })
