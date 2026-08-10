@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readBoundedJsonResponse } from '../src/lib/bounded-json-response'
+import { readBoundedJsonResponse, readBoundedJsonResponseOutcome } from '../src/lib/bounded-json-response'
 
 describe('bounded JSON response reader', () => {
   it('accepts valid JSON at the exact UTF-8 byte limit', async () => {
@@ -27,5 +27,15 @@ describe('bounded JSON response reader', () => {
 
   it('rejects malformed JSON within the byte limit', async () => {
     await expect(readBoundedJsonResponse(new Response('{'), 8)).resolves.toBeNull()
+  })
+
+  it('distinguishes a response stream failure from invalid JSON', async () => {
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new TypeError('synthetic response stream failure'))
+      }
+    }))
+
+    await expect(readBoundedJsonResponseOutcome(response, 1024)).resolves.toEqual({ kind: 'stream-error' })
   })
 })

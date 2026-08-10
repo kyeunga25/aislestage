@@ -36,6 +36,7 @@
 - [x] session／health／generation list／Agent state GET 共用 15 秒 AbortController deadline；到期釋放 loading、保留既有 snapshot 並返回固定雙語 unavailable，mutation 仍由 endpoint reconciliation 處理；
 - [x] mutation acknowledgement 亦使用 bounded stream reader：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB；超限 success body 不會套用狀態；
 - [x] password auth client 採 6 KiB UTF-8 總量及逐欄界限；login 不傳註冊／邀請欄位，register 只在 invite mode 傳邀請碼；login／register 分別要求 exact `200`／`201 application/json` 再共用 active-session schema，任意 server error detail 不會反映到表單；
+- [x] password login／register 只作一次 30 秒 bounded POST，不自動重送 password、invite 或 account mutation；transport／stream／deadline／`408`／`5xx` 只以 bounded session GET 對帳 exact email，以及註冊的 name／workspace／owner identity；處理期間 tabs、credentials 及重複 submit 保持鎖定；
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；

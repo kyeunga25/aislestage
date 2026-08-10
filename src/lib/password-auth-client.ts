@@ -1,5 +1,6 @@
-import { readBoundedJsonResponse } from './bounded-json-response'
-import { normalizeAuthSessionPayload, type AuthedSession } from './workspace-bootstrap-loader'
+import { readBoundedJsonResponseOutcome } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
+import { loadSession, normalizeAuthSessionPayload, type AuthedSession } from './workspace-bootstrap-loader'
 
 export type PasswordAuthRequest =
   | { mode: 'login'; email: string; password: string }
@@ -10,6 +11,18 @@ export const authServiceUnavailableMessage = '登入服務暫時無法使用。 
 
 const MAX_AUTH_CLIENT_BODY_BYTES = 6 * 1024
 const MAX_AUTH_RESPONSE_BYTES = 16 * 1024
+const PASSWORD_AUTH_TIMEOUT_MS = 30_000
+
+type AuthIdentity =
+  | { mode: 'login'; email: string }
+  | { mode: 'register'; email: string; name: string; workspaceName: string }
+
+class PasswordAuthAttemptError extends Error {
+  constructor(message: string, readonly reconcilable: boolean) {
+    super(message)
+    this.name = 'PasswordAuthAttemptError'
+  }
+}
 
 function normalizeText(value: unknown, minLength: number, maxLength: number) {
   if (typeof value !== 'string') return null
@@ -31,8 +44,10 @@ function safeAuthBody(request: PasswordAuthRequest) {
   if (!email || !password) throw new Error(authInputInvalidMessage)
 
   let body: Record<string, string>
+  let identity: AuthIdentity
   if (request.mode === 'login') {
     body = { email, password }
+    identity = { mode: 'login', email }
   } else {
     const name = normalizeText(request.name, 1, 120)
     const workspaceName = normalizeText(request.workspaceName, 1, 120)
@@ -41,12 +56,13 @@ function safeAuthBody(request: PasswordAuthRequest) {
       throw new Error(authInputInvalidMessage)
     }
     body = { name, workspaceName, email, password, ...(inviteCode ? { inviteCode } : {}) }
+    identity = { mode: 'register', email, name, workspaceName }
   }
   const serialized = JSON.stringify(body)
   if (new TextEncoder().encode(serialized).byteLength > MAX_AUTH_CLIENT_BODY_BYTES) {
     throw new Error(authInputInvalidMessage)
   }
-  return serialized
+  return { body: serialized, identity }
 }
 
 function authFailureMessage(status: number) {
@@ -59,35 +75,66 @@ function authFailureMessage(status: number) {
   return authServiceUnavailableMessage
 }
 
+function authIdentityMatches(identity: AuthIdentity, session: AuthedSession) {
+  return session.user.email === identity.email
+    && (identity.mode === 'login'
+      || (session.user.name === identity.name
+        && session.currentWorkspace.name === identity.workspaceName
+        && session.currentWorkspace.role === 'owner'))
+}
+
 export async function submitPasswordAuth(request: PasswordAuthRequest): Promise<AuthedSession> {
-  const body = safeAuthBody(request)
-  let response: Response
+  const { body, identity } = safeAuthBody(request)
   try {
-    response = await fetch(`/api/auth/${request.mode}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body
-    })
-  } catch {
+    return await fetchWithTimeout(
+      `/api/auth/${request.mode}`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body
+      },
+      PASSWORD_AUTH_TIMEOUT_MS,
+      async (response, signal) => {
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new PasswordAuthAttemptError(
+            authFailureMessage(response.status),
+            response.status === 408 || response.status >= 500
+          )
+        }
+        const expectedStatus = request.mode === 'register' ? 201 : 200
+        if (response.status !== expectedStatus) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new PasswordAuthAttemptError(authServiceUnavailableMessage, false)
+        }
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+          await response.body?.cancel().catch(() => undefined)
+          throw new PasswordAuthAttemptError(authServiceUnavailableMessage, false)
+        }
+        const outcome = await readBoundedJsonResponseOutcome(response, MAX_AUTH_RESPONSE_BYTES)
+        if (signal.aborted || outcome.kind === 'stream-error') {
+          throw new PasswordAuthAttemptError(authServiceUnavailableMessage, true)
+        }
+        const session = outcome.kind === 'value' ? normalizeAuthSessionPayload(outcome.value) : null
+        if (!session || !authIdentityMatches(identity, session)) {
+          throw new PasswordAuthAttemptError(authServiceUnavailableMessage, false)
+        }
+        return session
+      }
+    )
+  } catch (error) {
+    const reconcilable = !(error instanceof PasswordAuthAttemptError) || error.reconcilable
+    if (!reconcilable) {
+      throw new Error(error instanceof PasswordAuthAttemptError ? error.message : authServiceUnavailableMessage)
+    }
+    try {
+      const reconciled = (await loadSession()).session
+      if (reconciled && authIdentityMatches(identity, reconciled)) return reconciled
+    } catch {
+      // Never resend password or registration data when session state is ambiguous.
+    }
     throw new Error(authServiceUnavailableMessage)
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(authFailureMessage(response.status))
-  }
-  const expectedStatus = request.mode === 'register' ? 201 : 200
-  if (response.status !== expectedStatus) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(authServiceUnavailableMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(authServiceUnavailableMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_AUTH_RESPONSE_BYTES)
-  const session = normalizeAuthSessionPayload(data)
-  if (!session) throw new Error(authServiceUnavailableMessage)
-  return session
 }
