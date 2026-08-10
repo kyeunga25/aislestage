@@ -54,6 +54,15 @@ describe('product asset upload client', () => {
     )
   })
 
+  it('rejects a canonical asset returned with a non-canonical success status', async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ asset: canonicalAsset })))
+
+    await expect(uploadProductAsset(file)).rejects.toThrow(
+      '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
+    )
+  })
+
   it('does not expose a server error detail', async () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({

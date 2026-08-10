@@ -78,8 +78,15 @@ export async function uploadProductAsset(file: File) {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(uploadFailureMessage(response.status))
   }
+  if (response.status !== 201) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(productAssetResponseInvalidMessage)
+  }
   const responseContentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (responseContentType !== 'application/json') throw new Error(productAssetResponseInvalidMessage)
+  if (responseContentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(productAssetResponseInvalidMessage)
+  }
   const data = await response.json().catch(() => null)
   if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(productAssetResponseInvalidMessage)
   const asset = normalizeProductAsset(data.asset, file)

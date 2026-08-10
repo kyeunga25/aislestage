@@ -101,6 +101,17 @@ describe('generation review client', () => {
     )
   })
 
+  it('rejects a canonical review returned with a non-canonical success status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      generation: reviewedGeneration('approved'),
+      replayed: false
+    }, { status: 201 })))
+
+    await expect(submitGenerationReview(currentDraft(), 'approve')).rejects.toThrow(
+      '未能確認輸出審核結果。 Unable to verify the output review.'
+    )
+  })
+
   it('does not expose a server error detail', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       error: 'synthetic private generation detail'

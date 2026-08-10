@@ -15,7 +15,7 @@
 - [x] 審核前的 scoped D1 generation row 或 approve R2 `head` 暫時不可讀時回雙語 no-store `503`；不執行 review UPDATE，draft／reviewed timestamp 保持不變；
 - [x] review UPDATE ambiguous commit 以 workspace-scoped generation、completed state、target decision、expected revision 及 reviewed timestamp reconciliation；已提交以 replay 回覆，未提交保持 draft／不可下載；
 - [x] review UPDATE 成功後的 authoritative reload 不可讀時回可重試 `503`；相同 decision 重送會讀取已提交不可變狀態並以 replay 恢復，不重複 mutation；
-- [x] browser review client 只提交 decision／expected revision，並以共享 normalizer 及 immutable identity／workflow／ratio／content／provenance binding 驗證 exact success envelope；不相符 payload 或任意 server error detail 不會進入 workspace state；
+- [x] browser review client 只提交 decision／expected revision，並以共享 normalizer 及 immutable identity／workflow／ratio／content／provenance binding 驗證 exact `200 application/json` success envelope；不相符 payload 或任意 server error detail 不會進入 workspace state；
 - [x] Queue output SHA-256 經 R2 寫入驗收；approve／preview／download 在 D1 與 R2 digest、MIME 或 provenance metadata 不一致時 fail closed；
 - [x] 私人 preview／已批准 download 的 scoped D1 metadata 或 R2 object 暫時不可讀時回雙語 no-store `503 unavailable` 且不返回 SVG；404／409 語義與私隱 log 邊界保持不變；
 - [x] Queue completion batch 的 ambiguous commit 會核對 completed row、R2 metadata、draft state 與 settlement ledger；已提交保留 output，明確未提交才清理及重試；
@@ -34,7 +34,7 @@
 - [x] password auth client 採 6 KiB UTF-8 總量及逐欄界限；login 不傳註冊／邀請欄位，register 只在 invite mode 傳邀請碼；login／register 分別要求 exact `200`／`201 application/json` 再共用 active-session schema，任意 server error detail 不會反映到表單；
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
-- [x] 前端 generation list 先要求 `application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非成功、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
+- [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
@@ -44,7 +44,7 @@
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
 - [x] JSON／multipart 寫入只接受精確、大小寫不敏感的 base media type；合法 charset／boundary 參數保留，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；
 - [x] Campaign Agent stub acquisition／state RPC 失敗回固定雙語 no-store `503`；前端只套用完整 bounded state envelope，暫時或 malformed 回應保留目前計劃而不偽裝成 `idle`；
-- [x] Agent GET 先要求 `application/json` 及 exact `{ state }` envelope；plan／approve 要求 exact `200 application/json`，並與 GET 共用 bounded、unique-ID normalizer，分別綁定 canonical brief 與 requested revision／timestamp／replay marker；非 canonical status、錯誤 media type、額外 outer field、malformed state 或 server detail 不會套用；
+- [x] Agent GET／plan／approve 都要求 exact `200 application/json`；GET 另要求 exact `{ state }` envelope，三者共用 bounded、unique-ID normalizer，分別綁定 canonical brief 與 requested revision／timestamp／replay marker；非 canonical status、錯誤 media type、額外 outer field、malformed state 或 server detail 不會套用；
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
 - [x] 商品圖／已完成輸出的 scoped delete preflight metadata 不可讀時回固定雙語 no-store `503`；D1 row、私人 R2 object 及 Agent revision 均不變；
 - [x] browser delete client 每次只接受一個 bounded safe ID、same-origin route 與空 body；只把 `204`／workspace-scoped `404` 視為 absent，其他狀態保留 UI 項目且不反映任意 server error detail；
@@ -87,7 +87,7 @@
 - [x] closed／invite／open registration server gates；
 - [x] email-bound one-time invite hash contract；
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
-- [x] browser multipart 不傳送本機原始檔名；upload success 只接受與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；
+- [x] browser multipart 不傳送本機原始檔名；upload success 只接受 exact `201 application/json` 及與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；
 - [x] workspace-scoped Campaign Agent 與 revision approval；
 - [x] 繁中／英文商業資料由使用者明確提供；
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；

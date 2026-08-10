@@ -81,8 +81,15 @@ export async function submitGenerationReview(result: GenerationResult, decision:
     await response.body?.cancel().catch(() => undefined)
     throw new Error(reviewFailureMessage(response.status))
   }
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(generationReviewResponseInvalidMessage)
+  }
   const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') throw new Error(generationReviewResponseInvalidMessage)
+  if (contentType !== 'application/json') {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(generationReviewResponseInvalidMessage)
+  }
   const data = await response.json().catch(() => null)
   if (!isRecord(data)
     || !hasExactKeys(data, responseKeys)

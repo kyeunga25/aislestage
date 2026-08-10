@@ -120,6 +120,10 @@ export async function loadCampaignAgentState() {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(campaignAgentUnavailableMessage)
   }
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(campaignAgentUnavailableMessage)
+  }
   const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
   if (contentType !== 'application/json') {
     await response.body?.cancel().catch(() => undefined)

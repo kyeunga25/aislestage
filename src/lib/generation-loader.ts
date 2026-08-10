@@ -92,6 +92,10 @@ export async function loadGenerations(workspaceId: string) {
     await response.body?.cancel().catch(() => undefined)
     throw new Error(generationListUnavailableMessage)
   }
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(generationListUnavailableMessage)
+  }
   const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
   if (contentType !== 'application/json') {
     await response.body?.cancel().catch(() => undefined)

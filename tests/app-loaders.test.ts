@@ -122,6 +122,14 @@ describe('workspace generation loading', () => {
     )
   })
 
+  it('rejects a generation list with a non-canonical success status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ generations: [] }, { status: 201 })))
+
+    await expect(loadGenerations('workspace-status-test')).rejects.toThrow(
+      '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    )
+  })
+
   it('uses the bounded bilingual error when the request cannot reach the API', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('synthetic network failure') }))
 
@@ -204,6 +212,16 @@ describe('Campaign Agent state loading', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ state: initialCampaignAgentState() }), {
       headers: { 'content-type': 'text/plain' }
     })))
+
+    await expect(loadCampaignAgentState()).rejects.toThrow(
+      'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    )
+  })
+
+  it('rejects Agent state with a non-canonical success status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      state: initialCampaignAgentState()
+    }, { status: 201 })))
 
     await expect(loadCampaignAgentState()).rejects.toThrow(
       'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
