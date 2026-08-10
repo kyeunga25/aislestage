@@ -16,7 +16,7 @@ import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaig
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
 import { normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
-import { loadGenerations, loadGenerationSnapshot } from './lib/generation-loader'
+import { loadGenerations, loadGenerationSnapshot, normalizeGenerationResults } from './lib/generation-loader'
 import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkspaceSummary } from './lib/types'
 import { workflowById } from './lib/workflows'
 
@@ -362,15 +362,22 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       })
       const data = await response.json().catch(() => ({})) as {
         campaignPackId?: string
-        generations?: Array<Omit<GenerationResult, 'title' | 'imageUrl'> & { imageUrl?: string | null }>
+        generations?: unknown
         error?: string
       }
-      if (!response.ok || !data.campaignPackId || !data.generations?.length) throw new Error(data.error || '未能建立完整 Campaign Pack。')
-      const created: GenerationResult[] = data.generations.map((item) => ({
-        ...item,
-        imageUrl: item.imageUrl || null,
-        title: `${item.aspectRatio} · ${workflowById(item.workflowId).title}`
-      }))
+      if (!response.ok) throw new Error(data.error || '未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
+      if (typeof data.campaignPackId !== 'string' || !data.campaignPackId || data.campaignPackId.length > 64) {
+        throw new Error('未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
+      }
+      let created: GenerationResult[]
+      try {
+        created = normalizeGenerationResults(data.generations)
+      } catch {
+        throw new Error('未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
+      }
+      if (!created.length || created.some((item) => item.campaignPackId !== data.campaignPackId)) {
+        throw new Error('未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
+      }
       generationRequestKey.current = null
       setSession((current) => current ? {
         ...current,

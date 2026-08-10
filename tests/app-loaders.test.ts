@@ -8,6 +8,27 @@ afterEach(() => {
 })
 
 describe('workspace generation loading', () => {
+  const canonicalGeneration = {
+    id: 'generation-loader-test',
+    campaignPackId: 'pack-loader-test',
+    workflowId: 'store-main',
+    aspectRatio: '1:1',
+    status: 'completed',
+    contentType: 'image/svg+xml',
+    approvedRevision: 1,
+    errorMessage: null,
+    createdAt: '2026-08-10 12:00:00',
+    reviewStatus: 'draft',
+    reviewedAt: null,
+    imageUrl: '/api/generations/generation-loader-test/image',
+    downloadUrl: null,
+    provenance: {
+      approvedRevision: 1,
+      compositionVersion: 'campaign-svg-v1',
+      generationMode: 'deterministic'
+    }
+  }
+
   it('keeps an unavailable generation list distinct from a legitimate empty list', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       code: 'unavailable',
@@ -35,6 +56,40 @@ describe('workspace generation loading', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ generations: [] })))
 
     await expect(loadGenerations('workspace-empty-test')).resolves.toEqual([])
+  })
+
+  it('accepts and labels a canonical generation envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ generations: [canonicalGeneration] })))
+
+    await expect(loadGenerations('workspace-canonical-test')).resolves.toEqual([{
+      ...canonicalGeneration,
+      title: '1:1 · 商店主圖'
+    }])
+  })
+
+  it('rejects external download URLs in an otherwise successful generation list', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      generations: [{
+        ...canonicalGeneration,
+        reviewStatus: 'approved',
+        reviewedAt: '2026-08-10 12:01:00',
+        downloadUrl: 'https://example.invalid/private-output.svg'
+      }]
+    })))
+
+    await expect(loadGenerations('workspace-url-test')).rejects.toThrow(
+      '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    )
+  })
+
+  it('rejects duplicate generation identities', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      generations: [canonicalGeneration, canonicalGeneration]
+    })))
+
+    await expect(loadGenerations('workspace-duplicate-test')).rejects.toThrow(
+      '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    )
   })
 
   it('rejects a successful response that omits the generation array', async () => {
