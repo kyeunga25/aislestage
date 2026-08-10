@@ -93,6 +93,87 @@ describe('restricted registration authentication', () => {
     expect(reused.status).toBe(403)
   })
 
+  it('reconciles an invited registration batch that commits before D1 reports failure', async () => {
+    const email = `ambiguous-beta-${crypto.randomUUID()}@example.test`
+    const inviteCode = `invite-${crypto.randomUUID()}`
+    const inviteId = await createBetaInvite(email, inviteCode)
+    let registrationBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (registrationBatch) {
+          registrationBatch = false
+          throw new TypeError('synthetic response failure after registration commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.16', origin: 'https://app.test' },
+      body: JSON.stringify({
+        email,
+        inviteCode,
+        password: 'SecurePass123!',
+        name: 'Ambiguous Beta',
+        workspaceName: 'Ambiguous Workspace'
+      })
+    }, { ...env, DB: ambiguousDb, REGISTRATION_MODE: 'invite' })
+
+    expect(response.status).toBe(201)
+    expect(response.headers.get('set-cookie')).toContain('aislestage_session=')
+    const payload = await response.json() as {
+      user: { id: string; email: string; accountType: string }
+      currentWorkspace: { id: string; name: string; role: string; availableOutputs: number; reservedOutputs: number }
+    }
+    expect(payload.user).toMatchObject({ email, accountType: 'beta' })
+    expect(payload.currentWorkspace).toMatchObject({
+      name: 'Ambiguous Workspace',
+      role: 'owner',
+      availableOutputs: 3,
+      reservedOutputs: 0
+    })
+    expect(await env.DB.prepare('SELECT status, used_by_user_id AS usedByUserId FROM beta_invites WHERE id = ?')
+      .bind(inviteId)
+      .first()).toEqual({ status: 'used', usedByUserId: payload.user.id })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(email).first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id = ? AND owner_user_id = ?')
+      .bind(payload.currentWorkspace.id, payload.user.id)
+      .first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare(`
+      SELECT event_type AS eventType, COUNT(*) AS count
+      FROM auth_attempts
+      WHERE email = ?
+      GROUP BY event_type
+    `).bind(await hashValue(email)).all()).toMatchObject({ results: [{ eventType: 'register_success', count: 1 }] })
+    expect((await dispatch('/api/session', { headers: { cookie: cookieFrom(response) } })).status).toBe(200)
+  })
+
+  it('does not reconcile an existing email as the current registration attempt', async () => {
+    const account = await registerAccount('Existing Registration Identity')
+    const before = await env.DB.prepare('SELECT COUNT(*) AS count FROM workspaces').first<{ count: number }>()
+
+    const response = await dispatch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.17', origin: 'https://app.test' },
+      body: JSON.stringify({
+        email: account.user.email,
+        password: 'DifferentPass123!',
+        name: 'Unrelated Attempt',
+        workspaceName: 'Unrelated Workspace'
+      })
+    })
+
+    expect(response.status).toBe(409)
+    expect(response.headers.get('set-cookie')).toBeNull()
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?')
+      .bind(account.user.email)
+      .first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM workspaces').first()).toEqual(before)
+  })
+
   it('rejects an invite that is not bound to the submitted email', async () => {
     const inviteCode = `invite-${crypto.randomUUID()}`
     await createBetaInvite(`intended-${crypto.randomUUID()}@example.test`, inviteCode)

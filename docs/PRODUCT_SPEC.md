@@ -38,6 +38,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 - 正式環境使用邀請註冊，不提供匿名自助註冊；
 - 一次性邀請同時綁定標準化電郵，D1 只保存 token hash 與組合 hash；
+- invite registration 以單一 D1 batch 建立帳號、workspace、owner membership、初始 allowance 並消耗邀請；若 D1 回報不確定，只在本次 server-generated user／workspace IDs、canonical password account fields、membership、allowance 及 invite linkage 全部相符時恢復成功並發出 session，不能只憑相同 email 已存在而宣稱成功；
 - 帳號狀態為 `active`、`suspended` 或 `deactivated`；
 - workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；

@@ -60,6 +60,7 @@ npm run cf:types:check
 - password endpoint 在 Access 模式停用，避免雙重登入或繞過 edge identity；
 - 密碼以 PBKDF2 衍生 hash；session token 只保存 SHA-256 hash；
 - session cookie 為 HttpOnly、SameSite=Lax，非本機環境加上 Secure；
+- password／invite 模式以一個 D1 batch 建立 user、workspace、owner membership、初始 output allowance，並在適用時消耗一次性 invite。若 batch 已提交但回應失敗，Worker 只以本次 server-generated user／workspace IDs 核對 exact email、名稱、password hash／salt、帳戶模式、workspace 狀態、owner membership、初始 allowance 及 invite linkage；完整相符才記錄一次成功並建立 session，明確未提交維持既有 conflict，衝突或不可讀狀態不會把其他同 email 帳號誤認為本次成功；
 - 所有 state-changing API 會核對 same-origin／fetch metadata；
 - JSON／multipart 寫入會先精確核對大小寫不敏感的 base media type，再進入 bounded body parser；標準 charset／boundary 參數可用，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；受保護 route 仍會先完成必要的 session／membership 核對；
 - active user 必須同時擁有 active workspace membership；
@@ -140,7 +141,7 @@ npm run release:check
 
 Integration tests 會套用所有 D1 migrations，並覆蓋：
 
-- registration、invite、session、rate limit 與 account lifecycle；
+- registration ambiguous-commit reconciliation、invite、session、rate limit 與 account lifecycle；
 - workspace isolation、private uploads、PNG／WebP malformed container rejection 及 response headers；
 - Agent revision 與 exact brief matching；
 - Campaign Pack atomicity、idempotency、D1 ambiguous-commit reconciliation 及 Queue failure rollback；

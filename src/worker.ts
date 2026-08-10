@@ -1187,6 +1187,118 @@ async function generationSourceAsset(env: Env, input: GenerationInput) {
   }
 }
 
+async function reconcilePasswordRegistration(
+  env: Env,
+  expected: {
+    userId: string
+    email: string
+    name: string
+    passwordHash: string
+    passwordSalt: string
+    accountType: AccountType
+    workspaceId: string
+    workspaceName: string
+    initialAllowance: number
+    invite: { id: string; accountType: 'beta' | 'test' } | null
+  }
+): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const user = await env.DB.prepare(`
+    SELECT email, name, password_hash AS passwordHash, password_salt AS passwordSalt,
+      account_status AS accountStatus, account_type AS accountType,
+      auth_mode AS authMode, access_subject_hash AS accessSubjectHash
+    FROM users
+    WHERE id = ?
+  `).bind(expected.userId).first<{
+    email: string
+    name: string
+    passwordHash: string
+    passwordSalt: string
+    accountStatus: string
+    accountType: string
+    authMode: string
+    accessSubjectHash: string | null
+  }>()
+  if (!user) {
+    const generatedArtifacts = await env.DB.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM workspaces WHERE id = ?) AS workspaces,
+        (SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id = ? OR user_id = ?) AS memberships,
+        (SELECT COUNT(*) FROM output_allowances WHERE workspace_id = ?) AS allowances
+    `).bind(expected.workspaceId, expected.workspaceId, expected.userId, expected.workspaceId).first<{
+      workspaces: number
+      memberships: number
+      allowances: number
+    }>()
+    return generatedArtifacts
+      && generatedArtifacts.workspaces === 0
+      && generatedArtifacts.memberships === 0
+      && generatedArtifacts.allowances === 0
+      ? 'not-committed'
+      : 'conflict'
+  }
+  if (user.email !== expected.email
+    || user.name !== expected.name
+    || user.passwordHash !== expected.passwordHash
+    || user.passwordSalt !== expected.passwordSalt
+    || user.accountStatus !== 'active'
+    || user.accountType !== expected.accountType
+    || user.authMode !== 'password'
+    || user.accessSubjectHash !== null) return 'conflict'
+
+  const [workspace, membership, allowance] = await Promise.all([
+    env.DB.prepare(`
+      SELECT owner_user_id AS ownerUserId, name, plan_status AS planStatus,
+        access_status AS accessStatus
+      FROM workspaces
+      WHERE id = ?
+    `).bind(expected.workspaceId).first<{
+      ownerUserId: string
+      name: string
+      planStatus: string
+      accessStatus: string
+    }>(),
+    env.DB.prepare(`
+      SELECT role
+      FROM workspace_memberships
+      WHERE workspace_id = ? AND user_id = ?
+    `).bind(expected.workspaceId, expected.userId).first<{ role: string }>(),
+    env.DB.prepare(`
+      SELECT available, reserved
+      FROM output_allowances
+      WHERE workspace_id = ?
+    `).bind(expected.workspaceId).first<{ available: number; reserved: number }>()
+  ])
+  if (!workspace
+    || workspace.ownerUserId !== expected.userId
+    || workspace.name !== expected.workspaceName
+    || workspace.planStatus !== 'active'
+    || workspace.accessStatus !== 'active'
+    || membership?.role !== 'owner'
+    || allowance?.available !== expected.initialAllowance
+    || allowance.reserved !== 0) return 'conflict'
+
+  if (expected.invite) {
+    const invite = await env.DB.prepare(`
+      SELECT account_type AS accountType, status, used_by_user_id AS usedByUserId,
+        used_at AS usedAt
+      FROM beta_invites
+      WHERE id = ?
+    `).bind(expected.invite.id).first<{
+      accountType: string
+      status: string
+      usedByUserId: string | null
+      usedAt: string | null
+    }>()
+    if (!invite
+      || invite.accountType !== expected.invite.accountType
+      || invite.status !== 'used'
+      || invite.usedByUserId !== expected.userId
+      || !invite.usedAt) return 'conflict'
+  }
+
+  return 'committed'
+}
+
 async function register(request: Request, env: Env) {
   const mode = registrationMode(env)
   if (mode === 'closed') return json({ error: 'AisleStage 現時只開放已有帳號登入。' }, { status: 403 })
@@ -1256,8 +1368,28 @@ async function register(request: Request, env: Env) {
     `).bind(userId, invite.id))
     await env.DB.batch(statements)
   } catch {
-    await recordAuthAttempt(env, request, 'register_failed', email)
-    return json({ error: invite ? '邀請註冊未能完成，請重新取得邀請。' : '這個電郵已經註冊。' }, { status: 409 })
+    try {
+      const reconciliation = await reconcilePasswordRegistration(env, {
+        userId,
+        email,
+        name,
+        passwordHash: passwordHash.hash,
+        passwordSalt: passwordHash.salt,
+        accountType: invite?.accountType || 'standard',
+        workspaceId,
+        workspaceName,
+        initialAllowance: initialOutputAllowance(env),
+        invite
+      })
+      if (reconciliation !== 'committed') {
+        if (reconciliation === 'conflict') console.error('password-registration-reconciliation-conflict')
+        await recordAuthAttempt(env, request, 'register_failed', email)
+        return json({ error: invite ? '邀請註冊未能完成，請重新取得邀請。' : '這個電郵已經註冊。' }, { status: 409 })
+      }
+    } catch {
+      console.error('password-registration-reconciliation-failed')
+      return json({ error: '註冊狀態暫時無法確認。 Registration state is temporarily unavailable.' }, { status: 503 })
+    }
   }
   await recordAuthAttempt(env, request, 'register_success', email)
   return sessionResponse(env, request, userId, 201)
