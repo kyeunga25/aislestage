@@ -128,6 +128,7 @@ describe('Cloudflare Access authentication', () => {
     }, assetEnv)
     expect(allowed.status).toBe(200)
     expect(allowed.headers.get('cache-control')).toBe('private, no-store')
+    expect(allowed.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(allowed.headers.get('x-content-type-options')).toBe('nosniff')
     expect(await allowed.text()).toContain('AisleStage workspace')
     expect(fetchAsset).toHaveBeenCalledOnce()

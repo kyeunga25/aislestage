@@ -973,6 +973,7 @@ async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access'
     const assetResponse = await env.ASSETS.fetch(request)
     const headers = new Headers(assetResponse.headers)
     headers.set('cache-control', 'private, no-store')
+    headers.set('cross-origin-resource-policy', 'same-origin')
     headers.set('x-content-type-options', 'nosniff')
     return new Response(assetResponse.body, {
       status: assetResponse.status,
@@ -1186,7 +1187,7 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
     await object.body.cancel().catch(() => undefined)
     return invalidProductAsset()
   }
-  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
+  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, no-store', 'cross-origin-resource-policy': 'same-origin', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
 }
 
 async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
@@ -2454,6 +2455,7 @@ async function generationImage(request: Request, env: Env, session: SessionConte
   const headers = new Headers({
     'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
     'cache-control': 'private, no-store',
+    'cross-origin-resource-policy': 'same-origin',
     'content-disposition': 'inline',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'
@@ -2480,6 +2482,7 @@ async function generationDownload(env: Env, session: SessionContext, generationI
   const headers = new Headers({
     'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
     'cache-control': 'private, no-store',
+    'cross-origin-resource-policy': 'same-origin',
     'content-disposition': `attachment; filename="aislestage-${ratio}.svg"`,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'

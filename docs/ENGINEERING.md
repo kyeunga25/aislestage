@@ -54,7 +54,7 @@ npm run cf:types:check
 ## Authentication and workspace boundary
 
 - 公開 `/` 與私人 `/app` 分開；正式 Access policy 亦保護受保護 API；
-- Static Assets 對 `/app` 及 `/app/*` 採 Worker-first；Access 模式先完成 JWT 與 active D1 membership 驗證，才經 `ASSETS` binding 返回 no-store 的 SPA shell；
+- Static Assets 對 `/app` 及 `/app/*` 採 Worker-first；Access 模式先完成 JWT 與 active D1 membership 驗證，才經 `ASSETS` binding 返回 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin` 的 SPA shell；
 - Worker 以 remote JWKS 驗證 RS256、issuer、audience、有效期、subject 與電郵；
 - Access subject 只保存單向 hash，身份與帳戶不符時 fail closed；
 - Access subject hash 及已驗證 email 的初始 D1 查詢均屬可用性邊界；任何讀取失敗回傳 no-store `503 unavailable`，不輸出資料庫細節，亦不把暫時儲存故障誤判為 membership denial；
@@ -150,7 +150,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
 - upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱，並附上 client-generated UUID v4 idempotency key；只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，hidden file input、主要上載、更換與刪除控制會一併鎖定，避免同一 UI 啟動競爭的私人 asset mutation；
 - R2 object key 只由 server 生成；
-- 私人商品圖 GET 先做 workspace-scoped D1 metadata 查詢，再讀取私人 R2 object；成功 body 使用 `private, no-store`，避免 browser 在登出或換帳號後沿用快取。真正不存在或跨 workspace 保持 `404`，D1 或 R2 暫時不可讀則回雙語 no-store `503 unavailable`，固定 log 不包含 object key、workspace ID 或原始錯誤；
+- 私人商品圖 GET 先做 workspace-scoped D1 metadata 查詢，再讀取私人 R2 object；成功 body 使用 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin`，避免 browser 在登出或換帳號後沿用快取或被跨來源頁面作為子資源嵌入。真正不存在或跨 workspace 保持 `404`，D1 或 R2 暫時不可讀則回雙語 no-store `503 unavailable`，固定 log 不包含 object key、workspace ID 或原始錯誤；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；
 - Worker 在讀 multipart body 前要求 canonical upload idempotency key，並把它用作 asset identity。同 workspace 重送只有在 object key、MIME、size 及 SHA-256 完全相同時返回原 `201` asset；同 key 不同內容回固定 `409`，跨 workspace key collision 不會返回或覆寫原 asset。候選私人 object identity 加入內容 digest，因此同 key 不同 payload 的併發寫入互不覆蓋；唯一 D1 row 的敗方只清理已確認未被 row 引用的候選 object；
 - browser upload 每次 attempt 連完整 success body 讀取共用 45 秒 deadline，transport／response stream 中斷／deadline、HTTP `408` 或 `5xx` 最多以同一 key 自動重試一次；兩次均不可用後釋放 uploading UI 並保留本機 preview。`4xx` validation／authorization／conflict、非 canonical success status、錯誤 media type、malformed 或 oversized success body 均不自動重送；
@@ -159,7 +159,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - 確定性 compositor 把已批准原圖位元組嵌入 SVG，不重新繪製商品；
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；
 - Agent 與確定性 compositor 共用文字 normalization、1:1／4:5／9:16 換行參數及合併明細行數 validator；無空格 SKU／型號 token 會按視覺單位安全拆行並保留原字元；超出任一固定安全區的文字會先停在 `needs-input` 並顯示雙語修正原因，批准及排隊前仍會再次拒絕；
-- private SVG preview／download route 加入 restrictive CSP、`private, no-store`、no-sniff 及 no-referrer headers；inline 預覽亦不可跨 browser session 快取。
+- private SVG preview／download route 加入 restrictive CSP、`private, no-store`、`Cross-Origin-Resource-Policy: same-origin`、no-sniff 及 no-referrer headers；inline 預覽不可跨 browser session 快取，亦不可作為跨來源子資源嵌入。
 - preview／download 不採信單一 R2 header；D1 與 R2 SHA-256／format／provenance metadata 必須一致才會串流私人 body。
 - preview 使用 no-store inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
 - DELETE routes 只處理一個經授權的明確 asset／generation ID；browser client 同樣限制一個 bounded safe ID、一條 same-origin route 及空 body，只接受 `204` 或 workspace-scoped `404` absence，且不解析 error payload。這個明確冪等契約使用 15 秒 AbortController deadline：逾時保留本機項目並顯示固定雙語錯誤，再次提交同一 DELETE 可由 `204`／`404` 安全收斂。處理中的 Queue output 不可刪除。任何 R2、Agent 或 D1 mutation 前，必須先成功讀取 workspace-scoped D1 preflight metadata；讀取不可用時回固定雙語 no-store `503`，並完整保留 row、object 與 Agent revision。商品圖先完成私人 R2 delete，才由 workspace-scoped Agent 以 asset identity 原子判斷並重設引用同一來源圖的 plan，最後刪除 D1 asset 記錄；若 R2 delete call 拒絕，Worker 不會繼續改動 D1 或 Agent revision，讓使用者可由保留的 D1 retry anchor 安全重試。商品圖或已完成輸出的最終 D1 DELETE 若回應不確定，只有同 workspace／同 record type 的 row 已確認不存在才回覆冪等 `204`；row 仍在或核對不可用則以雙語 `503` fail closed。若商品圖 row 仍在，已完成的 R2／Agent 清理保持安全，使用者可沿同一 D1 anchor 再次刪除。前端成功後重新讀取 authoritative Agent state，讀取失敗則保留安全降級狀態並清楚提示。

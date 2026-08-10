@@ -211,6 +211,7 @@ describe('private product assets', () => {
     const preview = await dispatch(payload.asset.previewUrl, { headers: { cookie: owner.cookie } })
     expect(preview.status).toBe(200)
     expect(preview.headers.get('cache-control')).toBe('private, no-store')
+    expect(preview.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(new Uint8Array(await preview.arrayBuffer()).slice(0, 8)).toEqual(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))
 
     const otherOwner = await registerAccount('Other Asset Owner')

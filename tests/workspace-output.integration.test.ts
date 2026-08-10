@@ -589,6 +589,7 @@ describe('workspace authorization and output allowance integrity', () => {
       expect(preview.status).toBe(200)
       expect(preview.headers.get('content-type')).toBe('image/svg+xml')
       expect(preview.headers.get('cache-control')).toBe('private, no-store')
+      expect(preview.headers.get('cross-origin-resource-policy')).toBe('same-origin')
       expect(await preview.text()).toContain('data:image/png;base64,')
 
       const crossWorkspace = await dispatch(generation.imageUrl, { headers: { cookie: otherOwner.cookie } }, deterministicEnv)
@@ -1911,6 +1912,7 @@ describe('human output review and controlled delivery', () => {
     const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
     expect(preview.status).toBe(200)
     expect(preview.headers.get('content-disposition')).toBe('inline')
+    expect(preview.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     const blockedDownload = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
     expect(blockedDownload.status).toBe(409)
 
@@ -1941,6 +1943,7 @@ describe('human output review and controlled delivery', () => {
     expect(download.status).toBe(200)
     expect(download.headers.get('content-type')).toBe('image/svg+xml')
     expect(download.headers.get('content-disposition')).toBe('attachment; filename="aislestage-1x1.svg"')
+    expect(download.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(await download.text()).toContain('Test Product')
     expect(fetchMock).not.toHaveBeenCalled()
   })
