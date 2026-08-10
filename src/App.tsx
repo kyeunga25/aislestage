@@ -15,10 +15,11 @@ import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgen
 import { submitCampaignAgentAction } from './lib/campaign-agent-client'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
 import { createCampaignPack } from './lib/campaign-pack-client'
+import { pollCampaignPack } from './lib/campaign-pack-poller'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
 import type { AccessFailureReason } from './lib/access-login'
-import { loadGenerations, loadGenerationSnapshot } from './lib/generation-loader'
+import { loadGenerationSnapshot } from './lib/generation-loader'
 import { generationReviewSourceInvalidMessage, submitGenerationReview } from './lib/generation-review-client'
 import {
   productAssetSizeMessage,
@@ -392,20 +393,35 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
         return
       }
-      for (let attempt = 0; attempt < 16; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1_250))
-        const latest = await loadGenerations(session.currentWorkspace.id)
-        setServerResults(latest)
-        const pack = latest.filter((item) => generationIds.has(item.id))
-        if (pack.length === generationIds.size && pack.every((item) => item.status === 'completed' || item.status === 'failed')) {
-          const failed = pack.find((item) => item.status === 'failed')
-          if (failed) setNotice(failed.errorMessage || '部分素材未能完成，可用輸出數已自動退回。')
-          await refreshSessionState()
-          window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
-          return
+      const pollResult = await pollCampaignPack(
+        session.currentWorkspace.id,
+        [...generationIds],
+        setServerResults
+      )
+      if (pollResult.outcome === 'terminal') {
+        const failed = pollResult.pack.find((item) => item.status === 'failed')
+        const allowanceReloaded = await refreshSessionState()
+        if (failed) {
+          const failureNotice = failed.errorMessage || '部分素材未能完成，可用輸出數已自動退回。'
+          setNotice(allowanceReloaded
+            ? failureNotice
+            : `${failureNotice} 額度暫時未能重新載入。 Allowance could not be reloaded yet.`)
+        } else if (!allowanceReloaded) {
+          setNotice('Campaign Pack 已完成，但暫時未能重新載入額度。 Campaign Pack completed, but allowance could not be reloaded yet.')
         }
+        window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+        return
       }
-      setNotice('素材仍在背景處理，可稍後在 Campaign Packs 查看最新狀態。')
+      if (pollResult.outcome === 'unavailable') {
+        const allowanceReloaded = await refreshSessionState()
+        setNotice(allowanceReloaded
+          ? 'Campaign Pack 已排隊，但輸出狀態暫時無法重新載入；請稍後在 Campaign Packs 查看。 Campaign Pack is queued, but output status is temporarily unavailable; check Campaign Packs later.'
+          : 'Campaign Pack 已排隊，但輸出狀態及額度暫時無法重新載入；請稍後在 Campaign Packs 查看。 Campaign Pack is queued, but output status and allowance are temporarily unavailable; check Campaign Packs later.')
+        return
+      }
+      setNotice(pollResult.consecutiveFailures > 0
+        ? '素材仍在背景處理，而最近一次狀態讀取未成功；請稍後在 Campaign Packs 查看。 Outputs are still processing and the latest status reload did not complete; check Campaign Packs later.'
+        : '素材仍在背景處理，可稍後在 Campaign Packs 查看最新狀態。')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能建立 Campaign Pack。')
       await refreshSessionState()
