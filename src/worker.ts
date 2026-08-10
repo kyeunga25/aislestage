@@ -4,6 +4,7 @@ import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
+import { hasSafeImageDimensions, hasValidPngStructure, MAX_IMAGE_CONTAINER_CHUNKS, pngImageDimensions } from './lib/image-validation'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
@@ -69,9 +70,6 @@ const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
-const MAX_IMAGE_CONTAINER_CHUNKS = 4_096
-const MAX_PRODUCT_IMAGE_DIMENSION = 8_192
-const MAX_PRODUCT_IMAGE_PIXELS = 32_000_000
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const MAX_USED_INVITE_DAYS = 30
@@ -514,80 +512,6 @@ function uint24LittleEndian(bytes: Uint8Array, offset: number) {
   return bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000
 }
 
-const pngCrcTable = (() => {
-  const table = new Uint32Array(256)
-  for (let index = 0; index < table.length; index += 1) {
-    let value = index
-    for (let bit = 0; bit < 8; bit += 1) value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
-    table[index] = value >>> 0
-  }
-  return table
-})()
-
-function hasValidPngChunkCrc(bytes: Uint8Array, typeOffset: number, crcOffset: number) {
-  let crc = 0xffffffff
-  for (let offset = typeOffset; offset < crcOffset; offset += 1) crc = pngCrcTable[(crc ^ bytes[offset]) & 0xff] ^ (crc >>> 8)
-  return ((crc ^ 0xffffffff) >>> 0) === uint32BigEndian(bytes, crcOffset)
-}
-
-function hasValidPngStructure(bytes: Uint8Array) {
-  let offset = 8
-  let chunkCount = 0
-  let sawHeader = false
-  let sawPalette = false
-  let sawImageData = false
-  let endedImageData = false
-  let imageDataBytes = 0
-  let colorType = -1
-
-  while (offset < bytes.length) {
-    chunkCount += 1
-    if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return false
-    if (bytes.length - offset < 12) return false
-    const length = uint32BigEndian(bytes, offset)
-    if (length > bytes.length - offset - 12) return false
-    const typeOffset = offset + 4
-    const dataOffset = offset + 8
-    const crcOffset = dataOffset + length
-    const typeBytes = bytes.subarray(typeOffset, typeOffset + 4)
-    if ([...typeBytes].some((value) => !((value >= 65 && value <= 90) || (value >= 97 && value <= 122)))) return false
-    if ((typeBytes[2] & 0x20) !== 0 || !hasValidPngChunkCrc(bytes, typeOffset, crcOffset)) return false
-
-    const name = chunkName(bytes, typeOffset)
-    if (!sawHeader && name !== 'IHDR') return false
-    if (sawImageData && name !== 'IDAT') endedImageData = true
-
-    if (name === 'IHDR') {
-      if (sawHeader || offset !== 8 || length !== 13) return false
-      const width = uint32BigEndian(bytes, dataOffset)
-      const height = uint32BigEndian(bytes, dataOffset + 4)
-      const bitDepth = bytes[dataOffset + 8]
-      colorType = bytes[dataOffset + 9]
-      const validBitDepth = (colorType === 0 && [1, 2, 4, 8, 16].includes(bitDepth))
-        || (colorType === 2 && [8, 16].includes(bitDepth))
-        || (colorType === 3 && [1, 2, 4, 8].includes(bitDepth))
-        || ((colorType === 4 || colorType === 6) && [8, 16].includes(bitDepth))
-      if (width === 0 || height === 0 || width > 0x7fffffff || height > 0x7fffffff || !validBitDepth) return false
-      if (bytes[dataOffset + 10] !== 0 || bytes[dataOffset + 11] !== 0 || bytes[dataOffset + 12] > 1) return false
-      sawHeader = true
-    } else if (name === 'PLTE') {
-      if (sawPalette || sawImageData || colorType === 0 || colorType === 4 || length === 0 || length > 768 || length % 3 !== 0) return false
-      sawPalette = true
-    } else if (name === 'IDAT') {
-      if (!sawHeader || endedImageData || (colorType === 3 && !sawPalette)) return false
-      sawImageData = true
-      imageDataBytes += length
-    } else if (name === 'IEND') {
-      return length === 0 && sawImageData && imageDataBytes > 0 && crcOffset + 4 === bytes.length
-    } else if ((typeBytes[0] & 0x20) === 0) {
-      return false
-    }
-
-    offset = crcOffset + 4
-  }
-  return false
-}
-
 function webpBitstreamDimensions(bytes: Uint8Array, name: string, dataOffset: number, length: number) {
   if (name === 'VP8L') {
     if (length < 5 || bytes[dataOffset] !== 0x2f) return null
@@ -700,7 +624,7 @@ function jpegImageDimensions(bytes: Uint8Array) {
 }
 
 function productImageDimensions(contentType: string, bytes: Uint8Array) {
-  if (contentType === 'image/png') return { width: uint32BigEndian(bytes, 16), height: uint32BigEndian(bytes, 20) }
+  if (contentType === 'image/png') return pngImageDimensions(bytes)
   if (contentType === 'image/jpeg') return jpegImageDimensions(bytes)
   if (contentType === 'image/webp') {
     const name = chunkName(bytes, 12)
@@ -712,10 +636,7 @@ function productImageDimensions(contentType: string, bytes: Uint8Array) {
 
 function hasSafeProductImageDimensions(contentType: string, bytes: Uint8Array) {
   const dimensions = productImageDimensions(contentType, bytes)
-  return Boolean(dimensions
-    && dimensions.width > 0 && dimensions.height > 0
-    && dimensions.width <= MAX_PRODUCT_IMAGE_DIMENSION && dimensions.height <= MAX_PRODUCT_IMAGE_DIMENSION
-    && dimensions.width * dimensions.height <= MAX_PRODUCT_IMAGE_PIXELS)
+  return hasSafeImageDimensions(dimensions)
 }
 
 function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {

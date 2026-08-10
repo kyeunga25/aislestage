@@ -2,7 +2,36 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenAICampaignPlanningProvider, OpenAICopyProvider, OpenAIImageProvider } from '../src/lib/providers'
 import type { CampaignBrief } from '../src/lib/types'
 
-const validPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9ZKAAAAAASUVORK5CYII='
+const validPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+
+function decodeBase64(value: string) {
+  const binary = atob(value)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+function encodeBase64(bytes: Uint8Array) {
+  return btoa(String.fromCharCode(...bytes))
+}
+
+function writeUint32BigEndian(bytes: Uint8Array, offset: number, value: number) {
+  bytes[offset] = (value >>> 24) & 0xff
+  bytes[offset + 1] = (value >>> 16) & 0xff
+  bytes[offset + 2] = (value >>> 8) & 0xff
+  bytes[offset + 3] = value & 0xff
+}
+
+function pngWithDimensions(width: number, height: number) {
+  const bytes = decodeBase64(validPngBase64)
+  writeUint32BigEndian(bytes, 16, width)
+  writeUint32BigEndian(bytes, 20, height)
+  let crc = 0xffffffff
+  for (let offset = 12; offset < 29; offset += 1) {
+    crc ^= bytes[offset]
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+  }
+  writeUint32BigEndian(bytes, 29, (crc ^ 0xffffffff) >>> 0)
+  return encodeBase64(bytes)
+}
 
 function syntheticBrief(): CampaignBrief {
   return {
@@ -280,6 +309,38 @@ describe('assisted provider privacy boundary', () => {
 
   it('rejects image data that is not a bounded base64 PNG', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: 'not-a-png' }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects a signature-only provider PNG', async () => {
+    const signatureOnly = encodeBase64(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: signatureOnly }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects a provider PNG with a corrupted chunk checksum', async () => {
+    const bytes = decodeBase64(validPngBase64)
+    bytes[bytes.length - 1] ^= 1
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: encodeBase64(bytes) }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects a provider PNG without image data or a canonical ending', async () => {
+    const headerOnly = decodeBase64(validPngBase64).slice(0, 33)
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: encodeBase64(headerOnly) }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects a structurally valid provider PNG outside the shared safe dimensions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: pngWithDimensions(9_000, 4_000) }] })))
 
     await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
       .rejects.toThrow('image response is invalid')

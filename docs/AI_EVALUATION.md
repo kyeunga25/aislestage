@@ -43,7 +43,7 @@
 2. `ASSISTED_DATA_POLICY=approved`，raw prompt、response 與圖片 payload logging 關閉；
 3. 每次只使用一張商品原圖、一個候選及固定輸出尺寸，retry 與並發有上限；
 4. provider success response 以串流實際位元組及 chunk 數限制讀取，不以 `Content-Length` 作唯一保護；文字 JSON 上限 64 KiB，image JSON 上限 12 MiB，解碼 PNG 上限 8 MiB；
-5. JSON MIME／UTF-8、exact local schema、欄位長度、base64 及 PNG signature 全部再驗證；文字 request 的 output token 上限固定，未使用的 error body 立即取消；
+5. JSON MIME／UTF-8、exact local schema、欄位長度及 base64 全部再驗證；PNG 亦須通過 signature、chunk order／CRC、非空 IDAT、canonical IEND，以及共用的單邊 8192 px／32 MP 尺寸上限；文字 request 的 output token 上限固定，未使用的 error body 立即取消；
 6. 每個 provider request 由送出至完整讀取 response body 共用 30 秒 deadline；逾時會中止 request、按 408 類暫時故障以 60 秒延遲最多重試三次，之後才永久失敗並釋放一次 reservation；
 7. enqueue 前先完成 output reservation；成功 settle，永久失敗 release；
 8. 每個 workspace 的並發、每日 assisted output 與抽象 budget units 不超過 deployment policy；
