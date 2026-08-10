@@ -7,6 +7,7 @@ import { dispatch, generationInput, registerAccount, validPngBytes } from './hel
 
 const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 const syntheticMetadataPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAEnRFWHRzeW50aGV0aWMgbWV0YWRhdGE+upmKAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+const syntheticInvalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNl+A8AAREBBWRUW6oAAAAASUVORK5CYII='
 
 function bytesBase64Url(bytes: Uint8Array) {
   let binary = ''
@@ -1516,8 +1517,11 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(payload.generations.find((item) => item.id === id)?.errorMessage).not.toContain('provider')
   })
 
-  it('never stores provider PNG metadata and releases the reserved output after terminal failure', async () => {
-    const account = await registerAccount('Provider Metadata Boundary')
+  it.each([
+    { label: 'metadata', imageBase64: syntheticMetadataPngBase64 },
+    { label: 'invalid decoded scanlines', imageBase64: syntheticInvalidFilterPngBase64 }
+  ])('never stores provider PNG $label and releases the reserved output after terminal failure', async ({ imageBase64 }) => {
+    const account = await registerAccount('Provider Image Boundary')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
     const assistedEnv = approvedAssistedEnv()
     const queued = await createGeneration(account.cookie, input, assistedEnv)
@@ -1530,7 +1534,7 @@ describe('workspace authorization and output allowance integrity', () => {
         return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Synthetic background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
       }
       if (url.endsWith('/v1/images/generations')) {
-        return Response.json({ data: [{ b64_json: syntheticMetadataPngBase64 }] })
+        return Response.json({ data: [{ b64_json: imageBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })

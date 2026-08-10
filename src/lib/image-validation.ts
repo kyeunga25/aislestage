@@ -1,6 +1,7 @@
 export const MAX_IMAGE_CONTAINER_CHUNKS = 4_096
 export const MAX_SAFE_IMAGE_DIMENSION = 8_192
 export const MAX_SAFE_IMAGE_PIXELS = 32_000_000
+export const MAX_SAFE_PNG_DECODED_BYTES = 128 * 1024 * 1024
 
 export type ImageDimensions = { width: number; height: number }
 
@@ -119,4 +120,150 @@ export function hasValidPngStructure(bytes: Uint8Array) {
     offset = crcOffset + 4
   }
   return false
+}
+
+type PngImageData = {
+  width: number
+  height: number
+  bitDepth: number
+  colorType: number
+  interlace: number
+  chunks: Uint8Array<ArrayBuffer>[]
+}
+
+const adam7Passes = [
+  { xStart: 0, yStart: 0, xStep: 8, yStep: 8 },
+  { xStart: 4, yStart: 0, xStep: 8, yStep: 8 },
+  { xStart: 0, yStart: 4, xStep: 4, yStep: 8 },
+  { xStart: 2, yStart: 0, xStep: 4, yStep: 4 },
+  { xStart: 0, yStart: 2, xStep: 2, yStep: 4 },
+  { xStart: 1, yStart: 0, xStep: 2, yStep: 2 },
+  { xStart: 0, yStart: 1, xStep: 1, yStep: 2 }
+]
+
+function pngImageData(bytes: Uint8Array): PngImageData | null {
+  if (!hasValidPngStructure(bytes)) return null
+  let offset = 8
+  let width = 0
+  let height = 0
+  let bitDepth = 0
+  let colorType = -1
+  let interlace = -1
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+
+  while (offset + 12 <= bytes.length) {
+    const length = uint32BigEndian(bytes, offset)
+    const dataOffset = offset + 8
+    const name = chunkName(bytes, offset + 4)
+    if (name === 'IHDR') {
+      width = uint32BigEndian(bytes, dataOffset)
+      height = uint32BigEndian(bytes, dataOffset + 4)
+      bitDepth = bytes[dataOffset + 8]
+      colorType = bytes[dataOffset + 9]
+      interlace = bytes[dataOffset + 12]
+    } else if (name === 'IDAT') {
+      chunks.push(bytes.slice(dataOffset, dataOffset + length))
+    } else if (name === 'IEND') {
+      break
+    }
+    offset += 12 + length
+  }
+
+  return chunks.length ? { width, height, bitDepth, colorType, interlace, chunks } : null
+}
+
+function sampledLength(size: number, start: number, step: number) {
+  return size <= start ? 0 : Math.ceil((size - start) / step)
+}
+
+function pngScanlineLengths(image: PngImageData) {
+  if (!hasSafeImageDimensions(image)) return null
+  const channels = image.colorType === 0 || image.colorType === 3
+    ? 1
+    : image.colorType === 2
+      ? 3
+      : image.colorType === 4
+        ? 2
+        : image.colorType === 6 ? 4 : 0
+  if (!channels) return null
+  const bitsPerPixel = channels * image.bitDepth
+  const passes = image.interlace === 0
+    ? [{ xStart: 0, yStart: 0, xStep: 1, yStep: 1 }]
+    : adam7Passes
+  const lengths: number[] = []
+  let totalBytes = 0
+
+  for (const pass of passes) {
+    const width = sampledLength(image.width, pass.xStart, pass.xStep)
+    const height = sampledLength(image.height, pass.yStart, pass.yStep)
+    if (!width || !height) continue
+    const rowBytes = 1 + Math.ceil(width * bitsPerPixel / 8)
+    const passBytes = rowBytes * height
+    if (!Number.isSafeInteger(passBytes) || passBytes > MAX_SAFE_PNG_DECODED_BYTES - totalBytes) return null
+    totalBytes += passBytes
+    for (let row = 0; row < height; row += 1) lengths.push(rowBytes)
+  }
+  return lengths.length ? { lengths, totalBytes } : null
+}
+
+export async function hasDecodablePngImageData(bytes: Uint8Array, signal?: AbortSignal) {
+  const image = pngImageData(bytes)
+  if (!image || signal?.aborted) return false
+  const scanlines = pngScanlineLengths(image)
+  if (!scanlines) return false
+
+  let chunkIndex = 0
+  try {
+    const compressed = new ReadableStream<BufferSource>({
+      pull(controller) {
+        if (chunkIndex < image.chunks.length) controller.enqueue(image.chunks[chunkIndex++])
+        else controller.close()
+      }
+    })
+    const reader = compressed.pipeThrough(new DecompressionStream('deflate')).getReader()
+    const abort = () => { void reader.cancel().catch(() => undefined) }
+    signal?.addEventListener('abort', abort, { once: true })
+    let rowIndex = 0
+    let rowOffset = 0
+    let totalBytes = 0
+
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          await reader.cancel().catch(() => undefined)
+          return false
+        }
+        const { done, value } = await reader.read()
+        if (done) break
+        let valueOffset = 0
+        while (valueOffset < value.byteLength) {
+          if (rowIndex >= scanlines.lengths.length) {
+            await reader.cancel().catch(() => undefined)
+            return false
+          }
+          if (rowOffset === 0 && value[valueOffset] > 4) {
+            await reader.cancel().catch(() => undefined)
+            return false
+          }
+          const consumed = Math.min(scanlines.lengths[rowIndex] - rowOffset, value.byteLength - valueOffset)
+          rowOffset += consumed
+          valueOffset += consumed
+          totalBytes += consumed
+          if (rowOffset === scanlines.lengths[rowIndex]) {
+            rowIndex += 1
+            rowOffset = 0
+          }
+        }
+      }
+      return !signal?.aborted
+        && totalBytes === scanlines.totalBytes
+        && rowIndex === scanlines.lengths.length
+        && rowOffset === 0
+    } finally {
+      signal?.removeEventListener('abort', abort)
+      reader.releaseLock()
+    }
+  } catch {
+    return false
+  }
 }

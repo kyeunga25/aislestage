@@ -1,5 +1,5 @@
 import type { BrandPack, CampaignBrief, CampaignPlanItem, Product } from './types'
-import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, pngImageDimensions } from './image-validation'
+import { hasDecodablePngImageData, hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, pngImageDimensions } from './image-validation'
 
 const TEXT_MODEL = 'gpt-5.6-terra'
 const MAX_TEXT_PROVIDER_RESPONSE_BYTES = 64 * 1024
@@ -92,7 +92,7 @@ async function readBoundedJsonResponse(response: Response, maximumBytes: number,
   }
 }
 
-function isBoundedBase64Png(value: unknown): value is string {
+async function isBoundedBase64Png(value: unknown, signal: AbortSignal) {
   if (typeof value !== 'string' || value.length < 12 || value.length % 4 !== 0) return false
   const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
   const decodedBytes = value.length / 4 * 3 - padding
@@ -115,6 +115,7 @@ function isBoundedBase64Png(value: unknown): value is string {
     return hasValidPngStructure(bytes)
       && !hasPrivatePngMetadata(bytes)
       && hasSafeImageDimensions(pngImageDimensions(bytes))
+      && await hasDecodablePngImageData(bytes, signal)
   } catch {
     return false
   }
@@ -301,11 +302,13 @@ export class OpenAIImageProvider implements ImageProvider {
         throw new Error('OpenAI image response is invalid')
       }
       const image = payload.data[0]
-      if (!isBoundedBase64Png(image.b64_json)
+      const imageBase64 = image.b64_json
+      if (typeof imageBase64 !== 'string'
+        || !await isBoundedBase64Png(imageBase64, signal)
         || (image.revised_prompt !== undefined && !boundedText(image.revised_prompt, 4_000))) {
         throw new Error('OpenAI image response is invalid')
       }
-      return { imageBase64: image.b64_json, revisedPrompt: typeof image.revised_prompt === 'string' ? image.revised_prompt.trim() : undefined }
+      return { imageBase64, revisedPrompt: typeof image.revised_prompt === 'string' ? image.revised_prompt.trim() : undefined }
     })
   }
 }

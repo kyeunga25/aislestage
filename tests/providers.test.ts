@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { hasDecodablePngImageData } from '../src/lib/image-validation'
 import { OpenAICampaignPlanningProvider, OpenAICopyProvider, OpenAIImageProvider } from '../src/lib/providers'
 import type { CampaignBrief } from '../src/lib/types'
 
 const validPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+const invalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNl+A8AAREBBWRUW6oAAAAASUVORK5CYII='
 
 function decodeBase64(value: string) {
   const binary = atob(value)
@@ -52,6 +54,21 @@ function pngWithMetadataChunk(type: 'eXIf' | 'tEXt' | 'zTXt' | 'iTXt') {
   output.set(chunk, insertionOffset)
   output.set(source.subarray(insertionOffset), insertionOffset + chunk.length)
   return encodeBase64(output)
+}
+
+function pngWithCorruptedCompressedData() {
+  const bytes = decodeBase64(validPngBase64)
+  bytes[41] ^= 0xff
+  writeUint32BigEndian(bytes, 52, pngCrc(bytes, 37, 52))
+  return encodeBase64(bytes)
+}
+
+function pngWithHighDecodedCost() {
+  const bytes = decodeBase64(pngWithDimensions(8_000, 4_000))
+  bytes[24] = 16
+  bytes[25] = 6
+  writeUint32BigEndian(bytes, 29, pngCrc(bytes, 12, 29))
+  return bytes
 }
 
 function syntheticBrief(): CampaignBrief {
@@ -350,6 +367,58 @@ describe('assisted provider privacy boundary', () => {
 
     await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
       .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects CRC-valid provider PNG image data with an invalid zlib stream', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: pngWithCorruptedCompressedData() }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects provider PNG scanlines that do not match the declared dimensions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: pngWithDimensions(2, 1) }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects a provider PNG with an invalid decoded scanline filter', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: invalidFilterPngBase64 }] })))
+
+    await expect(new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }))
+      .rejects.toThrow('image response is invalid')
+  })
+
+  it('rejects an excessive decoded scanline budget before starting decompression', async () => {
+    const decompressor = vi.fn()
+    vi.stubGlobal('DecompressionStream', decompressor)
+
+    await expect(hasDecodablePngImageData(pngWithHighDecodedCost())).resolves.toBe(false)
+    expect(decompressor).not.toHaveBeenCalled()
+  })
+
+  it('keeps PNG decompression inside the provider request deadline', async () => {
+    vi.useFakeTimers()
+    const stalled = new TransformStream({
+      transform() {
+        return new Promise<void>(() => undefined)
+      }
+    })
+    vi.stubGlobal('DecompressionStream', class {
+      readable = stalled.readable
+      writable = stalled.writable
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [{ b64_json: validPngBase64 }] })))
+
+    const outcome = new OpenAIImageProvider('test-key').generate({ prompt: 'Synthetic background', aspectRatio: '1:1', referenceImageUrls: [] }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+    await vi.advanceTimersByTimeAsync(30_000)
+    const error = await outcome
+    expect(error).toBeInstanceOf(TypeError)
+    expect((error as Error).message).toContain('request failed: 408')
   })
 
   it('rejects a provider PNG without image data or a canonical ending', async () => {
