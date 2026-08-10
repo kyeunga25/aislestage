@@ -1,4 +1,5 @@
 import type { BrandPack, CampaignAgentCheck, CampaignAgentState, CampaignBrief, CampaignPlanItem, Product } from './types'
+import { validateCampaignCopy } from './campaign-copy'
 
 export const campaignBriefLimits = {
   assetId: 80,
@@ -152,6 +153,7 @@ export function campaignStateAfterAssetDeletion(state: CampaignAgentState, delet
 
 export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: CampaignAgentState['mode'] = 'deterministic'): CampaignAgentState {
   const brief = sanitizeCampaignBrief(briefValue)
+  const copyIssues = validateCampaignCopy(brief.brand, brief.product)
   const missingFacts = [
     !brief.brand.name && '品牌名稱',
     !brief.product.name && '商品名稱',
@@ -180,9 +182,9 @@ export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: Campa
     },
     {
       id: 'claims',
-      label: '宣稱與文字安全區已設定',
-      detail: '只使用已提供的資料；價格、優惠與 CTA 會由程式排版。',
-      status: 'complete'
+      label: copyIssues.length ? '商業文字需要調整' : '宣稱與文字安全區已核對',
+      detail: copyIssues.length ? copyIssues.join(' ') : '只使用已提供的資料；價格、優惠與 CTA 會由程式排版。',
+      status: copyIssues.length ? 'action' : 'complete'
     },
     {
       id: 'outputs',
@@ -198,7 +200,7 @@ export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: Campa
     { id: 'story', workflowId: 'promo-poster', ratio: '9:16', label: '限時動態', dimensions: '1080 × 1920 px', rationale: '直向構圖預留安全區，適合手機全螢幕展示。', selected: true }
   ]
 
-  const needsInput = missingFacts.length > 0 || !brief.assetId
+  const needsInput = missingFacts.length > 0 || !brief.assetId || copyIssues.length > 0
   return {
     stage: needsInput ? 'needs-input' : 'awaiting-approval',
     revision,

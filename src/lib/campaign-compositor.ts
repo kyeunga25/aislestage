@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { campaignTextVisualUnits, normalizeCampaignText, validateCampaignCopy } from './campaign-copy'
 import type { AspectRatio, GenerationInput } from './types'
 
 export const CAMPAIGN_COMPOSITION_VERSION = 'deterministic-svg-v1'
@@ -84,25 +85,17 @@ function escapeXml(value: string) {
     .replaceAll("'", '&apos;')
 }
 
-function normalizedText(value: string) {
-  return value.replace(/\s+/g, ' ').trim()
-}
-
 function safeColor(value: string | undefined) {
   return value && /^#[0-9a-f]{6}$/i.test(value) ? value : '#155eef'
 }
 
-function visualUnits(value: string) {
-  return Array.from(value).reduce((total, character) => total + (/^[\u0000-\u00ff]$/.test(character) ? 0.55 : 1), 0)
-}
-
 function chunkText(value: string, maxUnits: number, maxLines: number) {
-  const tokens = normalizedText(value).match(/[A-Za-z0-9][A-Za-z0-9.+/%:-]*|\s+|./gu) || []
+  const tokens = normalizeCampaignText(value).match(/[A-Za-z0-9][A-Za-z0-9.+/%:-]*|\s+|./gu) || []
   const lines: string[] = []
   let current = ''
   for (const token of tokens) {
     const next = `${current}${token}`
-    if (current && visualUnits(next) > maxUnits) {
+    if (current && campaignTextVisualUnits(next) > maxUnits) {
       lines.push(current.trimEnd())
       current = token.trimStart()
     } else {
@@ -121,29 +114,21 @@ function textLines(lines: string[], x: number, y: number, lineHeight: number, an
 function campaignCopy(input: GenerationInput) {
   const benefits = input.product.benefits.filter(Boolean).slice(0, 3)
   return {
-    brand: normalizedText(input.brand.name),
-    name: normalizedText(input.product.name),
-    promotion: normalizedText(input.product.promotion),
-    benefits: benefits.map(normalizedText).filter(Boolean),
-    specification: normalizedText(input.product.specifications),
-    price: normalizedText(input.product.price),
-    cta: normalizedText(input.brand.cta)
+    brand: normalizeCampaignText(input.brand.name),
+    name: normalizeCampaignText(input.product.name),
+    promotion: normalizeCampaignText(input.product.promotion),
+    benefits: benefits.map(normalizeCampaignText).filter(Boolean),
+    specification: normalizeCampaignText(input.product.specifications),
+    price: normalizeCampaignText(input.product.price),
+    cta: normalizeCampaignText(input.brand.cta)
   }
 }
 
 export function validateCompositionInput(input: GenerationInput) {
   const issues: string[] = []
-  const benefits = input.product.benefits.filter(Boolean)
-  const detailUnits = visualUnits(`${benefits.slice(0, 3).join(' · ')} ${input.product.specifications}`)
   if (input.referenceAssetIds.length !== 1) issues.push('每個輸出必須使用一張已批准的商品圖片。')
   if (!['1:1', '4:5', '9:16'].includes(input.aspectRatio)) issues.push('這個輸出比例尚未支援確定性合成。')
-  if (visualUnits(normalizedText(input.brand.name)) > 13) issues.push('品牌名稱超出素材安全區。')
-  if (visualUnits(normalizedText(input.product.name)) > 10) issues.push('商品名稱超出素材安全區。')
-  if (visualUnits(normalizedText(input.product.price)) > 9) issues.push('價格超出素材安全區。')
-  if (visualUnits(normalizedText(input.product.promotion)) > 24) issues.push('優惠內容超出素材安全區。')
-  if (visualUnits(normalizedText(input.brand.cta)) > 9) issues.push('CTA 超出素材安全區。')
-  if (benefits.length > 3) issues.push('每個素材最多顯示三個商品賣點。')
-  if (detailUnits > 85) issues.push('商品賣點與規格超出素材安全區。')
+  issues.push(...validateCampaignCopy(input.brand, input.product))
   return issues
 }
 

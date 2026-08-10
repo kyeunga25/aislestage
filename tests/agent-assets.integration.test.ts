@@ -502,6 +502,51 @@ describe('workspace Campaign Agent', () => {
     }
   })
 
+  it('keeps commercial text outside the composition safe area out of approval and supports correction', async () => {
+    const owner = await registerAccount('Agent Copy Safe Area')
+    const uploaded = await uploadPng(owner.cookie, 'copy-safe-area-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const brief = validBrief(asset.id)
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: { ...brief, product: { ...brief.product, price: 'HK$ 12,345,678,900' } } })
+    })
+
+    expect(planned.status).toBe(200)
+    const { state } = await planned.json() as { state: { stage: string; revision: number; checks: Array<{ id: string; status: string; detail: string }> } }
+    expect(state.stage).toBe('needs-input')
+    expect(state.checks.find((check) => check.id === 'claims')).toMatchObject({
+      status: 'action',
+      detail: expect.stringMatching(/價格超出素材安全區.*Price exceeds the composition safe area/)
+    })
+
+    const approval = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: state.revision })
+    })
+    expect(approval.status).toBe(409)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+
+    const corrected = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief })
+    })
+    const { state: correctedState } = await corrected.json() as { state: { stage: string; revision: number } }
+    expect(correctedState).toMatchObject({ stage: 'awaiting-approval', revision: state.revision + 1 })
+
+    const correctedApproval = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: correctedState.revision })
+    })
+    expect(correctedApproval.status).toBe(200)
+    expect(await correctedApproval.json()).toMatchObject({ state: { stage: 'approved', revision: correctedState.revision } })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
   it('refuses approval until missing commercial facts and the product asset are supplied', async () => {
     const owner = await registerAccount('Incomplete Agent Brief')
     const incompleteBrief = validBrief('')

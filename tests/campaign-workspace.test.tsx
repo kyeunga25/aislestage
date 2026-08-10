@@ -57,6 +57,33 @@ describe('Campaign Workspace product contract', () => {
     })).toEqual([])
   })
 
+  it('shows the composition correction and withholds approval in the workspace', () => {
+    const product = { ...starterProduct, price: 'HK$ 12,345,678,900' }
+    const agentState = buildCampaignPlan({ assetId: 'synthetic-asset', intent: '新品推廣', brand: starterBrand, product })
+    const markup = renderToStaticMarkup(<CampaignWorkspace
+      brand={starterBrand}
+      product={product}
+      intent="新品推廣"
+      image={{ name: 'synthetic.png', url: '/synthetic.png', asset: null, status: 'demo', error: '' }}
+      agentState={agentState}
+      agentBusy={false}
+      generationAvailable={true}
+      onBrandChange={vi.fn()}
+      onProductChange={vi.fn()}
+      onIntentChange={vi.fn()}
+      onImageSelected={vi.fn()}
+      onImageDelete={vi.fn()}
+      onPlan={vi.fn()}
+      onApprove={vi.fn()}
+      onGenerate={vi.fn()}
+    />)
+
+    expect(markup).toContain('商業文字需要調整')
+    expect(markup).toContain('Price exceeds the composition safe area')
+    expect(markup).toContain('重新檢查資料')
+    expect(markup).not.toContain('批准輸出計劃')
+  })
+
   it('resets local Agent state only when the deleted asset is the planned source', () => {
     const state = buildCampaignPlan({
       assetId: 'planned-asset',

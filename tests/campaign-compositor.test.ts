@@ -41,6 +41,6 @@ describe('deterministic Campaign Pack composition', () => {
 
   it('rejects copy that cannot fit the narrowest approved layout', () => {
     const unsafe = input({ brand: { ...input().brand, cta: '這是一個不能安全放入按鈕的超長行動呼籲' } })
-    expect(validateCompositionInput(unsafe)).toContain('CTA 超出素材安全區。')
+    expect(validateCompositionInput(unsafe)).toEqual(expect.arrayContaining([expect.stringContaining('CTA 超出素材安全區。')]))
   })
 })
