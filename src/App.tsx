@@ -12,6 +12,7 @@ import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
+import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
 import { normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
@@ -106,13 +107,14 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function hydrateWorkspace(nextSession: AuthedSession) {
-    const [generationSnapshot, campaignAgent] = await Promise.all([
+    const [generationSnapshot, campaignAgentSnapshot] = await Promise.all([
       loadGenerationSnapshot(nextSession.currentWorkspace.id),
-      agentAction('').catch(() => initialCampaignAgentState())
+      loadCampaignAgentSnapshot()
     ])
-    if (generationSnapshot.results) setServerResults(generationSnapshot.results)
-    if (generationSnapshot.error) setNotice(generationSnapshot.error)
-    applyCampaignState(campaignAgent)
+    if (generationSnapshot.results !== null) setServerResults(generationSnapshot.results)
+    if (campaignAgentSnapshot.state !== null) applyCampaignState(campaignAgentSnapshot.state)
+    const availabilityErrors = [generationSnapshot.error, campaignAgentSnapshot.error].filter(Boolean)
+    if (availabilityErrors.length) setNotice(availabilityErrors.join(' '))
   }
 
   useEffect(() => {
@@ -254,7 +256,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       let planReloadFailed = false
       const nextAgentState = demoMode
         ? initialCampaignAgentState()
-        : await agentAction('').catch(() => {
+        : await loadCampaignAgentState().catch(() => {
             planReloadFailed = true
             return campaignStateAfterAssetDeletion(agentState, deletedAssetId)
           })

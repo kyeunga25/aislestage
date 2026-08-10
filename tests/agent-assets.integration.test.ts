@@ -624,6 +624,24 @@ describe('private product assets', () => {
 })
 
 describe('workspace Campaign Agent', () => {
+  it('maps Agent binding acquisition failures to a bounded unavailable response', async () => {
+    const owner = await registerAccount('Unavailable Agent Binding')
+    const unavailableEnv = {
+      ...env,
+      CAMPAIGN_AGENT: undefined as unknown as typeof env.CAMPAIGN_AGENT
+    }
+
+    const response = await dispatch('/api/campaign-agent', {
+      headers: { cookie: owner.cookie }
+    }, unavailableEnv)
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      error: 'Campaign Agent 暫時未能完成這個動作。 Campaign Agent is temporarily unavailable.'
+    })
+  })
+
   it('keeps the plan workspace-scoped and requires the current revision for approval', async () => {
     const owner = await registerAccount('Agent Owner')
     const uploaded = await uploadPng(owner.cookie, 'agent-speaker.png')

@@ -1269,8 +1269,8 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
 }
 
 async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve') {
-  const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
   try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
     if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
     if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
     if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
@@ -1312,7 +1312,7 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     return json({ error: 'Not found.' }, { status: 404 })
   } catch {
     console.error('campaign-agent-request-failed', { action })
-    return json({ error: 'Campaign Agent 暫時未能完成這個動作。' }, { status: 503 })
+    return json({ error: 'Campaign Agent 暫時未能完成這個動作。 Campaign Agent is temporarily unavailable.' }, { status: 503 })
   }
 }
 

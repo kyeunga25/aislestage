@@ -90,6 +90,8 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 idle -> needs-input -> awaiting-approval -> approved
 ```
 
+Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-store `503`，不洩漏 Durable Object 細節。工作區只套用完整且經 bounded schema 核對的 Agent state；網絡、非成功或 malformed payload 保留目前計劃並提示暫時不可用，不會把故障畫成真正 `idle` state。
+
 - instance name 由 Worker 使用 session workspace ID 決定；
 - browser 不可以直接讀寫 Durable Object storage；
 - 只有 server callable method 可以改變 state；
