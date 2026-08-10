@@ -1608,6 +1608,59 @@ describe('human output review and controlled delivery', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('reports private output metadata unavailable for preview and approved download', async () => {
+    const account = await registerAccount('Output Metadata Availability')
+    const { id } = await completedDeterministicGeneration(account)
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const metadataFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations g') || !query.includes('g.output_key AS outputKey')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic output metadata read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    for (const path of [`/api/generations/${id}/image`, `/api/generations/${id}/download`]) {
+      const response = await dispatch(path, {
+        headers: { cookie: account.cookie }
+      }, { ...env, DB: metadataFailureDb })
+
+      expect(response.status, path).toBe(503)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({
+        code: 'unavailable',
+        error: '私人輸出暫時無法讀取。 Private output is temporarily unavailable.'
+      })
+    }
+  })
+
+  it('reports private output object storage unavailable for preview and approved download', async () => {
+    const account = await registerAccount('Output Object Availability')
+    const { id } = await completedDeterministicGeneration(account)
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const unavailableBucket = {
+      get: async () => { throw new TypeError('synthetic private output read failure') }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    for (const path of [`/api/generations/${id}/image`, `/api/generations/${id}/download`]) {
+      const response = await dispatch(path, {
+        headers: { cookie: account.cookie }
+      }, { ...env, MEDIA_BUCKET: unavailableBucket })
+
+      expect(response.status, path).toBe(503)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({
+        code: 'unavailable',
+        error: '私人輸出暫時無法讀取。 Private output is temporarily unavailable.'
+      })
+    }
+  })
+
   it('fails closed when private R2 output metadata no longer matches the canonical SVG format', async () => {
     const account = await registerAccount('R2 Output Format Guard')
     const { id, input } = await completedDeterministicGeneration(account)

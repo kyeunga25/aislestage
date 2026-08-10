@@ -2360,6 +2360,7 @@ type CanonicalOutputResult =
   | { state: 'ready'; object: R2ObjectBody }
   | { state: 'missing' }
   | { state: 'invalid' }
+  | { state: 'unavailable' }
 
 function hasCanonicalOutputMetadata(row: StoredGenerationRow, object: R2Object) {
   const metadata = object.customMetadata
@@ -2381,7 +2382,13 @@ function r2Sha256(object: R2Object) {
 
 async function canonicalGenerationOutput(env: Env, row: StoredGenerationRow): Promise<CanonicalOutputResult> {
   if (!row.outputKey) return { state: 'missing' }
-  const object = await env.MEDIA_BUCKET.get(row.outputKey)
+  let object: R2ObjectBody | null
+  try {
+    object = await env.MEDIA_BUCKET.get(row.outputKey)
+  } catch {
+    console.error('generation-output-object-read-failed')
+    return { state: 'unavailable' }
+  }
   if (!object) return { state: 'missing' }
   if (!hasCanonicalOutputMetadata(row, object)) {
     await object.body.cancel().catch(() => undefined)
@@ -2394,10 +2401,24 @@ function invalidOutputFormat() {
   return json({ error: '輸出格式驗證失敗，請重新建立。 Output format validation failed; recreate this output.' }, { status: 409 })
 }
 
+function privateOutputUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人輸出暫時無法讀取。 Private output is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
-  const row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  let row: StoredGenerationRow | null
+  try {
+    row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-output-metadata-read-failed')
+    return privateOutputUnavailable()
+  }
   if (!row || row.status !== 'completed' || !row.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
   const output = await canonicalGenerationOutput(env, row)
+  if (output.state === 'unavailable') return privateOutputUnavailable()
   if (output.state === 'missing') return json({ error: 'Image not found.' }, { status: 404 })
   if (output.state === 'invalid') return invalidOutputFormat()
   const headers = new Headers({
@@ -2412,10 +2433,17 @@ async function generationImage(request: Request, env: Env, session: SessionConte
 }
 
 async function generationDownload(env: Env, session: SessionContext, generationId: string) {
-  const row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  let row: StoredGenerationRow | null
+  try {
+    row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-output-metadata-read-failed')
+    return privateOutputUnavailable()
+  }
   if (!row || row.status !== 'completed' || !row.outputKey) return json({ error: 'Output not found.' }, { status: 404 })
   if (row.reviewStatus !== 'approved') return json({ error: '輸出需經人工核准後才可下載。' }, { status: 409 })
   const output = await canonicalGenerationOutput(env, row)
+  if (output.state === 'unavailable') return privateOutputUnavailable()
   if (output.state === 'missing') return json({ error: 'Output not found.' }, { status: 404 })
   if (output.state === 'invalid') return invalidOutputFormat()
   const ratio = row.aspectRatio.replace(':', 'x')

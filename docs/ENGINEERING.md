@@ -115,6 +115,8 @@ Queue consumer 的首個 D1 claim UPDATE 若回應不確定，在設定的三次
 
 Queue 完成只會結算 technical output allowance，並把輸出設為私人 `draft`；它不會自動開放正式下載。授權成員可經 inline preview 核對輸出，只有 `owner` 或 `admin` 可向 workspace-scoped review route 提交 `approve` 或 `reject`，並同時提交預期的批准 revision。
 
+私人 preview 與已批准 download 的 workspace-scoped D1 generation metadata 或 R2 output object 暫時不可讀時，Worker 回雙語 no-store `503 unavailable`，不返回 SVG body，固定 log 不包含 generation、workspace 或 object 識別資料。真正不存在／跨 workspace 仍為 `404`，canonical integrity 失配仍為 `409`。
+
 審核更新只接受小型、嚴格結構的 JSON。D1 以 `draft` 條件更新確保 approve／reject 競爭時只有首個決定生效；相同決定重送會返回既有結果，相反決定返回 conflict。若 review UPDATE 已提交但回應失敗，Worker 會按 workspace／generation ID 核對 completed 狀態、目標 decision、expected revision 及非空 reviewed timestamp；完整相符才以 replay 回覆，仍為 draft 則保留重試錨點並返回雙語 `503`，相反決定仍不可覆寫。API 只返回通用 composition version、generation mode 與批准 revision，不返回 R2 key、來源 asset ID、正文 digest 或 reviewer identity。只有 `approved` 記錄才取得獨立 download URL；preview 與 download 都再次核對 active workspace ownership。Queue 對完整 UTF-8 SVG 計算 SHA-256，由 R2 `put` 驗收並把同一 canonical digest 寫入 D1。若 completion／settlement batch 拋錯，Worker 會重新核對 completed row、R2 checksum／provenance、draft review state 及唯一 settlement ledger；完整 commit 會保留 object 並 ack，明確未 commit 才刪 object 及進入 bounded retry。不可判定或衝突時不盲目刪除可能已被 D1 引用的私人 output，只寫入不含識別資料的事件。approve 先以 R2 `head` 核對 checksum／metadata；preview／download 亦要求 D1 content type 為正式 `image/svg+xml`，並與 R2 SHA-256、HTTP metadata、workflow、批准 revision、composition version 及 generation mode 完全一致。不一致時不寫入核准決定；已核准後才失配亦會取消 object stream 並返回 no-store conflict JSON。
 
 ## Product fidelity
