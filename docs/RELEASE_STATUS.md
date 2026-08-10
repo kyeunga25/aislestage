@@ -62,6 +62,7 @@
 - [x] Agent approval 嚴格驗證單一正整數 revision，並在同 revision 併發／重送時保持冪等；
 - [x] 修改資料後前端計劃立即失效，Worker 再獨立比對；
 - [x] atomic + idempotent 三輸出 Campaign Pack API；
+- [x] Campaign Pack 只接受精確外層欄位及二欄 output envelope，未知欄位不會預留額度或建立記錄；
 - [x] Campaign Pack idempotency key 綁定完整 canonical generation identities，同 key 不同 payload fail closed；
 - [x] Queue batch failure 全數退回、duplicate delivery 冪等；
 - [x] deterministic 1:1、4:5、9:16 private SVG；

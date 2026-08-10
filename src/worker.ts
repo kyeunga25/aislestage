@@ -1386,12 +1386,31 @@ type CampaignPackRequest = {
   outputs: Array<Pick<GenerationInput, 'workflowId' | 'aspectRatio'>>
 }
 
+const campaignPackRequestKeys = [
+  'idempotencyKey',
+  'workspaceId',
+  'approvedRevision',
+  'intent',
+  'brand',
+  'product',
+  'referenceAssetIds',
+  'outputs'
+] as const
+const campaignPackOutputKeys = ['workflowId', 'aspectRatio'] as const
+
+function hasExactKeys(value: unknown, expectedKeys: readonly string[]) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  return keys.length === expectedKeys.length && keys.every((key) => expectedKeys.includes(key))
+}
+
 function campaignPackInputs(value: unknown): { request: CampaignPackRequest; inputs: GenerationInput[] } | null {
-  if (!value || typeof value !== 'object') return null
+  if (!hasExactKeys(value, campaignPackRequestKeys)) return null
   const request = value as Partial<CampaignPackRequest>
   if (!boundedString(request.idempotencyKey, 100) || !/^[a-z0-9_-]{16,100}$/i.test(request.idempotencyKey!)) return null
   if (!boundedString(request.workspaceId, 64) || !Number.isSafeInteger(request.approvedRevision) || Number(request.approvedRevision) <= 0) return null
   if (!Array.isArray(request.outputs) || request.outputs.length < 1 || request.outputs.length > 3) return null
+  if (!request.outputs.every((output) => hasExactKeys(output, campaignPackOutputKeys))) return null
   const inputs = request.outputs.map((output) => ({
     workspaceId: request.workspaceId!,
     workflowId: output?.workflowId,

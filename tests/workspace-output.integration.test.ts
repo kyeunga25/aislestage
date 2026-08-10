@@ -47,24 +47,28 @@ async function createGeneration(cookie: string, input: ReturnType<typeof generat
   }, envOverride)
 }
 
+function campaignPackBody(input: Awaited<ReturnType<typeof approvedInput>>, idempotencyKey = crypto.randomUUID()) {
+  return {
+    idempotencyKey,
+    workspaceId: input.workspaceId,
+    approvedRevision: input.approvedRevision,
+    intent: input.intent,
+    brand: input.brand,
+    product: input.product,
+    referenceAssetIds: input.referenceAssetIds,
+    outputs: [
+      { workflowId: 'store-main', aspectRatio: '1:1' },
+      { workflowId: 'meta-ad', aspectRatio: '4:5' },
+      { workflowId: 'promo-poster', aspectRatio: '9:16' }
+    ]
+  }
+}
+
 async function createCampaignPack(cookie: string, input: Awaited<ReturnType<typeof approvedInput>>, idempotencyKey = crypto.randomUUID(), envOverride: Env = env) {
   return dispatch('/api/campaign-packs', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie, origin: 'https://app.test' },
-    body: JSON.stringify({
-      idempotencyKey,
-      workspaceId: input.workspaceId,
-      approvedRevision: input.approvedRevision,
-      intent: input.intent,
-      brand: input.brand,
-      product: input.product,
-      referenceAssetIds: input.referenceAssetIds,
-      outputs: [
-        { workflowId: 'store-main', aspectRatio: '1:1' },
-        { workflowId: 'meta-ad', aspectRatio: '4:5' },
-        { workflowId: 'promo-poster', aspectRatio: '9:16' }
-      ]
-    })
+    body: JSON.stringify(campaignPackBody(input, idempotencyKey))
   }, envOverride)
 }
 
@@ -206,6 +210,39 @@ describe('workspace authorization and output allowance integrity', () => {
       expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = ?')
         .bind(account.currentWorkspace.id, 'reservation')
         .first()).toEqual({ count: 3 })
+    }
+  })
+
+  it('rejects unknown Campaign Pack envelope fields without reserving outputs', async () => {
+    const account = await registerAccount('Strict Campaign Pack Envelope')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const validBody = campaignPackBody(input)
+    const malformedBodies = [
+      { ...validBody, unexpected: true },
+      {
+        ...validBody,
+        outputs: validBody.outputs.map((output, index) => index === 0 ? { ...output, unexpected: true } : output)
+      }
+    ]
+
+    for (const body of malformedBodies) {
+      const response = await dispatch('/api/campaign-packs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+        body: JSON.stringify(body)
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: 'Invalid Campaign Pack payload.' })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
     }
   })
 

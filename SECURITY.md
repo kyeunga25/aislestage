@@ -21,6 +21,7 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - Product-asset deletion conditionally resets Agent state inside the workspace Durable Object only when the current brief references that exact asset. Deleting an unrelated private source keeps the existing revision, and the browser reloads authoritative Agent state after deletion instead of assuming every plan was reset.
 - Generation requires the current approved revision and an exact match of the approved brief, source asset, workflow, and ratio.
 - Campaign Pack creation is atomic and idempotent; Queue processing and output allowance accounting remain idempotent under duplicate delivery.
+- Campaign Pack creation accepts an exact outer JSON envelope and exact two-field output entries. Unknown fields or malformed structures fail before approval reads, allowance reservation, D1 writes, or Queue work.
 - A Campaign Pack idempotency key is bound to the complete canonical generation identities stored with the existing pack. Reuse with a different revision, brief, asset, workflow, ratio, or output count fails with `409` and cannot return an unrelated pack or alter allowance.
 - Completed outputs remain private drafts. Only an owner or admin can make the immutable review decision, and only approved output receives a separate download route.
 - Generated previews and approved downloads are served only through authorized, workspace-scoped Worker routes with private caching and restrictive response headers.

@@ -108,7 +108,7 @@ idle -> needs-input -> awaiting-approval -> approved
 
 ## 7. Campaign Pack 與保真
 
-正式 UI 固定提交三個已批准輸出。D1 會在同一 batch 建立 pack、三個 reservation 及三個 generation records；不足三個可用輸出時不留下部分 pack。重送相同 idempotency key 只有在 canonical generation identities（revision、brief、asset、workflow 及比例）完全相同時才返回原有 pack；同 key 搭配不同請求會 `409`，不改寫既有 pack 或額度。
+正式 UI 固定提交三個已批准輸出。Campaign Pack API 只接受 contract 指定的八個外層欄位，而每個 output 只接受 `workflowId` 與 `aspectRatio`；未知欄位或 malformed envelope 會在任何批准查詢、額度預留或資料寫入前以 `400` 拒絕。D1 會在同一 batch 建立 pack、三個 reservation 及三個 generation records；不足三個可用輸出時不留下部分 pack。重送相同 idempotency key 只有在 canonical generation identities（revision、brief、asset、workflow 及比例）完全相同時才返回原有 pack；同 key 搭配不同請求會 `409`，不改寫既有 pack 或額度。
 
 確定性程式負責：
 

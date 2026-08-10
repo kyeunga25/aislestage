@@ -87,7 +87,7 @@ Approval route 使用同一 bounded JSON reader，並只接受恰好一個正整
 
 ## Atomic Campaign Pack
 
-`POST /api/campaign-packs` 接受一個 client-generated idempotency key，以及 1–3 個已批准輸出。正式 UI 固定提交 1:1、4:5、9:16 三個輸出。
+`POST /api/campaign-packs` 接受一個 client-generated idempotency key，以及 1–3 個已批准輸出。外層 JSON 必須恰好包含公開 contract 的八個欄位，每個 output 亦只能包含 `workflowId` 與 `aspectRatio`；未知欄位或 malformed envelope 會在批准狀態、allowance、D1 及 Queue 操作前以 `400` 拒絕。正式 UI 固定提交 1:1、4:5、9:16 三個輸出。
 
 D1 batch 會在同一交易內：
 
