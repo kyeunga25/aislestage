@@ -24,7 +24,7 @@
 - [x] 私人商品圖 GET 的 scoped D1 metadata 或 R2 object 暫時不可讀時回雙語 no-store `503 unavailable`；不存在／跨 workspace 保持 `404`，固定 log 不包含私人識別資料；
 - [x] 商品圖 D1 insert 的 ambiguous commit 會以 request-bound asset ID 與 canonical 欄位 reconciliation；已提交不刪 R2，明確未提交才補償刪除 object；
 - [x] pre-onboarded Access subject UPDATE ambiguous commit 以 exact user／email／name／subject hash／auth mode／status post-read reconciliation；未提交返回 `unavailable` 並可安全重試；
-- [x] PNG critical chunk／CRC／結尾、indexed-color PLTE bit-depth 容量及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；signature-only、truncated、checksum／length 失配、超額 palette 與無 image data 上傳均在 D1／R2 前 fail closed；
+- [x] PNG critical chunk／CRC／結尾、indexed-color PLTE bit-depth 容量及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；private PNG 與 unknown WebP 自訂 payload 會拒絕，而 public PNG color chunk 及標準 extended WebP fixture 保持可用；signature-only、truncated、checksum／length 失配、超額 palette 與無 image data 上傳均在 D1／R2 前 fail closed；
 - [x] PNG IHDR、JPEG frame、WebP VP8X／VP8／VP8L header 尺寸在解碼前限制為單邊 8192 px 及 32 MP；三種 oversized fixture 均不建立 D1／R2 asset；
 - [x] PNG chunk、JPEG structural marker 與 WebP chunk 掃描均採固定 4,096 traversal-count 上限；過度分段 JPEG 在寫入 D1／R2 前 fail closed；
 - [x] scheduled auth cleanup 刪除過期 session、7 日前 auth attempt、過期 pending／revoked invite hash 及 30 日前 used invite linkage，同時保留仍有效／近期記錄；

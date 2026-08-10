@@ -76,6 +76,23 @@ function writeUint32BigEndian(bytes: Uint8Array, offset: number, value: number) 
   bytes[offset + 3] = value & 0xff
 }
 
+function writeUint32LittleEndian(bytes: Uint8Array, offset: number, value: number) {
+  bytes[offset] = value & 0xff
+  bytes[offset + 1] = (value >>> 8) & 0xff
+  bytes[offset + 2] = (value >>> 16) & 0xff
+  bytes[offset + 3] = (value >>> 24) & 0xff
+}
+
+function joinBytes(parts: Uint8Array[]) {
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0))
+  let offset = 0
+  for (const part of parts) {
+    output.set(part, offset)
+    offset += part.byteLength
+  }
+  return output
+}
+
 function pngCrc(bytes: Uint8Array, start: number, end: number) {
   let crc = 0xffffffff
   for (let offset = start; offset < end; offset += 1) {
@@ -94,6 +111,11 @@ function pngChunk(type: string, data: Uint8Array) {
   return chunk
 }
 
+function pngWithAncillaryChunk(type: string, data: Uint8Array) {
+  const source = validPngBytes()
+  return joinBytes([source.slice(0, 33), pngChunk(type, data), source.slice(33)])
+}
+
 function indexedPngWithPaletteEntries(entries: number) {
   const header = new Uint8Array(13)
   writeUint32BigEndian(header, 0, 1)
@@ -109,12 +131,31 @@ function indexedPngWithPaletteEntries(entries: number) {
     pngChunk('IDAT', new Uint8Array([120, 156, 99, 96, 0, 0, 0, 2, 0, 1])),
     pngChunk('IEND', new Uint8Array())
   ]
-  const output = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0))
-  let offset = 0
-  for (const part of parts) {
-    output.set(part, offset)
-    offset += part.byteLength
-  }
+  return joinBytes(parts)
+}
+
+function webpChunk(type: string, data: Uint8Array) {
+  const chunk = new Uint8Array(8 + data.byteLength + (data.byteLength % 2))
+  chunk.set(Uint8Array.from(type, (character) => character.charCodeAt(0)), 0)
+  writeUint32LittleEndian(chunk, 4, data.byteLength)
+  chunk.set(data, 8)
+  return chunk
+}
+
+function extendedWebpWithTrailingChunk(trailing?: { type: string; data: Uint8Array }) {
+  const source = validWebpBytes()
+  const imageDataLength = source[16] + source[17] * 0x100 + source[18] * 0x10000 + source[19] * 0x1000000
+  const chunks = [
+    webpChunk('VP8X', new Uint8Array(10)),
+    webpChunk('VP8L', source.slice(20, 20 + imageDataLength))
+  ]
+  if (trailing) chunks.push(webpChunk(trailing.type, trailing.data))
+  const payload = joinBytes(chunks)
+  const output = new Uint8Array(12 + payload.byteLength)
+  output.set(Uint8Array.from('RIFF', (character) => character.charCodeAt(0)), 0)
+  writeUint32LittleEndian(output, 4, output.byteLength - 8)
+  output.set(Uint8Array.from('WEBP', (character) => character.charCodeAt(0)), 8)
+  output.set(payload, 12)
   return output
 }
 
@@ -464,6 +505,29 @@ describe('private product assets', () => {
 
     expect(response.status).toBe(400)
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('結構') })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(0)
+  })
+
+  it.each([
+    { label: 'public PNG color data', bytes: pngWithAncillaryChunk('gAMA', new Uint8Array([0, 0, 177, 143])), name: 'public-color.png', contentType: 'image/png' as const },
+    { label: 'standard extended WebP', bytes: extendedWebpWithTrailingChunk(), name: 'extended.webp', contentType: 'image/webp' as const }
+  ])('accepts bounded $label without custom payloads', async ({ bytes, name, contentType }) => {
+    const owner = await registerAccount('Public Image Container Data')
+    const response = await uploadImage(owner.cookie, bytes, name, contentType)
+
+    expect(response.status).toBe(201)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 1 })
+  })
+
+  it.each([
+    { label: 'private PNG chunk', bytes: pngWithAncillaryChunk('vpAg', new Uint8Array([1, 2, 3, 4])), name: 'private-chunk.png', contentType: 'image/png' as const },
+    { label: 'unknown WebP chunk', bytes: extendedWebpWithTrailingChunk({ type: 'PRIV', data: new Uint8Array([1, 2, 3, 4]) }), name: 'private-chunk.webp', contentType: 'image/webp' as const }
+  ])('rejects a $label before storing custom container data', async ({ bytes, name, contentType }) => {
+    const owner = await registerAccount('Private Image Container Data')
+    const response = await uploadImage(owner.cookie, bytes, name, contentType)
+
+    expect(response.status).toBe(400)
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
     expect((await env.MEDIA_BUCKET.list({ prefix: `workspaces/${owner.currentWorkspace.id}/assets/product-source/` })).objects).toHaveLength(0)
   })

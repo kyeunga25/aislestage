@@ -55,7 +55,8 @@ export function hasPrivatePngMetadata(bytes: Uint8Array) {
     chunkCount += 1
     if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
     const length = uint32BigEndian(bytes, offset)
-    if (privatePngMetadataChunks.has(chunkName(bytes, offset + 4))) return true
+    const typeOffset = offset + 4
+    if ((bytes[typeOffset + 1] & 0x20) !== 0 || privatePngMetadataChunks.has(chunkName(bytes, typeOffset))) return true
     offset += 12 + length
   }
   return false

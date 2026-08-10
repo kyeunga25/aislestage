@@ -580,7 +580,7 @@ function hasValidWebpStructure(bytes: Uint8Array) {
       const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
       if (!dimensions || !canvas || dimensions.width !== canvas.width || dimensions.height !== canvas.height) return false
       image = { name, ...dimensions }
-    } else if (!image) {
+    } else {
       return false
     }
 
@@ -1018,7 +1018,7 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const bytes = new Uint8Array(await value.arrayBuffer())
   if (!hasValidProductImageSignature(value.type, bytes)) return json({ error: '圖片內容與檔案格式不符。' }, { status: 415 })
   if (hasPrivateImageMetadata(value.type, bytes)) {
-    return json({ error: '圖片含有 EXIF、XMP、文字 metadata 或過度複雜結構；請重新匯出後再上傳。 Invalid image metadata or structure; export the image again.' }, { status: 400 })
+    return json({ error: '圖片含有 EXIF、XMP、文字／自訂 metadata 或過度複雜結構；請重新匯出後再上傳。 Invalid image metadata or structure; export the image again.' }, { status: 400 })
   }
   if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
     return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
