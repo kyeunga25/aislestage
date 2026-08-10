@@ -64,7 +64,7 @@ npm run cf:types:check
 - active user 必須同時擁有 active workspace membership；
 - 無權資產與輸出一律返回 not found，避免跨 workspace 枚舉；
 - 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；
-- 定期 trigger 清理過期 session 與短期驗證記錄。
+- 定期 trigger 清理過期 session、7 日前的登入嘗試、已過期 pending／revoked invite hash，以及 30 日前已使用 invite 的 hash／account linkage。
 
 ## Campaign Agent lifecycle
 

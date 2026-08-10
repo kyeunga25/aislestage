@@ -73,6 +73,7 @@ const MAX_IMAGE_CONTAINER_CHUNKS = 4_096
 const MAX_PRODUCT_IMAGE_DIMENSION = 8_192
 const MAX_PRODUCT_IMAGE_PIXELS = 32_000_000
 const MAX_AUTH_ATTEMPT_DAYS = 7
+const MAX_USED_INVITE_DAYS = 30
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
 const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
@@ -856,10 +857,15 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
   return { user, currentWorkspace: workspaces[0] }
 }
 
-async function cleanExpiredSessions(env: Env) {
+async function cleanExpiredAuthState(env: Env) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP'),
-    env.DB.prepare("DELETE FROM auth_attempts WHERE created_at < datetime('now', ?)").bind(`-${MAX_AUTH_ATTEMPT_DAYS} days`)
+    env.DB.prepare("DELETE FROM auth_attempts WHERE created_at < datetime('now', ?)").bind(`-${MAX_AUTH_ATTEMPT_DAYS} days`),
+    env.DB.prepare(`
+      DELETE FROM beta_invites
+      WHERE (status IN ('pending', 'revoked') AND expires_at <= CURRENT_TIMESTAMP)
+        OR (status = 'used' AND used_at IS NOT NULL AND used_at < datetime('now', ?))
+    `).bind(`-${MAX_USED_INVITE_DAYS} days`)
   ])
 }
 
@@ -1872,7 +1878,7 @@ export default {
   },
 
   async scheduled(_controller, env, ctx): Promise<void> {
-    ctx.waitUntil(cleanExpiredSessions(env))
+    ctx.waitUntil(cleanExpiredAuthState(env))
   },
 
   async queue(batch, env): Promise<void> {

@@ -1,5 +1,7 @@
 import { env } from 'cloudflare:workers'
+import { createExecutionContext, createScheduledController, waitOnExecutionContext } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
+import worker from '../src/worker'
 import { cookieFrom, dispatch, registerAccount } from './helpers'
 
 function base64Url(bytes: Uint8Array) {
@@ -161,6 +163,30 @@ describe('restricted registration authentication', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ authenticated: false })
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0')
+  })
+
+  it('minimizes expired authentication and invite records on the scheduled cleanup', async () => {
+    const account = await registerAccount('Scheduled Auth Cleanup')
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ('expired-session', ?, datetime('now', '-1 minute'))").bind(account.user.id),
+      env.DB.prepare("INSERT INTO auth_attempts (id, email, ip_address, event_type, created_at) VALUES ('old-attempt', 'old-email-key', 'old-ip-key', 'login_failed', datetime('now', '-8 days'))"),
+      env.DB.prepare("INSERT INTO auth_attempts (id, email, ip_address, event_type, created_at) VALUES ('recent-attempt', 'recent-email-key', 'recent-ip-key', 'login_failed', datetime('now', '-1 day'))"),
+      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at) VALUES ('expired-pending', 'token-expired-pending', 'recipient-expired-pending', 'pending', datetime('now', '-1 minute'))"),
+      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at) VALUES ('expired-revoked', 'token-expired-revoked', 'recipient-expired-revoked', 'revoked', datetime('now', '-1 minute'))"),
+      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at, used_by_user_id, used_at) VALUES ('old-used', 'token-old-used', 'recipient-old-used', 'used', datetime('now', '+7 days'), ?, datetime('now', '-31 days'))").bind(account.user.id),
+      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at, used_by_user_id, used_at) VALUES ('recent-used', 'token-recent-used', 'recipient-recent-used', 'used', datetime('now', '+7 days'), ?, datetime('now', '-29 days'))").bind(account.user.id),
+      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at) VALUES ('future-pending', 'token-future-pending', 'recipient-future-pending', 'pending', datetime('now', '+1 day'))")
+    ])
+
+    const context = createExecutionContext()
+    await worker.scheduled(createScheduledController(), env, context)
+    await waitOnExecutionContext(context)
+
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE token_hash = 'expired-session'").first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare("SELECT id FROM auth_attempts WHERE id IN ('old-attempt', 'recent-attempt') ORDER BY id").all()).toMatchObject({ results: [{ id: 'recent-attempt' }] })
+    expect(await env.DB.prepare("SELECT id FROM beta_invites WHERE id IN ('expired-pending', 'expired-revoked', 'old-used', 'recent-used', 'future-pending') ORDER BY id").all()).toMatchObject({
+      results: [{ id: 'future-pending' }, { id: 'recent-used' }]
+    })
   })
 
   it('blocks suspended accounts from existing sessions and new logins', async () => {

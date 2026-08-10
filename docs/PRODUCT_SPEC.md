@@ -123,7 +123,7 @@ Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存�
 Static Assets -> React SPA
 Worker API -> D1 + private R2 + CampaignAgent Durable Object
 Campaign Pack -> Queue batch -> deterministic compositor -> private R2
-Cron Trigger -> expired session and auth-attempt cleanup
+Cron Trigger -> expired session, auth-attempt and invite-retention cleanup
 ```
 
 公開 repository 只保存 generic binding 名稱與 placeholder。實際帳戶、D1 identifier、資源名稱、URL、secret 及營運資料留在受保護部署設定。
