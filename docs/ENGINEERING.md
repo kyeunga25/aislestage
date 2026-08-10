@@ -105,6 +105,8 @@ D1 batch 會在同一交易內：
 
 單輸出相容 route 亦把 reservation、generation row 及 Queue send 視為分段狀態機。Reservation batch 拋錯時會以 workspace + server-generated generation ID 核對唯一 ledger event；已提交 reservation 才繼續。Generation INSERT 拋錯時會核對完整 queued row、canonical `input_json`、成本、revision 及空白 output state；已提交才送 Queue，明確沒有 row 才釋放 reservation。Reconciliation 不可讀或發生欄位衝突時只返回通用 `503` 及無識別資料事件，不做可能造成 queued row／allowance 分離的盲目補償。
 
+Queue consumer 的首個 D1 claim UPDATE 若回應不確定，在設定的三次重試窗口內不會開始 provider／R2 work，也不會把仍為 queued 或同 attempt processing 的 generation 標示失敗或釋放 reservation。Worker 只讀取 status／processing attempt 作保守分流：可處理或暫時不可讀的狀態延遲至下一 attempt；已完成、已失敗、已拒絕、缺失或已由較新 attempt 接管的狀態只會安全 ack，不被舊訊息覆寫。
+
 ## Human output review
 
 Queue 完成只會結算 technical output allowance，並把輸出設為私人 `draft`；它不會自動開放正式下載。授權成員可經 inline preview 核對輸出，只有 `owner` 或 `admin` 可向 workspace-scoped review route 提交 `approve` 或 `reject`，並同時提交預期的批准 revision。

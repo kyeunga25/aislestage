@@ -724,6 +724,104 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await ledgerCount(generation!.id, 'release')).toBe(1)
   })
 
+  it('retries without releasing when a queue claim definitely does not commit', async () => {
+    const account = await registerAccount('Rejected Queue Claim')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const queued = await createGeneration(account.cookie, input)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes("SET status = 'processing', processing_attempt = ?")) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before queue claim commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const fetchMock = vi.fn(async () => { throw new Error('An unclaimed generation must not call a provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const messageId = crypto.randomUUID()
+
+    const delivered = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...env, DB: rejectingDb }
+    )
+
+    expect(delivered.explicitAcks).toHaveLength(0)
+    expect(delivered.retryMessages).toEqual([{ msgId: messageId }])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'queued', processingAttempt: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('defers an unconfirmed committed queue claim to the next attempt', async () => {
+    const account = await registerAccount('Ambiguous Queue Claim')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const queued = await createGeneration(account.cookie, input)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes("SET status = 'processing', processing_attempt = ?")) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after queue claim commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const fetchMock = vi.fn(async () => { throw new Error('An unconfirmed claim must not call a provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const messageId = crypto.randomUUID()
+
+    const ambiguous = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...env, DB: ambiguousDb }
+    )
+
+    expect(ambiguous.explicitAcks).toHaveLength(0)
+    expect(ambiguous.retryMessages).toEqual([{ msgId: messageId }])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await env.DB.prepare(`
+      SELECT status, processing_attempt AS processingAttempt, output_key AS outputKey
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ status: 'processing', processingAttempt: 1, outputKey: null })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+
+    const recovered = await deliver({ generationId: id, input }, 2, messageId)
+    expect(recovered.explicitAcks).toEqual([messageId])
+    expect(recovered.retryMessages).toHaveLength(0)
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'completed', processingAttempt: 2 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
   it('settles one successful generation once under duplicate queue delivery', async () => {
     const account = await registerAccount('Successful Queue')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

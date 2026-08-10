@@ -2555,13 +2555,40 @@ export default {
       let workspaceId: string | null = null
       let storedOutputKey: string | null = null
       try {
-        const claim = await env.DB.prepare(`
-          UPDATE generations
-          SET status = 'processing', processing_attempt = ?, error_message = NULL
-          WHERE id = ?
-            AND (status = 'queued' OR (status = 'processing' AND processing_attempt < ?))
-        `).bind(message.attempts, generationId, message.attempts).run()
-        if (!claim.meta.changes) {
+        let claimChanges: number
+        try {
+          const claim = await env.DB.prepare(`
+            UPDATE generations
+            SET status = 'processing', processing_attempt = ?, error_message = NULL
+            WHERE id = ?
+              AND (status = 'queued' OR (status = 'processing' AND processing_attempt < ?))
+          `).bind(message.attempts, generationId, message.attempts).run()
+          claimChanges = claim.meta.changes
+        } catch (error) {
+          if (message.attempts <= 3) {
+            try {
+              const state = await env.DB.prepare(`
+                SELECT status, processing_attempt AS processingAttempt
+                FROM generations
+                WHERE id = ?
+              `).bind(generationId).first<{ status: string; processingAttempt: number }>()
+              if (!state || state.status === 'completed' || state.status === 'failed' || state.status === 'rejected') {
+                message.ack()
+                continue
+              }
+              if (state.status === 'processing' && state.processingAttempt > message.attempts) {
+                message.ack()
+                continue
+              }
+            } catch {
+              console.error('generation-claim-reconciliation-failed')
+            }
+            message.retry({ delaySeconds: 60 })
+            continue
+          }
+          throw error
+        }
+        if (!claimChanges) {
           message.ack()
           continue
         }
