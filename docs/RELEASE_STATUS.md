@@ -68,6 +68,7 @@
 - [x] atomic + idempotent 三輸出 Campaign Pack API；
 - [x] Campaign Pack 只接受精確外層欄位及二欄 output envelope，未知欄位不會預留額度或建立記錄；
 - [x] Campaign Pack idempotency key 綁定完整 canonical generation identities，同 key 不同 payload fail closed；
+- [x] Campaign Pack D1 batch ambiguous commit 以 server-generated pack／generation IDs、canonical queued rows 及唯一 reservations reconciliation；已提交仍送入 Queue，無對應 row 的 delivery 安全 no-op；
 - [x] 單輸出 reservation batch／generation INSERT ambiguous commit 以 generation ID、唯一 ledger 及 canonical queued row reconciliation；已提交繼續入 Queue，明確無 row 才退回；
 - [x] Queue batch failure 全數退回、duplicate delivery 冪等；
 - [x] deterministic 1:1、4:5、9:16 private SVG；

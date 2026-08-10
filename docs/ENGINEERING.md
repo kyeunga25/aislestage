@@ -96,7 +96,7 @@ D1 batch 會在同一交易內：
 3. 為每個輸出建立 reservation ledger；
 4. 建立三個 queued generation 記錄。
 
-沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 時，Worker 會把新請求 sanitize 成 canonical GenerationInput identities，與既有 pack 的所有 `input_json` identities 排序比對；數量、revision、brief、asset、workflow 或比例任一不同均 `409`，只有完全相同才返回原 pack 且不再預留。相同 helper 亦處理 D1 唯一鍵競爭。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
+沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 時，Worker 會把新請求 sanitize 成 canonical GenerationInput identities，與既有 pack 的所有 `input_json` identities 排序比對；數量、revision、brief、asset、workflow 或比例任一不同均 `409`，只有完全相同才返回原 pack 且不再預留。相同 helper 亦處理 D1 唯一鍵競爭。若 D1 batch 已提交但回應傳輸失敗，Worker 會先核對 exact pack、三個 canonical queued rows、空白 output state 及每個輸出的唯一 reservation ledger；完整 commit 才發送 Queue 並返回 `202`，明確未提交才回退至 idempotency replay，衝突則以無識別資料事件及通用 `503` fail closed。若 reconciliation 本身暫時不可讀，Worker 仍發送只含本次 server-generated IDs 的 bounded Queue batch，避免可能已提交的 pack 永久滯留，但不宣稱成功；未對應 D1 row 的孤兒 delivery 無法取得 generation claim，只會安全 ack。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
 
 單輸出相容 route 亦把 reservation、generation row 及 Queue send 視為分段狀態機。Reservation batch 拋錯時會以 workspace + server-generated generation ID 核對唯一 ledger event；已提交 reservation 才繼續。Generation INSERT 拋錯時會核對完整 queued row、canonical `input_json`、成本、revision 及空白 output state；已提交才送 Queue，明確沒有 row 才釋放 reservation。Reconciliation 不可讀或發生欄位衝突時只返回通用 `503` 及無識別資料事件，不做可能造成 queued row／allowance 分離的盲目補償。
 
@@ -143,7 +143,7 @@ Integration tests 會套用所有 D1 migrations，並覆蓋：
 - registration、invite、session、rate limit 與 account lifecycle；
 - workspace isolation、private uploads、PNG／WebP malformed container rejection 及 response headers；
 - Agent revision 與 exact brief matching；
-- Campaign Pack atomicity、idempotency、Queue failure rollback；
+- Campaign Pack atomicity、idempotency、D1 ambiguous-commit reconciliation 及 Queue failure rollback；
 - workspace active-output cap 及 assisted multi-gate fail-closed policy；
 - duplicate Queue delivery、retry recovery、settlement 與 release；
 - deterministic SVG 不呼叫外部 provider；

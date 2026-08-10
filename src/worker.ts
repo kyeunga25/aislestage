@@ -1637,6 +1637,111 @@ async function campaignPackReplayResponse(env: Env, workspaceId: string, idempot
   return json({ campaignPackId: existing.id, generations: await packGenerations(env, workspaceId, existing.id), replayed: true })
 }
 
+async function reconcileCampaignPackCreation(
+  env: Env,
+  workspaceId: string,
+  campaignPackId: string,
+  idempotencyKey: string,
+  approvedRevision: number,
+  queued: ReadonlyArray<{ generationId: string; input: GenerationInput }>
+): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const pack = await env.DB.prepare(`
+    SELECT workspace_id AS workspaceId, idempotency_key AS idempotencyKey,
+      approved_revision AS approvedRevision
+    FROM campaign_packs
+    WHERE id = ? AND workspace_id = ?
+  `).bind(campaignPackId, workspaceId).first<{
+    workspaceId: string
+    idempotencyKey: string
+    approvedRevision: number
+  }>()
+  if (!pack) return 'not-committed'
+  if (pack.workspaceId !== workspaceId
+    || pack.idempotencyKey !== idempotencyKey
+    || pack.approvedRevision !== approvedRevision) return 'conflict'
+
+  const generations = await env.DB.prepare(`
+    SELECT id, workspace_id AS workspaceId, campaign_pack_id AS campaignPackId,
+      workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
+      output_cost AS outputCost, credit_cost AS creditCost, input_json AS inputJson,
+      approved_revision AS approvedRevision, output_key AS outputKey,
+      output_content_type AS outputContentType, processing_attempt AS processingAttempt,
+      error_message AS errorMessage, review_status AS reviewStatus,
+      reviewed_at AS reviewedAt, reviewed_by_user_id AS reviewedByUserId,
+      composition_version AS compositionVersion, generation_mode AS generationMode,
+      output_sha256 AS outputSha256, completed_at AS completedAt
+    FROM generations
+    WHERE workspace_id = ? AND campaign_pack_id = ?
+  `).bind(workspaceId, campaignPackId).all<{
+    id: string
+    workspaceId: string
+    campaignPackId: string
+    workflowId: string
+    aspectRatio: string
+    status: string
+    outputCost: number
+    creditCost: number
+    inputJson: string
+    approvedRevision: number
+    outputKey: string | null
+    outputContentType: string | null
+    processingAttempt: number
+    errorMessage: string | null
+    reviewStatus: string
+    reviewedAt: string | null
+    reviewedByUserId: string | null
+    compositionVersion: string | null
+    generationMode: string | null
+    outputSha256: string | null
+    completedAt: string | null
+  }>()
+  if (generations.results.length !== queued.length) return 'conflict'
+  const rowsById = new Map(generations.results.map((row) => [row.id, row]))
+
+  for (const item of queued) {
+    const row = rowsById.get(item.generationId)
+    if (!row
+      || row.workspaceId !== workspaceId
+      || row.campaignPackId !== campaignPackId
+      || row.workflowId !== item.input.workflowId
+      || row.aspectRatio !== item.input.aspectRatio
+      || row.status !== 'queued'
+      || row.outputCost !== OUTPUT_COST
+      || row.creditCost !== OUTPUT_COST
+      || row.inputJson !== JSON.stringify(item.input)
+      || row.approvedRevision !== item.input.approvedRevision
+      || row.outputKey !== null
+      || row.outputContentType !== null
+      || row.processingAttempt !== 0
+      || row.errorMessage !== null
+      || row.reviewStatus !== 'draft'
+      || row.reviewedAt !== null
+      || row.reviewedByUserId !== null
+      || row.compositionVersion !== null
+      || row.generationMode !== null
+      || row.outputSha256 !== null
+      || row.completedAt !== null) return 'conflict'
+
+    const ledger = await env.DB.prepare(`
+      SELECT event_type AS eventType, amount, provider_event_id AS providerEventId, note
+      FROM output_ledger
+      WHERE workspace_id = ? AND generation_id = ?
+    `).bind(workspaceId, item.generationId).all<{
+      eventType: string
+      amount: number
+      providerEventId: string | null
+      note: string
+    }>()
+    if (ledger.results.length !== 1
+      || ledger.results[0].eventType !== 'reservation'
+      || ledger.results[0].amount !== -OUTPUT_COST
+      || ledger.results[0].providerEventId !== null
+      || ledger.results[0].note !== 'Campaign Pack output reservation') return 'conflict'
+  }
+
+  return 'committed'
+}
+
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
@@ -1685,6 +1790,7 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   const queued = inputs.map((input) => ({ generationId: crypto.randomUUID(), input }))
   const outputCount = queued.length * OUTPUT_COST
   const activeLimit = maxActiveGenerations(env)
+  let creationReconciliationUnavailable = false
   try {
     const statements = [
       env.DB.prepare(`
@@ -1724,9 +1830,28 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
       return json({ error: `至少需要 ${outputCount} 個可用輸出。` }, { status: 409 })
     }
   } catch {
-    const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs).catch(() => null)
-    if (replay) return replay
-    return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+    try {
+      const reconciliation = await reconcileCampaignPackCreation(
+        env,
+        workspace.id,
+        campaignPackId,
+        parsedPack.request.idempotencyKey,
+        parsedPack.request.approvedRevision,
+        queued
+      )
+      if (reconciliation === 'not-committed') {
+        const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
+        if (replay) return replay
+        return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+      }
+      if (reconciliation === 'conflict') {
+        console.error('campaign-pack-create-reconciliation-conflict')
+        return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+      }
+    } catch {
+      console.error('campaign-pack-create-reconciliation-failed')
+      creationReconciliationUnavailable = true
+    }
   }
 
   try {
@@ -1735,6 +1860,8 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     for (const item of queued) await failGenerationAndRelease(env, workspace.id, item.generationId, 'Unable to enqueue Campaign Pack output.').catch(() => null)
     return json({ error: 'Unable to queue Campaign Pack.' }, { status: 503 })
   }
+
+  if (creationReconciliationUnavailable) return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
 
   return json({ campaignPackId, generations: await packGenerations(env, workspace.id, campaignPackId), reservedOutputs: outputCount }, { status: 202 })
 }

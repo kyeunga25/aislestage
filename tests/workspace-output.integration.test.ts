@@ -217,6 +217,118 @@ describe('workspace authorization and output allowance integrity', () => {
     }
   })
 
+  it('reconciles a Campaign Pack batch that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Pack Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    let creationBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (creationBatch) {
+          creationBatch = false
+          throw new TypeError('synthetic response failure after Campaign Pack commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+    const sentGenerationIds: string[] = []
+    const sendBatch = vi.fn(async (messages: Array<{ body: GenerationMessage }>) => {
+      sentGenerationIds.push(...messages.map((message) => message.body.generationId))
+    })
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(
+      account.cookie,
+      input,
+      crypto.randomUUID(),
+      { ...env, DB: ambiguousDb, GENERATION_QUEUE: holdingQueue }
+    )
+
+    expect(response.status).toBe(202)
+    const payload = await response.json() as {
+      campaignPackId: string
+      generations: Array<{ id: string; status: string }>
+      reservedOutputs: number
+    }
+    expect(payload.generations).toHaveLength(3)
+    expect(payload.generations.every((generation) => generation.status === 'queued')).toBe(true)
+    expect(payload.reservedOutputs).toBe(3)
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sentGenerationIds.sort()).toEqual(payload.generations.map((generation) => generation.id).sort())
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE id = ? AND workspace_id = ?')
+      .bind(payload.campaignPackId, account.currentWorkspace.id)
+      .first()).toEqual({ count: 1 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+    for (const generation of payload.generations) {
+      expect(await ledgerCount(generation.id, 'reservation')).toBe(1)
+      expect(await ledgerCount(generation.id, 'settlement')).toBe(0)
+      expect(await ledgerCount(generation.id, 'release')).toBe(0)
+    }
+  })
+
+  it('dispatches a committed Campaign Pack when reconciliation is temporarily unreadable', async () => {
+    const account = await registerAccount('Unreadable Pack Reconciliation')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const idempotencyKey = crypto.randomUUID()
+    let creationBatch = true
+    const unreadableDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT workspace_id AS workspaceId, idempotency_key AS idempotencyKey')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic reconciliation read failure') }
+          })
+        }
+      },
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (creationBatch) {
+          creationBatch = false
+          throw new TypeError('synthetic response failure after Campaign Pack commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+    const sentMessages: GenerationMessage[] = []
+    const sendBatch = vi.fn(async (messages: Array<{ body: GenerationMessage }>) => {
+      sentMessages.push(...messages.map((message) => message.body))
+    })
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(
+      account.cookie,
+      input,
+      idempotencyKey,
+      { ...env, DB: unreadableDb, GENERATION_QUEUE: holdingQueue }
+    )
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'Unable to create Campaign Pack.' })
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sentMessages).toHaveLength(3)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+
+    const replay = await createCampaignPack(account.cookie, input, idempotencyKey, manuallyDeliveredEnv())
+    expect(replay.status).toBe(200)
+    const replayPayload = await replay.json() as { generations: Array<{ id: string }>; replayed: boolean }
+    expect(replayPayload.replayed).toBe(true)
+    expect(replayPayload.generations.map((generation) => generation.id).sort())
+      .toEqual(sentMessages.map((message) => message.generationId).sort())
+
+    const deterministicEnv = { ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined }
+    for (const message of sentMessages) {
+      const delivered = await deliver(message, 1, crypto.randomUUID(), deterministicEnv)
+      expect(delivered.explicitAcks).toHaveLength(1)
+    }
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
+    for (const message of sentMessages) {
+      expect(await ledgerCount(message.generationId, 'settlement')).toBe(1)
+      expect(await ledgerCount(message.generationId, 'release')).toBe(0)
+    }
+  })
+
   it('rejects unknown Campaign Pack envelope fields without reserving outputs', async () => {
     const account = await registerAccount('Strict Campaign Pack Envelope')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
