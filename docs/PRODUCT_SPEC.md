@@ -104,7 +104,7 @@ idle -> needs-input -> awaiting-approval -> approved
 - Agent plan 在寫入 Durable Object 或呼叫可選 provider 前，先核對來源圖屬於目前 workspace 且 D1／R2 SHA-256、大小、MIME、asset kind 與 metadata 一致；preview、Agent 批准及 Queue 讀取亦會再次核對，任一不一致均不返回 object body、不改寫有效 revision、不批准亦不呼叫 provider；
 - D1 寫入失敗時清理剛建立的單一 R2 object；
 - 來源圖和輸出不得互相覆寫。
-- 使用者可逐一刪除明確的商品圖或已完成輸出；只有目前 Agent plan 實際引用該商品圖時，刪除才會在 Durable Object 內按 asset identity 重設計劃，刪除同 workspace 的無關圖片不會清除待審核或已批准 revision。
+- 使用者可逐一刪除明確的商品圖或已完成輸出；商品圖只有在私人 R2 delete 完成後，才會在 Durable Object 內按 asset identity 重設目前實際引用它的計劃，再刪除 D1 記錄。若 R2 delete call 拒絕，後續的 D1 與 Agent mutation 不會執行；刪除同 workspace 的無關圖片亦不會清除現有 revision。
 
 ## 7. Campaign Pack 與保真
 

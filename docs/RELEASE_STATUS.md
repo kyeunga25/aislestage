@@ -22,6 +22,7 @@
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
 - [x] JSON／multipart 寫入只接受精確、大小寫不敏感的 base media type；合法 charset／boundary 參數保留，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
+- [x] synthetic R2 delete failure 會保留 D1 retry anchor 及 Agent revision；只有 R2 delete 完成後才按 asset identity 重設 plan；
 - [x] `/app` 與 `/app/*` 採 Worker-first，工作區 shell 在 Access JWT 及 active D1 membership 驗證後才返回；
 - [x] feature branch 的完整 repository checks，以及 390–1280px browser／visual QA 完成；
 - [ ] fixed-SHA PR、正式 deployment 及 live acceptance 完成。

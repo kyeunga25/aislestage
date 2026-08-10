@@ -368,6 +368,39 @@ describe('private product assets', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
   })
 
+  it('preserves an approved Agent plan when private asset deletion fails', async () => {
+    const owner = await registerAccount('Failed Asset Delete')
+    const uploaded = await uploadPng(owner.cookie, 'keep-on-failure.png')
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    const { state: plannedState } = await planned.json() as { state: { revision: number } }
+    const approved = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: plannedState.revision })
+    })
+    const { state: approvedState } = await approved.json() as { state: { revision: number; approvedAt: string } }
+    const failingBucket = {
+      delete: async () => { throw new Error('synthetic R2 delete failure') }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    const failed = await dispatch(asset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    }, { ...env, MEDIA_BUCKET: failingBucket })
+
+    expect(failed.status).toBe(503)
+    expect(await dispatch(asset.previewUrl, { headers: { cookie: owner.cookie } }).then((response) => response.status)).toBe(200)
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json())).toMatchObject({
+      state: { stage: 'approved', revision: approvedState.revision, approvedAt: approvedState.approvedAt, brief: { assetId: asset.id } }
+    })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 1 })
+  })
+
   it('preserves the current Agent plan when deleting a different product asset', async () => {
     const owner = await registerAccount('Unrelated Asset Delete')
     const plannedAssetResponse = await uploadPng(owner.cookie, 'planned-source.png')
