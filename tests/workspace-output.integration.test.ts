@@ -131,6 +131,18 @@ async function expectTerminalQueueFailure(
   await expectTerminalGenerationState(account, generationId)
 }
 
+async function completedDeterministicGeneration(
+  account: Awaited<ReturnType<typeof registerAccount>>
+) {
+  const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+  const queued = await createGeneration(account.cookie, input)
+  expect(queued.status).toBe(202)
+  const { id } = await queued.json() as { id: string }
+  const delivery = await deliver({ generationId: id, input })
+  expect(delivery.explicitAcks).toHaveLength(1)
+  return { id, input }
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -206,7 +218,8 @@ describe('workspace authorization and output allowance integrity', () => {
     for (const generation of listedPayload.generations) {
       expect(Object.keys(generation).sort()).toEqual([
         'approvedRevision', 'aspectRatio', 'campaignPackId', 'contentType', 'createdAt',
-        'errorMessage', 'id', 'imageUrl', 'status', 'workflowId'
+        'downloadUrl', 'errorMessage', 'id', 'imageUrl', 'provenance', 'reviewedAt',
+        'reviewStatus', 'status', 'workflowId'
       ].sort())
       expect(JSON.stringify(generation)).not.toMatch(/output[_-]?key|storage|workspaces\//i)
     }
@@ -677,5 +690,154 @@ describe('workspace authorization and output allowance integrity', () => {
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, { headers: { cookie: account.cookie } })
     const payload = await listed.json() as { generations: Array<{ id: string; errorMessage: string }> }
     expect(payload.generations.find((item) => item.id === id)?.errorMessage).not.toContain('provider')
+  })
+})
+
+describe('human output review and controlled delivery', () => {
+  it('keeps completed output as a private draft until an idempotent human approval unlocks download', async () => {
+    const account = await registerAccount('Output Reviewer')
+    const otherOwner = await registerAccount('Other Output Reviewer')
+    const fetchMock = vi.fn(async () => { throw new Error('Deterministic review must not call an external provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { id, input } = await completedDeterministicGeneration(account)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+
+    const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    })
+    expect(listed.status).toBe(200)
+    const listedPayload = await listed.json() as {
+      generations: Array<{
+        id: string
+        reviewStatus: string
+        reviewedAt: string | null
+        imageUrl: string | null
+        downloadUrl: string | null
+        provenance: { approvedRevision: number; compositionVersion: string | null; generationMode: string | null }
+      }>
+    }
+    const draft = listedPayload.generations.find((item) => item.id === id)
+    expect(draft).toMatchObject({
+      reviewStatus: 'draft',
+      reviewedAt: null,
+      imageUrl: `/api/generations/${id}/image`,
+      downloadUrl: null,
+      provenance: {
+        approvedRevision: input.approvedRevision,
+        compositionVersion: 'deterministic-svg-v1',
+        generationMode: 'deterministic'
+      }
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(200)
+    expect(preview.headers.get('content-disposition')).toBe('inline')
+    const blockedDownload = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(blockedDownload.status).toBe(409)
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(200)
+    expect(await approved.json()).toMatchObject({
+      generation: { id, reviewStatus: 'approved', downloadUrl: `/api/generations/${id}/download` },
+      replayed: false
+    })
+
+    const replayed = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(replayed.status).toBe(200)
+    expect(await replayed.json()).toMatchObject({ generation: { reviewStatus: 'approved' }, replayed: true })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+
+    const crossWorkspace = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: otherOwner.cookie } })
+    expect(crossWorkspace.status).toBe(404)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(200)
+    expect(download.headers.get('content-type')).toBe('image/svg+xml')
+    expect(download.headers.get('content-disposition')).toBe('attachment; filename="aislestage-1x1.svg"')
+    expect(await download.text()).toContain('Test Product')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects unauthorized, stale, malformed, and oversized review decisions without changing the draft', async () => {
+    const account = await registerAccount('Bounded Reviewer')
+    const otherOwner = await registerAccount('Cross Workspace Reviewer')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const reviewPath = `/api/generations/${id}/review`
+
+    const crossWorkspace = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: otherOwner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(crossWorkspace.status).toBe(404)
+
+    const malformed = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'publish' })
+    })
+    expect(malformed.status).toBe(400)
+
+    const stale = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision + 1 })
+    })
+    expect(stale.status).toBe(409)
+
+    const oversized = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision, padding: 'x'.repeat(2_048) })
+    })
+    expect(oversized.status).toBe(413)
+
+    await env.DB.prepare("UPDATE workspace_memberships SET role = 'member' WHERE workspace_id = ? AND user_id = ?")
+      .bind(account.currentWorkspace.id, account.user.id)
+      .run()
+    const memberReview = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(memberReview.status).toBe(403)
+
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+  })
+
+  it('allows exactly one immutable decision when approve and reject race', async () => {
+    const account = await registerAccount('Concurrent Reviewer')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const review = (decision: 'approve' | 'reject') => dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision, expectedApprovedRevision: input.approvedRevision })
+    })
+
+    const responses = await Promise.all([review('approve'), review('reject')])
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409])
+    const row = await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt, reviewed_by_user_id AS reviewedByUserId FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ reviewStatus: string; reviewedAt: string | null; reviewedByUserId: string | null }>()
+    expect(['approved', 'rejected']).toContain(row?.reviewStatus)
+    expect(row?.reviewedAt).toBeTruthy()
+    expect(row?.reviewedByUserId).toBe(account.user.id)
+
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(row?.reviewStatus === 'approved' ? 200 : 409)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
   })
 })

@@ -7,11 +7,11 @@
 | 身分 | 可用範圍 | 目前限制 |
 | --- | --- | --- |
 | 未登入訪客 | 公開產品主頁；健康狀態及 workflow 清單可按部署 policy 保持公開 | 不可讀取 workspace、Agent、圖片或生成記錄 |
-| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准及生成流程 | 只限內容操作，沒有管理 API |
-| `admin` | 與 `owner` 相同的內容操作 | 角色已保留，但尚未有獨立管理權限 |
-| `member` | 與 `owner` 相同的內容操作 | 角色已保留，但尚未限制批准或生成動作 |
+| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准、生成及正式輸出審核 | 只限內容操作，沒有帳號管理 API |
+| `admin` | 與 `owner` 相同的內容操作及正式輸出審核 | 角色已保留，但尚未有獨立帳號管理權限 |
+| `member` | 所屬 workspace 的內容操作與私人草稿預覽 | 不可作出不可變更的正式下載審核決定 |
 
-正式環境的每個受保護請求都要先通過 Cloudflare Access，再由 Worker 驗證 JWT，最後以 `workspace_memberships` 驗證 workspace。現階段三種角色只代表成員關係；程式不會假設角色名稱本身已形成完整 RBAC。
+正式環境的每個受保護請求都要先通過 Cloudflare Access，再由 Worker 驗證 JWT，最後以 `workspace_memberships` 驗證 workspace。一般內容操作仍使用相同 workspace scope；正式輸出審核則額外要求 `owner` 或 `admin`。這是窄範圍的 delivery gate，不代表已提供完整帳號管理 RBAC。
 
 ## Access-first 登入
 
@@ -39,7 +39,7 @@ restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`：身份必須先對�
 
 - `account_type`：`standard`、`beta`、`test`；只作環境及測試分類，不授予額外權限。
 - `account_status`：`active`、`suspended`、`deactivated`；只有 `active` 可以建立或繼續 session。
-- workspace role：`owner`、`admin`、`member`；目前只表示 active membership，所有內容操作仍由 server-side workspace scope 驗證。
+- workspace role：`owner`、`admin`、`member`；所有內容操作由 server-side workspace scope 驗證，而正式輸出審核只容許 `owner` 或 `admin`。
 - workspace access：只有 `active` workspace 可建立 session context 或執行受保護操作。
 
 公開介面不提供帳號清單或邀請管理。邀請可由 `npm run cf:invite` 在受保護本機環境建立；收件電郵只由 `AISLESTAGE_INVITE_EMAIL` 環境變數提供，D1 則只使用受保護 `wrangler.local.jsonc` 內的通用 `DB` binding。script 拒絕以 command-line flags 傳入收件電郵、資料庫或 config，亦不會把這些受保護值交給 child-process argv。撤銷、帳號狀態變更及成員指派只可經受保護的操作流程完成。

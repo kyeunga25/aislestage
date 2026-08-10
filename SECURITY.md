@@ -14,7 +14,8 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - Campaign Agent state is workspace-scoped and can be changed only through server methods.
 - Generation requires the current approved revision and an exact match of the approved brief, source asset, workflow, and ratio.
 - Campaign Pack creation is atomic and idempotent; Queue processing and output allowance accounting remain idempotent under duplicate delivery.
-- Generated outputs are served only through authorized Worker routes with private caching and restrictive response headers.
+- Completed outputs remain private drafts. Only an owner or admin can make the immutable review decision, and only approved output receives a separate download route.
+- Generated previews and approved downloads are served only through authorized, workspace-scoped Worker routes with private caching and restrictive response headers.
 - Deterministic mode does not contact an external model provider. Assisted modes require an explicit server-side gate and never send the private asset identifier to the provider.
 - Browser assets are same-origin and do not use third-party analytics or font requests.
 - User-facing errors and persisted observability events exclude commercial brief contents, provider payloads, deployment mappings, database diagnostics, queue details, and private object keys.

@@ -35,7 +35,7 @@ AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns a
 - Workspace-scoped Campaign Agent 與人工批准 revision；
 - 原子、具冪等鍵的三比例 Campaign Pack 建立；
 - Queue 重送安全、失敗回復及輸出額度核算；
-- 私人 SVG 輸出、下載及繁中／英文文案；
+- 私人 SVG 草稿、逐一人工審核、受控下載及繁中／英文文案；
 - 本機合成 demo 與隔離 Workers integration tests。
 
 詳細產品、資料及執行合約見 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) 與 [`docs/ENGINEERING.md`](docs/ENGINEERING.md)。公開文件只描述必要的技術界面，不記錄真實帳戶、資源拓撲、資料表內容、營運資料或內部部署映射。

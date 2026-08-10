@@ -82,6 +82,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [agentState, setAgentState] = useState<CampaignAgentState>(initialCampaignAgentState())
   const [agentBusy, setAgentBusy] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [serverResults, setServerResults] = useState<GenerationResult[]>([])
   const [notice, setNotice] = useState('')
   const generationRequestKey = useRef<string | null>(null)
@@ -274,6 +275,42 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function reviewGeneration(result: GenerationResult, decision: 'approve' | 'reject') {
+    if (!result.approvedRevision) {
+      setNotice('輸出缺少可核對的批准版本，請重新建立。')
+      return
+    }
+    const confirmed = window.confirm(decision === 'approve'
+      ? `核准 ${result.aspectRatio} 私人草稿並開放正式下載？審核決定不可變更。`
+      : `標記 ${result.aspectRatio} 私人草稿需要修改？審核決定不可變更。`)
+    if (!confirmed) return
+    setReviewingId(result.id)
+    setNotice('')
+    try {
+      const response = await fetch(`/api/generations/${encodeURIComponent(result.id)}/review`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision, expectedApprovedRevision: result.approvedRevision })
+      })
+      const data = await response.json().catch(() => ({})) as {
+        generation?: Omit<GenerationResult, 'title'>
+        error?: string
+      }
+      if (!response.ok || !data.generation) throw new Error(data.error || '未能保存審核決定。')
+      const reviewed: GenerationResult = {
+        ...data.generation,
+        title: `${data.generation.aspectRatio} · ${workflowById(data.generation.workflowId).title}`
+      }
+      setServerResults((current) => current.map((item) => item.id === reviewed.id ? reviewed : item))
+      setNotice(decision === 'approve' ? '草稿已核准，正式下載現已開放。' : '草稿已標記為需要修改，不會開放正式下載。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '未能保存審核決定。')
+    } finally {
+      setReviewingId(null)
+    }
+  }
+
   async function generatePack() {
     if (!session || agentState.stage !== 'approved') return
     if (!platformStatus.generationEnabled) {
@@ -367,6 +404,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       return
     }
     setSession(null)
+    setReviewingId(null)
     setServerResults([])
     setAgentState(initialCampaignAgentState())
     setBrand(emptyBrand)
@@ -406,10 +444,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
           <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
-          {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} onGenerate={() => void generatePack()} /> : null}
+          {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'} reviewingId={reviewingId} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
           <section className="support-panel" id="support" aria-labelledby="support-title">
             <div><CircleHelp size={20} /><div><h2 id="support-title">使用指引</h2><p>先填妥繁中與英文商業資料，再上傳有權使用的商品原圖。Agent 只會建立計劃；你批准後，系統才會一次建立三個私人輸出。</p></div></div>
-            <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>批准後建立、預覽並下載素材。</li></ol>
+            <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>建立私人草稿，逐一核准後才下載。</li></ol>
           </section>
         </> : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
       </main>

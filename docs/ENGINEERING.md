@@ -93,6 +93,12 @@ D1 batch 會在同一交易內：
 
 沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 會返回原有 pack，不再預留。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
 
+## Human output review
+
+Queue 完成只會結算 technical output allowance，並把輸出設為私人 `draft`；它不會自動開放正式下載。授權成員可經 inline preview 核對輸出，只有 `owner` 或 `admin` 可向 workspace-scoped review route 提交 `approve` 或 `reject`，並同時提交預期的批准 revision。
+
+審核更新只接受小型、嚴格結構的 JSON。D1 以 `draft` 條件更新確保 approve／reject 競爭時只有首個決定生效；相同決定重送會返回既有結果，相反決定返回 conflict。API 只返回通用 composition version、generation mode 與批准 revision，不返回 R2 key、來源 asset ID 或 reviewer identity。只有 `approved` 記錄才取得獨立 download URL；preview 與 download 都再次核對 active workspace ownership。
+
 ## Product fidelity
 
 - 上傳只接受 PNG、JPEG、WebP，最大 4 MB；
@@ -103,6 +109,7 @@ D1 batch 會在同一交易內：
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；
 - 超出固定安全區的文字會在排隊前拒絕；
 - private SVG route 加入 restrictive CSP、private cache、no-sniff 及 no-referrer headers。
+- preview 使用 inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
 - DELETE routes 只處理一個經授權的明確 asset／generation ID；處理中的 Queue output 不可刪除。
 
 為降低 Worker CPU 及輸出體積，來源圖上限為 4 MB，base64 轉換使用 `node:buffer` 的 runtime implementation。

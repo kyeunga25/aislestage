@@ -55,12 +55,20 @@ export type GenerationResult = {
   workflowId: WorkflowId
   aspectRatio: AspectRatio
   imageUrl: string | null
+  downloadUrl?: string | null
   title: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
   errorMessage?: string | null
   contentType?: 'image/svg+xml' | 'image/png' | null
   approvedRevision?: number
   createdAt?: string
+  reviewStatus?: 'draft' | 'approved' | 'rejected'
+  reviewedAt?: string | null
+  provenance?: {
+    approvedRevision: number
+    compositionVersion: string | null
+    generationMode: 'deterministic' | 'assisted' | null
+  }
 }
 
 export type OutputAllowance = {

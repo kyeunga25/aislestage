@@ -29,10 +29,28 @@ export type Env = Omit<WorkerEnv, 'GENERATION_QUEUE'> & {
 export type GenerationMessage = { generationId: string; input: GenerationInput }
 type AccountStatus = 'active' | 'suspended' | 'deactivated'
 type AccountType = 'standard' | 'beta' | 'test'
+type WorkspaceRole = 'owner' | 'admin' | 'member'
+type ReviewStatus = 'draft' | 'approved' | 'rejected'
+type CompletedGenerationMode = 'deterministic' | 'assisted'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
-type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
+type Workspace = { id: string; name: string; role: WorkspaceRole; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 type AccessIdentity = { subject: string; email: string; name: string }
+type GenerationRow = {
+  id: string
+  campaignPackId: string | null
+  workflowId: GenerationInput['workflowId']
+  aspectRatio: GenerationInput['aspectRatio']
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  contentType: 'image/svg+xml' | 'image/png' | null
+  approvedRevision: number
+  errorMessage: string | null
+  createdAt: string
+  reviewStatus: ReviewStatus
+  reviewedAt: string | null
+  compositionVersion: string | null
+  generationMode: CompletedGenerationMode | null
+}
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislestage_session'
@@ -46,6 +64,7 @@ const REGISTER_IP_LIMIT = 12
 const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AGENT_BODY_BYTES = 48_000
+const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const MAX_AUTH_ATTEMPT_DAYS = 7
@@ -990,13 +1009,23 @@ async function failGenerationAndRelease(env: Env, workspaceId: string, generatio
   ])
 }
 
-async function completeGenerationAndSettle(env: Env, workspaceId: string, generationId: string, outputKey: string, outputContentType: string) {
+async function completeGenerationAndSettle(
+  env: Env,
+  workspaceId: string,
+  generationId: string,
+  outputKey: string,
+  outputContentType: string,
+  completedMode: CompletedGenerationMode
+) {
   await env.DB.batch([
     env.DB.prepare(`
       UPDATE generations
-      SET status = 'completed', output_key = ?, output_content_type = ?, error_message = NULL, completed_at = CURRENT_TIMESTAMP
+      SET status = 'completed', output_key = ?, output_content_type = ?,
+        review_status = 'draft', reviewed_at = NULL, reviewed_by_user_id = NULL,
+        composition_version = ?, generation_mode = ?, error_message = NULL,
+        completed_at = CURRENT_TIMESTAMP
       WHERE id = ? AND workspace_id = ? AND status = 'processing'
-    `).bind(outputKey, outputContentType, generationId, workspaceId),
+    `).bind(outputKey, outputContentType, CAMPAIGN_COMPOSITION_VERSION, completedMode, generationId, workspaceId),
     env.DB.prepare(`
       INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'settlement', 0, 'Generation completed'
@@ -1060,26 +1089,56 @@ async function approvedCampaignPackInputs(env: Env, inputs: GenerationInput[]) {
   return inputs.every((input) => state.plan.some((item) => item.selected && item.workflowId === input.workflowId && item.ratio === input.aspectRatio))
 }
 
+function generationPayload(item: GenerationRow) {
+  const completed = item.status === 'completed'
+  return {
+    id: item.id,
+    campaignPackId: item.campaignPackId,
+    workflowId: item.workflowId,
+    aspectRatio: item.aspectRatio,
+    status: item.status,
+    contentType: item.contentType,
+    approvedRevision: item.approvedRevision,
+    errorMessage: item.errorMessage,
+    createdAt: item.createdAt,
+    reviewStatus: item.reviewStatus,
+    reviewedAt: item.reviewedAt,
+    imageUrl: completed ? `/api/generations/${item.id}/image` : null,
+    downloadUrl: completed && item.reviewStatus === 'approved' ? `/api/generations/${item.id}/download` : null,
+    provenance: {
+      approvedRevision: item.approvedRevision,
+      compositionVersion: item.compositionVersion,
+      generationMode: item.generationMode
+    }
+  }
+}
+
+async function generationForWorkspace(env: Env, workspaceId: string, generationId: string) {
+  return env.DB.prepare(`
+    SELECT g.id, g.campaign_pack_id AS campaignPackId, g.workflow_id AS workflowId,
+      g.aspect_ratio AS aspectRatio, g.status, g.output_content_type AS contentType,
+      g.approved_revision AS approvedRevision, g.error_message AS errorMessage,
+      g.created_at AS createdAt, g.review_status AS reviewStatus,
+      g.reviewed_at AS reviewedAt, g.composition_version AS compositionVersion,
+      g.generation_mode AS generationMode
+    FROM generations g
+    JOIN workspaces w ON w.id = g.workspace_id
+    WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
+  `).bind(generationId, workspaceId).first<GenerationRow>()
+}
+
 async function packGenerations(env: Env, workspaceId: string, campaignPackId: string) {
   const result = await env.DB.prepare(`
     SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio,
       status, output_content_type AS contentType, approved_revision AS approvedRevision,
-      error_message AS errorMessage, created_at AS createdAt
+      error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
+      reviewed_at AS reviewedAt, composition_version AS compositionVersion,
+      generation_mode AS generationMode
     FROM generations
     WHERE workspace_id = ? AND campaign_pack_id = ?
     ORDER BY created_at ASC
-  `).bind(workspaceId, campaignPackId).all<{
-    id: string
-    campaignPackId: string
-    workflowId: GenerationInput['workflowId']
-    aspectRatio: GenerationInput['aspectRatio']
-    status: 'queued' | 'processing' | 'completed' | 'failed'
-    contentType: 'image/svg+xml' | 'image/png' | null
-    approvedRevision: number
-    errorMessage: string | null
-    createdAt: string
-  }>()
-  return result.results.map((item) => ({ ...item, imageUrl: item.status === 'completed' ? `/api/generations/${item.id}/image` : null }))
+  `).bind(workspaceId, campaignPackId).all<GenerationRow>()
+  return result.results.map(generationPayload)
 }
 
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
@@ -1241,26 +1300,15 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
   const result = await env.DB.prepare(`
     SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
       output_content_type AS contentType, approved_revision AS approvedRevision,
-      error_message AS errorMessage, created_at AS createdAt
+      error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
+      reviewed_at AS reviewedAt, composition_version AS compositionVersion,
+      generation_mode AS generationMode
     FROM generations
     WHERE workspace_id = ?
     ORDER BY created_at DESC
     LIMIT 20
-  `).bind(workspace.id).all<{ id: string; campaignPackId: string | null; workflowId: string; aspectRatio: string; status: string; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
-  return json({
-    generations: result.results.map((item) => ({
-      id: item.id,
-      campaignPackId: item.campaignPackId,
-      workflowId: item.workflowId,
-      aspectRatio: item.aspectRatio,
-      status: item.status,
-      contentType: item.contentType,
-      approvedRevision: item.approvedRevision,
-      errorMessage: item.errorMessage,
-      createdAt: item.createdAt,
-      imageUrl: item.status === 'completed' ? `/api/generations/${item.id}/image` : null
-    }))
-  })
+  `).bind(workspace.id).all<GenerationRow>()
+  return json({ generations: result.results.map(generationPayload) })
 }
 
 async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
@@ -1277,11 +1325,93 @@ async function generationImage(request: Request, env: Env, session: SessionConte
   const headers = new Headers({
     'content-type': contentType,
     'cache-control': 'private, max-age=300',
+    'content-disposition': 'inline',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'
   })
   if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
   return new Response(object.body, { headers })
+}
+
+async function generationDownload(env: Env, session: SessionContext, generationId: string) {
+  const row = await env.DB.prepare(`
+    SELECT g.output_key AS outputKey, g.output_content_type AS contentType,
+      g.aspect_ratio AS aspectRatio, g.review_status AS reviewStatus
+    FROM generations g
+    JOIN workspaces w ON w.id = g.workspace_id
+    WHERE g.id = ? AND g.workspace_id = ? AND g.status = 'completed' AND w.access_status = 'active'
+  `).bind(generationId, session.currentWorkspace.id).first<{
+    outputKey: string | null
+    contentType: string | null
+    aspectRatio: GenerationInput['aspectRatio']
+    reviewStatus: ReviewStatus
+  }>()
+  if (!row?.outputKey) return json({ error: 'Output not found.' }, { status: 404 })
+  if (row.reviewStatus !== 'approved') return json({ error: '輸出需經人工核准後才可下載。' }, { status: 409 })
+  const object = await env.MEDIA_BUCKET.get(row.outputKey)
+  if (!object) return json({ error: 'Output not found.' }, { status: 404 })
+  const contentType = row.contentType || object.httpMetadata?.contentType || 'image/png'
+  const extension = contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE ? 'svg' : 'png'
+  const ratio = row.aspectRatio.replace(':', 'x')
+  const headers = new Headers({
+    'content-type': contentType,
+    'cache-control': 'private, no-store',
+    'content-disposition': `attachment; filename="aislestage-${ratio}.${extension}"`,
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer'
+  })
+  if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+  return new Response(object.body, { headers })
+}
+
+async function reviewGeneration(request: Request, env: Env, session: SessionContext, generationId: string) {
+  if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
+    return json({ error: '只有 owner 或 admin 可以核准正式下載。' }, { status: 403 })
+  }
+  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  const parsed = await readBody(request, MAX_REVIEW_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Review payload is too large.' }, { status: 413 })
+  if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+    return json({ error: 'Invalid review decision.' }, { status: 400 })
+  }
+  const body = parsed.body as Record<string, unknown>
+  const keys = Object.keys(body)
+  const decision = body.decision
+  const expectedApprovedRevision = body.expectedApprovedRevision
+  if (keys.length !== 2 || !keys.every((key) => key === 'decision' || key === 'expectedApprovedRevision')
+    || (decision !== 'approve' && decision !== 'reject')
+    || !Number.isSafeInteger(expectedApprovedRevision) || Number(expectedApprovedRevision) <= 0) {
+    return json({ error: 'Invalid review decision.' }, { status: 400 })
+  }
+
+  const current = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  if (!current) return json({ error: 'Output not found.' }, { status: 404 })
+  if (current.status !== 'completed') return json({ error: '只有已完成的輸出可以審核。' }, { status: 409 })
+  if (current.approvedRevision !== expectedApprovedRevision) {
+    return json({ error: '輸出版本已改變，請重新載入後再審核。' }, { status: 409 })
+  }
+
+  const targetStatus: ReviewStatus = decision === 'approve' ? 'approved' : 'rejected'
+  if (current.reviewStatus === targetStatus) {
+    return json({ generation: generationPayload(current), replayed: true })
+  }
+  if (current.reviewStatus !== 'draft') {
+    return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE generations
+    SET review_status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?
+    WHERE id = ? AND workspace_id = ? AND status = 'completed'
+      AND review_status = 'draft' AND approved_revision = ?
+  `).bind(targetStatus, session.user.id, generationId, session.currentWorkspace.id, expectedApprovedRevision).run()
+  const latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  if (!latest) return json({ error: 'Output not found.' }, { status: 404 })
+  if (!updated.meta.changes) {
+    if (latest.reviewStatus === targetStatus) return json({ generation: generationPayload(latest), replayed: true })
+    return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
+  }
+  return json({ generation: generationPayload(latest), replayed: false })
 }
 
 async function deleteGeneration(env: Env, session: SessionContext, generationId: string) {
@@ -1387,6 +1517,18 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       return generationImage(request, env, session, imageMatch[1])
+    }
+    const downloadMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/download$/)
+    if (downloadMatch && request.method === 'GET') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return generationDownload(env, session, downloadMatch[1])
+    }
+    const reviewMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/review$/)
+    if (reviewMatch && request.method === 'POST') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return reviewGeneration(request, env, session, reviewMatch[1])
     }
     const generationMatch = url.pathname.match(/^\/api\/generations\/([^/]+)$/)
     if (generationMatch && request.method === 'DELETE') {
@@ -1502,7 +1644,7 @@ export default {
           }
         })
         storedOutputKey = key
-        await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE)
+        await completeGenerationAndSettle(env, workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, mode)
         storedOutputKey = null
         message.ack()
       } catch (error) {

@@ -30,7 +30,9 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 6. 使用者核對並批准目前 revision；修改任何資料會立即令前端計劃失效。
 7. Worker 再次比對批准 state、revision、完整 brief、asset、workflow 及比例。
 8. 一個具冪等鍵的請求原子建立三個 Queue jobs。
-9. 完成的私人 SVG 由授權路徑預覽及下載。
+9. 完成的私人 SVG 先以 `draft` 狀態經授權路徑預覽。
+10. `owner` 或 `admin` 逐一核對輸出版本與 provenance，作出一次性 `approved` 或 `rejected` 決定。
+11. 只有 `approved` 輸出可經獨立受控路徑下載；`rejected` 草稿保留預覽及重新建立路徑，但不可交付。
 
 ## 3. 帳號與 access
 
@@ -39,7 +41,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 帳號狀態為 `active`、`suspended` 或 `deactivated`；
 - workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；
-- 現階段角色表示 workspace membership，所有受保護操作仍採相同 server-side workspace scope；
+- 所有受保護操作都採 server-side workspace scope；正式輸出審核另要求 `owner` 或 `admin`；
 - 新邀請 workspace 取得六個技術性可用輸出，足以建立兩套 Campaign Pack。
 
 詳情見 [`BETA_ACCESS.md`](BETA_ACCESS.md)。
@@ -50,10 +52,10 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 頂部：可用輸出數、目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
-- 成果區：三比例預覽、雙語文案、狀態、下載及重新建立；
+- 成果區：三比例私人草稿、雙語文案、provenance、逐一審核、受控下載及重新建立；
 - 使用指引：完整三步流程與私隱提示。
 
-所有導覽都有實際 workspace view。沒有通知、workspace 切換或帳號選單功能時，不顯示假按鈕。示範預覽、排隊中、已生成及失敗狀態必須清楚區分。
+所有導覽都有實際 workspace view。沒有通知、workspace 切換或帳號選單功能時，不顯示假按鈕。示範預覽、排隊中、草稿待審核、已核准、需要修改及失敗狀態必須清楚區分。
 
 ### 視覺系統
 
@@ -109,6 +111,8 @@ idle -> needs-input -> awaiting-approval -> approved
 - 1:1 1080×1080、4:5 1080×1350、9:16 1080×1920；
 - 私人 SVG 保存與 restrictive response headers。
 
+Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存通用 composition version、generation mode 及批准 revision；初始審核狀態固定為 `draft`。審核 decision 以條件更新保持併發安全，同一決定可安全重送，相反決定不可覆蓋已完成的審核。
+
 `deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
 
 ## 8. Cloudflare 架構
@@ -132,6 +136,7 @@ Cron Trigger -> expired session and auth-attempt cleanup
 - 一次請求只建立一套三輸出 pack；
 - 重送、Queue duplicate delivery 及 enqueue failure 不會重複預留；
 - 商品圖、價格、優惠、CTA 及雙語文案可逐項核對；
+- 完成輸出預設為草稿，只有 owner／admin 核准後才返回 download URL；重送及相反決定併發不會覆蓋首個審核結果；
 - 匿名及跨 workspace 不可讀取私人資料；
 - deterministic mode 不接觸 provider；
 - desktop、mobile、keyboard focus、無水平溢出及破圖檢查通過；
