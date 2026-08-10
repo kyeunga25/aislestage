@@ -54,6 +54,7 @@
 - [x] Access subject hash 綁定、active D1 membership 與受控 beta workspace 建立；
 - [x] Access 模式停用密碼登入／註冊，並使用同網域 Access logout；
 - [x] password auth event 未提交或 rate-limit count 不可讀時返回雙語 no-store `503`；成功憑證不建立 session，亦不以廣泛 catch 隱藏其他錯誤；
+- [x] auth event 以同一 server-generated ID／exact hashes 做一次有界重試；post-commit failure 與 transient pre-commit failure 均只留下單一 event；
 - [x] session INSERT 未提交或 authorization reload 失敗時返回雙語 `503` 且不發 cookie；不可讀狀態會最佳努力清理唯一未交付 session row；
 - [x] 缺少設定、缺少 token、錯誤 audience、未獲邀身份及重複請求的 integration tests；
 - [x] 正式 Access application、allow policy、D1 migration 及 active deployment 驗證；

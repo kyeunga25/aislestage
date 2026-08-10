@@ -43,7 +43,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 建立 session 的 D1 回應若不確定，只在本次隨機 token hash 對應同一 user、exact expiry，且 active user／workspace authorization 重讀成功時才發出原 token cookie；任何其他狀態均返回雙語 `503` 而不返回 cookie 或 token 識別資料，reconciliation／authorization 不可讀時並最佳努力移除未交付 session row；
 - session `last_seen_at` 是不延長 expiry 的 best-effort telemetry；它只在 user、expiry 與 active workspace authorization 完成後更新，寫入失敗不會拒絕已核實的 session；
 - logout 的 session DELETE 回應不確定時，只在同一 token hash 已不存在時清除 browser cookie；若 server row 仍存在或不可讀，保留 cookie 供安全重試並不宣稱登出完成；
-- 登入／註冊 abuse event 只保存單向 email／IP keys；寫入回應不確定時只接受本次 event ID 之 exact hashed fields 與 event type，不能因 observability response failure 重複記錄或略過真正未寫入的 rate-limit 事件。Event 明確未提交或 rate-limit 狀態不可讀時返回雙語 `503`，不建立登入 session，亦不繼續帳號／密碼流程；
+- 登入／註冊 abuse event 只保存單向 email／IP keys；寫入回應不確定時只接受本次 event ID 之 exact hashed fields 與 event type。同一 event identity 可在 missing／首輪不可讀狀態做一次有界重試；唯一鍵與再次 post-read 確保已提交 event 不重複，衝突不覆寫。最終未確認或 rate-limit 狀態不可讀時返回雙語 `503`，不建立登入 session，亦不繼續帳號／密碼流程；
 - 帳號狀態為 `active`、`suspended` 或 `deactivated`；
 - workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；

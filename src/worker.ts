@@ -264,25 +264,31 @@ function isAllowedOrigin(request: Request, env: Env) {
 async function recordAuthAttempt(env: Env, request: Request, eventType: 'login_failed' | 'login_success' | 'register_failed' | 'register_success' | 'rate_limited', email = '') {
   const [emailKey, ipKey] = await Promise.all([email ? sha256(email) : '', sha256(getClientIp(request))])
   const eventId = crypto.randomUUID()
-  try {
-    await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(eventId, emailKey, ipKey, eventType).run()
-  } catch {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const stored = await env.DB.prepare(`
-        SELECT email, ip_address AS ipAddress, event_type AS eventType
-        FROM auth_attempts
-        WHERE id = ?
-      `).bind(eventId).first<{ email: string; ipAddress: string; eventType: string }>()
-      if (stored
-        && stored.email === emailKey
-        && stored.ipAddress === ipKey
-        && stored.eventType === eventType) return
+      await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)')
+        .bind(eventId, emailKey, ipKey, eventType)
+        .run()
+      return
     } catch {
-      // Report only the bounded event below; auth keys and database details stay private.
+      try {
+        const stored = await env.DB.prepare(`
+          SELECT email, ip_address AS ipAddress, event_type AS eventType
+          FROM auth_attempts
+          WHERE id = ?
+        `).bind(eventId).first<{ email: string; ipAddress: string; eventType: string }>()
+        if (stored
+          && stored.email === emailKey
+          && stored.ipAddress === ipKey
+          && stored.eventType === eventType) return
+        if (stored) break
+      } catch {
+        // The same primary key makes one bounded retry safe even when the first read is unavailable.
+      }
     }
-    console.error('auth-attempt-reconciliation-failed')
-    throw new AuthenticationSecurityStateError('Authentication event storage is unavailable.')
   }
+  console.error('auth-attempt-reconciliation-failed')
+  throw new AuthenticationSecurityStateError('Authentication event storage is unavailable.')
 }
 
 async function authAttemptCount(env: Env, request: Request, options: { email?: string; eventTypes: string[]; minutes: number }) {
