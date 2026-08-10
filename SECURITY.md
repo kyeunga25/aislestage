@@ -16,6 +16,7 @@ AisleStage handles uploaded product images and commercial briefs as private work
 - Campaign Pack creation is atomic and idempotent; Queue processing and output allowance accounting remain idempotent under duplicate delivery.
 - Completed outputs remain private drafts. Only an owner or admin can make the immutable review decision, and only approved output receives a separate download route.
 - Generated previews and approved downloads are served only through authorized, workspace-scoped Worker routes with private caching and restrictive response headers.
+- Output approval and delivery require the canonical D1 SVG type to match private R2 HTTP and provenance metadata. A mismatch blocks approval; preview or download also returns a no-store error without exposing the object body.
 - Deterministic mode does not contact an external model provider. Assisted modes require an explicit server-side gate and never send the private asset identifier to the provider.
 - Successful provider responses are read through actual-byte and fragmentation limits rather than trusting `Content-Length`; JSON MIME, UTF-8, exact local fields, text lengths, base64 size, and PNG signature are revalidated before use.
 - Provider requests and complete response-body reads share a 30-second deadline. A timeout aborts the subrequest, follows the bounded Queue retry policy, and releases reserved allowance exactly once only after terminal failure.

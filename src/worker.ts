@@ -51,6 +51,7 @@ type GenerationRow = {
   compositionVersion: string | null
   generationMode: CompletedGenerationMode | null
 }
+type StoredGenerationRow = GenerationRow & { outputKey: string | null }
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislestage_session'
@@ -1117,6 +1118,7 @@ async function generationForWorkspace(env: Env, workspaceId: string, generationI
   return env.DB.prepare(`
     SELECT g.id, g.campaign_pack_id AS campaignPackId, g.workflow_id AS workflowId,
       g.aspect_ratio AS aspectRatio, g.status, g.output_content_type AS contentType,
+      g.output_key AS outputKey,
       g.approved_revision AS approvedRevision, g.error_message AS errorMessage,
       g.created_at AS createdAt, g.review_status AS reviewStatus,
       g.reviewed_at AS reviewedAt, g.composition_version AS compositionVersion,
@@ -1124,7 +1126,7 @@ async function generationForWorkspace(env: Env, workspaceId: string, generationI
     FROM generations g
     JOIN workspaces w ON w.id = g.workspace_id
     WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
-  `).bind(generationId, workspaceId).first<GenerationRow>()
+  `).bind(generationId, workspaceId).first<StoredGenerationRow>()
 }
 
 async function packGenerations(env: Env, workspaceId: string, campaignPackId: string) {
@@ -1311,57 +1313,71 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
   return json({ generations: result.results.map(generationPayload) })
 }
 
-async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
-  const row = await env.DB.prepare(`
-    SELECT g.output_key AS outputKey
-    FROM generations g
-    JOIN workspaces w ON w.id = g.workspace_id
-    WHERE g.id = ? AND g.workspace_id = ? AND g.status = 'completed' AND w.access_status = 'active'
-  `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null }>()
-  if (!row?.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
+type CanonicalOutputResult =
+  | { state: 'ready'; object: R2ObjectBody }
+  | { state: 'missing' }
+  | { state: 'invalid' }
+
+function hasCanonicalOutputMetadata(row: StoredGenerationRow, object: R2Object) {
+  const metadata = object.customMetadata
+  return row.contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE
+    && Boolean(row.compositionVersion && row.generationMode)
+    && object.httpMetadata?.contentType === row.contentType
+    && metadata?.workflow === row.workflowId
+    && metadata?.approvedRevision === String(row.approvedRevision)
+    && metadata?.compositionVersion === row.compositionVersion
+    && metadata?.generationMode === row.generationMode
+}
+
+async function canonicalGenerationOutput(env: Env, row: StoredGenerationRow): Promise<CanonicalOutputResult> {
+  if (!row.outputKey) return { state: 'missing' }
   const object = await env.MEDIA_BUCKET.get(row.outputKey)
-  if (!object) return json({ error: 'Image not found.' }, { status: 404 })
-  const contentType = object.httpMetadata?.contentType || 'image/png'
+  if (!object) return { state: 'missing' }
+  if (!hasCanonicalOutputMetadata(row, object)) {
+    await object.body.cancel().catch(() => undefined)
+    return { state: 'invalid' }
+  }
+  return { state: 'ready', object }
+}
+
+function invalidOutputFormat() {
+  return json({ error: '輸出格式驗證失敗，請重新建立。 Output format validation failed; recreate this output.' }, { status: 409 })
+}
+
+async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
+  const row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  if (!row || row.status !== 'completed' || !row.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
+  const output = await canonicalGenerationOutput(env, row)
+  if (output.state === 'missing') return json({ error: 'Image not found.' }, { status: 404 })
+  if (output.state === 'invalid') return invalidOutputFormat()
   const headers = new Headers({
-    'content-type': contentType,
+    'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
     'cache-control': 'private, max-age=300',
     'content-disposition': 'inline',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'
   })
-  if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
-  return new Response(object.body, { headers })
+  headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+  return new Response(output.object.body, { headers })
 }
 
 async function generationDownload(env: Env, session: SessionContext, generationId: string) {
-  const row = await env.DB.prepare(`
-    SELECT g.output_key AS outputKey, g.output_content_type AS contentType,
-      g.aspect_ratio AS aspectRatio, g.review_status AS reviewStatus
-    FROM generations g
-    JOIN workspaces w ON w.id = g.workspace_id
-    WHERE g.id = ? AND g.workspace_id = ? AND g.status = 'completed' AND w.access_status = 'active'
-  `).bind(generationId, session.currentWorkspace.id).first<{
-    outputKey: string | null
-    contentType: string | null
-    aspectRatio: GenerationInput['aspectRatio']
-    reviewStatus: ReviewStatus
-  }>()
-  if (!row?.outputKey) return json({ error: 'Output not found.' }, { status: 404 })
+  const row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  if (!row || row.status !== 'completed' || !row.outputKey) return json({ error: 'Output not found.' }, { status: 404 })
   if (row.reviewStatus !== 'approved') return json({ error: '輸出需經人工核准後才可下載。' }, { status: 409 })
-  const object = await env.MEDIA_BUCKET.get(row.outputKey)
-  if (!object) return json({ error: 'Output not found.' }, { status: 404 })
-  const contentType = row.contentType || object.httpMetadata?.contentType || 'image/png'
-  const extension = contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE ? 'svg' : 'png'
+  const output = await canonicalGenerationOutput(env, row)
+  if (output.state === 'missing') return json({ error: 'Output not found.' }, { status: 404 })
+  if (output.state === 'invalid') return invalidOutputFormat()
   const ratio = row.aspectRatio.replace(':', 'x')
   const headers = new Headers({
-    'content-type': contentType,
+    'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
     'cache-control': 'private, no-store',
-    'content-disposition': `attachment; filename="aislestage-${ratio}.${extension}"`,
+    'content-disposition': `attachment; filename="aislestage-${ratio}.svg"`,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'
   })
-  if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
-  return new Response(object.body, { headers })
+  headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+  return new Response(output.object.body, { headers })
 }
 
 async function reviewGeneration(request: Request, env: Env, session: SessionContext, generationId: string) {
@@ -1392,6 +1408,12 @@ async function reviewGeneration(request: Request, env: Env, session: SessionCont
   }
 
   const targetStatus: ReviewStatus = decision === 'approve' ? 'approved' : 'rejected'
+  if (targetStatus === 'approved') {
+    if (!current.outputKey) return json({ error: '輸出檔案不存在，請重新建立。 Output file is missing; recreate this output.' }, { status: 409 })
+    const object = await env.MEDIA_BUCKET.head(current.outputKey)
+    if (!object) return json({ error: '輸出檔案不存在，請重新建立。 Output file is missing; recreate this output.' }, { status: 409 })
+    if (!hasCanonicalOutputMetadata(current, object)) return invalidOutputFormat()
+  }
   if (current.reviewStatus === targetStatus) {
     return json({ generation: generationPayload(current), replayed: true })
   }

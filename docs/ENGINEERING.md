@@ -97,7 +97,7 @@ D1 batch 會在同一交易內：
 
 Queue 完成只會結算 technical output allowance，並把輸出設為私人 `draft`；它不會自動開放正式下載。授權成員可經 inline preview 核對輸出，只有 `owner` 或 `admin` 可向 workspace-scoped review route 提交 `approve` 或 `reject`，並同時提交預期的批准 revision。
 
-審核更新只接受小型、嚴格結構的 JSON。D1 以 `draft` 條件更新確保 approve／reject 競爭時只有首個決定生效；相同決定重送會返回既有結果，相反決定返回 conflict。API 只返回通用 composition version、generation mode 與批准 revision，不返回 R2 key、來源 asset ID 或 reviewer identity。只有 `approved` 記錄才取得獨立 download URL；preview 與 download 都再次核對 active workspace ownership。
+審核更新只接受小型、嚴格結構的 JSON。D1 以 `draft` 條件更新確保 approve／reject 競爭時只有首個決定生效；相同決定重送會返回既有結果，相反決定返回 conflict。API 只返回通用 composition version、generation mode 與批准 revision，不返回 R2 key、來源 asset ID 或 reviewer identity。只有 `approved` 記錄才取得獨立 download URL；preview 與 download 都再次核對 active workspace ownership。approve 先以 R2 `head` 核對 metadata；preview／download 亦要求 D1 content type 為正式 `image/svg+xml`，並與 R2 HTTP metadata、workflow、批准 revision、composition version 及 generation mode 完全一致。不一致時不寫入核准決定；已核准後才失配亦會取消 object stream 並返回 no-store conflict JSON。
 
 ## Product fidelity
 
@@ -109,6 +109,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；
 - 超出固定安全區的文字會在排隊前拒絕；
 - private SVG route 加入 restrictive CSP、private cache、no-sniff 及 no-referrer headers。
+- preview／download 不採信單一 R2 header；D1 與 R2 format／provenance metadata 必須一致才會串流私人 body。
 - preview 使用 inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
 - DELETE routes 只處理一個經授權的明確 asset／generation ID；處理中的 Queue output 不可刪除。
 
@@ -135,6 +136,7 @@ Integration tests 會套用所有 D1 migrations，並覆蓋：
 - workspace active-output cap 及 assisted multi-gate fail-closed policy；
 - duplicate Queue delivery、retry recovery、settlement 與 release；
 - deterministic SVG 不呼叫外部 provider；
+- D1／R2 output MIME 及 provenance metadata tampering fail-closed；
 - synthetic assisted quality／latency／budget evaluation；
 - structured provider output parsing、misleading／oversized／fragmented response 及 bounded PNG validation。
 

@@ -145,6 +145,14 @@ async function completedDeterministicGeneration(
   return { id, input }
 }
 
+async function markApprovedForDeliveryTamperTest(generationId: string, userId: string) {
+  await env.DB.prepare(`
+    UPDATE generations
+    SET review_status = 'approved', reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?
+    WHERE id = ?
+  `).bind(userId, generationId).run()
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -329,11 +337,25 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(create.status).toBe(404)
 
     const generationId = crypto.randomUUID()
-    const outputKey = `workspaces/${ownerB.currentWorkspace.id}/generations/${generationId}.png`
-    await env.MEDIA_BUCKET.put(outputKey, 'private-image', { httpMetadata: { contentType: 'image/png' } })
+    const outputKey = `workspaces/${ownerB.currentWorkspace.id}/generations/${generationId}.svg`
+    const privateOutput = '<svg xmlns="http://www.w3.org/2000/svg"><text>private-output</text></svg>'
+    await env.MEDIA_BUCKET.put(outputKey, privateOutput, {
+      httpMetadata: { contentType: 'image/svg+xml' },
+      customMetadata: {
+        workflow: 'store-main',
+        approvedRevision: '1',
+        compositionVersion: 'deterministic-svg-v1',
+        generationMode: 'deterministic'
+      }
+    })
     await env.DB.prepare(`
-      INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, output_key, completed_at)
-      VALUES (?, ?, 'store-main', '1:1', 'completed', 2, 2, '{}', ?, CURRENT_TIMESTAMP)
+      INSERT INTO generations (
+        id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost,
+        input_json, output_key, output_content_type, approved_revision,
+        composition_version, generation_mode, completed_at
+      )
+      VALUES (?, ?, 'store-main', '1:1', 'completed', 2, 2, '{}', ?, 'image/svg+xml', 1,
+        'deterministic-svg-v1', 'deterministic', CURRENT_TIMESTAMP)
     `).bind(generationId, ownerB.currentWorkspace.id, outputKey).run()
 
     const forbiddenImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerA.cookie } })
@@ -341,7 +363,7 @@ describe('workspace authorization and output allowance integrity', () => {
 
     const ownerImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerB.cookie } })
     expect(ownerImage.status).toBe(200)
-    expect(new TextDecoder().decode(await ownerImage.arrayBuffer())).toBe('private-image')
+    expect(new TextDecoder().decode(await ownerImage.arrayBuffer())).toBe(privateOutput)
     expect(ownerImage.headers.get('cache-control')).toBe('private, max-age=300')
     const forbiddenDelete = await dispatch(`/api/generations/${generationId}`, { method: 'DELETE', headers: { cookie: ownerA.cookie, origin: 'https://app.test' } })
     expect(forbiddenDelete.status).toBe(404)
@@ -801,6 +823,97 @@ describe('human output review and controlled delivery', () => {
     expect(download.headers.get('content-disposition')).toBe('attachment; filename="aislestage-1x1.svg"')
     expect(await download.text()).toContain('Test Product')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when private R2 output metadata no longer matches the canonical SVG format', async () => {
+    const account = await registerAccount('R2 Output Format Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const row = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    expect(row?.outputKey).toBeTruthy()
+    const original = await env.MEDIA_BUCKET.get(row!.outputKey)
+    expect(original).not.toBeNull()
+    await env.MEDIA_BUCKET.put(row!.outputKey, '<html><script>synthetic active content</script></html>', {
+      httpMetadata: { contentType: 'text/html' },
+      customMetadata: original!.customMetadata
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+    expect(await preview.text()).not.toContain('synthetic active content')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+    expect(await download.text()).not.toContain('synthetic active content')
+  })
+
+  it('fails closed when the canonical D1 output format is not the supported SVG contract', async () => {
+    const account = await registerAccount('D1 Output Format Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    await env.DB.prepare("UPDATE generations SET output_content_type = 'text/html' WHERE id = ?")
+      .bind(id)
+      .run()
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+  })
+
+  it('fails closed when private R2 provenance metadata no longer matches D1', async () => {
+    const account = await registerAccount('R2 Output Provenance Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const row = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const original = row?.outputKey ? await env.MEDIA_BUCKET.get(row.outputKey) : null
+    expect(original).not.toBeNull()
+    const originalBody = await original!.text()
+    await env.MEDIA_BUCKET.put(row!.outputKey, originalBody, {
+      httpMetadata: { contentType: 'image/svg+xml' },
+      customMetadata: { ...original!.customMetadata, approvedRevision: String(input.approvedRevision + 1) }
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
   })
 
   it('rejects unauthorized, stale, malformed, and oversized review decisions without changing the draft', async () => {
