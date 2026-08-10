@@ -117,7 +117,7 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 - source object 存於 workspace-scoped private R2 key；
 - 私人商品圖讀取先核對 workspace-scoped D1 metadata，再讀取 R2 object；不存在或跨 workspace 維持 `404`，任一儲存層不可讀則回雙語 no-store `503 unavailable`，不輸出 object key、workspace ID 或底層錯誤；
 - Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；
-- Browser 為每次商品圖上傳建立 UUID v4 idempotency key；Worker 在讀取 multipart 前驗證，並把它綁定 asset ID。同 workspace 以同 key 重送相同 MIME、size、digest 及 private object identity 會返回原 asset；不同內容 `409` fail closed，跨 workspace 不可 replay。不同 digest 使用分離的候選私人 object identity，並發衝突不會互相覆寫，敗方只清理未被 D1 row 引用的候選 object；
+- Browser 為每次商品圖上傳建立 UUID v4 idempotency key；Worker 在讀取 multipart 前驗證，並把它綁定 asset ID。同 workspace 以同 key 重送相同 MIME、size、digest 及 private object identity 會返回原 asset；不同內容 `409` fail closed，跨 workspace 不可 replay。不同 digest 使用分離的候選私人 object identity，並發衝突不會互相覆寫，敗方只清理未被 D1 row 引用的候選 object。每次 upload attempt 連 success body 讀取有 45 秒 deadline；transport／deadline、HTTP `408` 或 `5xx` 最多以同 key 自動重試一次，validation／authorization／conflict 或 malformed success 不重送；
 - browser 只收到 asset ID 及授權 preview URL；
 - 跨 workspace 返回 not found；
 - Agent plan 在寫入 Durable Object 或呼叫可選 provider 前，先核對來源圖屬於目前 workspace 且 D1／R2 SHA-256、大小、MIME、asset kind 與 metadata 一致；preview、Agent 批准及 Queue 讀取亦會再次核對，任一不一致均不返回 object body、不改寫有效 revision、不批准亦不呼叫 provider；

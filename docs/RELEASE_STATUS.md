@@ -92,6 +92,7 @@
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
 - [x] browser multipart 不傳送本機原始檔名；upload success 只接受 exact `201 application/json` 及與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；upload pending 時所有圖片 file-input／更換／刪除入口都鎖定，避免競爭 mutation；
 - [x] product upload 要求 client UUID v4 idempotency key 並綁定 asset ID；同 workspace 同 key／同 canonical content replay 原 `201`，不同內容固定 `409`，跨 workspace 不可 replay；digest-separated 候選 R2 object 令並發 conflict 不互相覆寫，敗方只清理未被 D1 引用的 object；
+- [x] browser upload 每次 attempt 連完整 response body 有 45 秒 deadline；transport／deadline／`408`／`5xx` 最多同 key 自動重試一次，兩次失敗後釋放 UI；`4xx`、malformed／oversized success 不重送；
 - [x] workspace-scoped Campaign Agent 與 revision approval；
 - [x] 繁中／英文商業資料由使用者明確提供；
 - [x] Campaign Brief 使用共享欄位上限並在 Agent state mutation 前拒絕會被靜默截短、丟棄或改寫的輸入；

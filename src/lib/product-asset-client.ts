@@ -1,4 +1,5 @@
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 import type { ProductAsset } from './types'
 
 export const productAssetTypeMessage = '只支援 PNG、JPEG 或靜態 WebP 圖片。 Only PNG, JPEG, or static WebP images are supported.'
@@ -9,6 +10,8 @@ export const productAssetConflictMessage = '商品圖片上載識別資料已被
 
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_PRODUCT_ASSET_RESPONSE_BYTES = 4 * 1024
+const PRODUCT_UPLOAD_TIMEOUT_MS = 45_000
+const PRODUCT_UPLOAD_ATTEMPTS = 2
 const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'previewUrl'])
 const responseKeys = new Set(['asset'])
 const imageNames = new Map<ProductAsset['contentType'], string>([
@@ -17,6 +20,13 @@ const imageNames = new Map<ProductAsset['contentType'], string>([
   ['image/webp', 'product-image.webp']
 ])
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+class ProductAssetUploadAttemptError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message)
+    this.name = 'ProductAssetUploadAttemptError'
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -59,6 +69,45 @@ function normalizeProductAsset(value: unknown, file: File, idempotencyKey: strin
   }
 }
 
+async function uploadProductAssetAttempt(file: File, form: FormData, idempotencyKey: string) {
+  return fetchWithTimeout(
+    '/api/assets/product',
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: form
+    },
+    PRODUCT_UPLOAD_TIMEOUT_MS,
+    async (response, signal) => {
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new ProductAssetUploadAttemptError(
+          uploadFailureMessage(response.status),
+          response.status === 408 || response.status >= 500
+        )
+      }
+      if (response.status !== 201) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
+      }
+      const responseContentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      if (responseContentType !== 'application/json') {
+        await response.body?.cancel().catch(() => undefined)
+        throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
+      }
+      const data = await readBoundedJsonResponse(response, MAX_PRODUCT_ASSET_RESPONSE_BYTES)
+      if (signal.aborted) throw new ProductAssetUploadAttemptError(productAssetUploadUnavailableMessage, true)
+      if (!isRecord(data) || !hasExactKeys(data, responseKeys)) {
+        throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
+      }
+      const asset = normalizeProductAsset(data.asset, file, idempotencyKey)
+      if (!asset) throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
+      return asset
+    }
+  )
+}
+
 export async function uploadProductAsset(file: File) {
   if (!(file instanceof File) || !imageNames.has(file.type as ProductAsset['contentType'])) {
     throw new Error(productAssetTypeMessage)
@@ -71,33 +120,15 @@ export async function uploadProductAsset(file: File) {
   const idempotencyKey = crypto.randomUUID()
   const form = new FormData()
   form.set('file', file, canonicalFilename)
-  let response: Response
-  try {
-    response = await fetch('/api/assets/product', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'idempotency-key': idempotencyKey },
-      body: form
-    })
-  } catch {
-    throw new Error(productAssetUploadUnavailableMessage)
+  for (let attempt = 0; attempt < PRODUCT_UPLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      return await uploadProductAssetAttempt(file, form, idempotencyKey)
+    } catch (error) {
+      const retryable = !(error instanceof ProductAssetUploadAttemptError) || error.retryable
+      if (retryable && attempt + 1 < PRODUCT_UPLOAD_ATTEMPTS) continue
+      if (error instanceof ProductAssetUploadAttemptError) throw new Error(error.message)
+      throw new Error(productAssetUploadUnavailableMessage)
+    }
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(uploadFailureMessage(response.status))
-  }
-  if (response.status !== 201) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(productAssetResponseInvalidMessage)
-  }
-  const responseContentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (responseContentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(productAssetResponseInvalidMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_PRODUCT_ASSET_RESPONSE_BYTES)
-  if (!isRecord(data) || !hasExactKeys(data, responseKeys)) throw new Error(productAssetResponseInvalidMessage)
-  const asset = normalizeProductAsset(data.asset, file, idempotencyKey)
-  if (!asset) throw new Error(productAssetResponseInvalidMessage)
-  return asset
+  throw new Error(productAssetUploadUnavailableMessage)
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { uploadProductAsset } from '../src/lib/product-asset-client'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -82,14 +83,16 @@ describe('product asset upload client', () => {
 
   it('rejects an upload response whose streamed body exceeds the client limit', async () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+    const fetchMock = vi.fn(async () => new Response(
       `${' '.repeat(4 * 1024)}${JSON.stringify({ asset: canonicalAsset })}`,
       { status: 201, headers: { 'content-type': 'application/json' } }
-    )))
+    ))
+    vi.stubGlobal('fetch', fetchMock)
 
     await expect(uploadProductAsset(file)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('does not expose a server error detail', async () => {
@@ -105,13 +108,96 @@ describe('product asset upload client', () => {
 
   it('maps an idempotency conflict to a fixed retry message', async () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+    const fetchMock = vi.fn(async () => Response.json({
       error: 'synthetic private idempotency detail'
-    }, { status: 409 })))
+    }, { status: 409 }))
+    vi.stubGlobal('fetch', fetchMock)
 
     await expect(uploadProductAsset(file)).rejects.toThrow(
       '商品圖片上載識別資料已被使用，請重新選擇圖片。 Product image upload identity was already used; select the image again.'
     )
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('retries a transport deadline once with the same upload identity', async () => {
+    vi.useFakeTimers()
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) return Promise.resolve(Response.json({ asset: canonicalAsset }, { status: 201 }))
+      return new Promise<Response>((resolve, reject) => {
+        const completion = setTimeout(() => resolve(Response.json({ asset: canonicalAsset }, { status: 201 })), 90_000)
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(completion)
+          reject(new DOMException('Aborted', 'AbortError'))
+        }, { once: true })
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const upload = uploadProductAsset(file)
+    const assertion = expect(upload).resolves.toEqual(canonicalAsset)
+    await vi.advanceTimersByTimeAsync(90_000)
+    await assertion
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries when response headers arrive but the success body stalls until the deadline', async () => {
+    vi.useFakeTimers()
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) return Response.json({ asset: canonicalAsset }, { status: 201 })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{'))
+          init?.signal?.addEventListener('abort', () => {
+            controller.error(new DOMException('Aborted', 'AbortError'))
+          }, { once: true })
+        }
+      })
+      return new Response(body, { status: 201, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const upload = uploadProductAsset(file)
+    const assertion = expect(upload).resolves.toEqual(canonicalAsset)
+    await vi.advanceTimersByTimeAsync(45_000)
+    await assertion
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries one server-unavailable response with the same upload identity', async () => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => fetchMock.mock.calls.length === 1
+      ? Response.json({ error: 'synthetic temporary failure' }, { status: 503 })
+      : Response.json({ asset: canonicalAsset }, { status: 201 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(uploadProductAsset(file)).resolves.toEqual(canonicalAsset)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
+  })
+
+  it('stops after two transport deadlines and clears both attempt timers', async () => {
+    vi.useFakeTimers()
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const upload = uploadProductAsset(file)
+    const assertion = expect(upload).rejects.toThrow(
+      '商品圖片上載暫時無法使用。 Product image upload is temporarily unavailable.'
+    )
+    await vi.advanceTimersByTimeAsync(90_000)
+    await assertion
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('rejects an unsupported file before making a request', async () => {
