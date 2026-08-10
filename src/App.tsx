@@ -18,6 +18,7 @@ import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } f
 import { isPublicDemoPath } from './lib/demo-mode'
 import type { AccessFailureReason } from './lib/access-login'
 import { loadGenerations, loadGenerationSnapshot, normalizeGenerationResults } from './lib/generation-loader'
+import { generationReviewSourceInvalidMessage, submitGenerationReview } from './lib/generation-review-client'
 import {
   productAssetSizeMessage,
   productAssetTypeMessage,
@@ -26,7 +27,6 @@ import {
 } from './lib/product-asset-client'
 import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product } from './lib/types'
 import { loadPlatformStatus, loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
-import { workflowById } from './lib/workflows'
 
 const demoSession: AuthedSession = {
   user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User', accountStatus: 'active', accountType: 'test' },
@@ -263,7 +263,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
 
   async function reviewGeneration(result: GenerationResult, decision: 'approve' | 'reject') {
     if (!result.approvedRevision) {
-      setNotice('輸出缺少可核對的批准版本，請重新建立。')
+      setNotice(generationReviewSourceInvalidMessage)
       return
     }
     const confirmed = window.confirm(decision === 'approve'
@@ -273,21 +273,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setReviewingId(result.id)
     setNotice('')
     try {
-      const response = await fetch(`/api/generations/${encodeURIComponent(result.id)}/review`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ decision, expectedApprovedRevision: result.approvedRevision })
-      })
-      const data = await response.json().catch(() => ({})) as {
-        generation?: Omit<GenerationResult, 'title'>
-        error?: string
-      }
-      if (!response.ok || !data.generation) throw new Error(data.error || '未能保存審核決定。')
-      const reviewed: GenerationResult = {
-        ...data.generation,
-        title: `${data.generation.aspectRatio} · ${workflowById(data.generation.workflowId).title}`
-      }
+      const reviewed = await submitGenerationReview(result, decision)
       setServerResults((current) => current.map((item) => item.id === reviewed.id ? reviewed : item))
       setNotice(decision === 'approve' ? '草稿已核准，正式下載現已開放。' : '草稿已標記為需要修改，不會開放正式下載。')
     } catch (error) {
