@@ -32,6 +32,7 @@
 - [x] JSON／multipart 寫入只接受精確、大小寫不敏感的 base media type；合法 charset／boundary 參數保留，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；
 - [x] 商品圖刪除只在 workspace Agent 的目前 brief 引用同一 asset ID 時重設 plan；刪除無關來源圖及重送刪除不會清除既有 revision，前端會重新載入 authoritative state；
 - [x] synthetic R2 delete failure 會保留 D1 retry anchor 及 Agent revision；只有 R2 delete 完成後才按 asset identity 重設 plan；
+- [x] 商品圖 D1 DELETE ambiguous commit 會核對同 workspace／asset type row；已提交回覆冪等 `204`，未提交保留 D1 retry anchor 並可再次完成刪除；
 - [x] 已完成輸出的 D1 DELETE ambiguous commit 會以 workspace-scoped row absence reconciliation；已提交回覆冪等 `204`，未提交保留 retry anchor 並可再次刪除；
 - [x] `/app` 與 `/app/*` 採 Worker-first，工作區 shell 在 Access JWT 及 active D1 membership 驗證後才返回；
 - [x] feature branch 的完整 repository checks，以及 390–1280px browser／visual QA 完成；

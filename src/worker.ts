@@ -1130,15 +1130,27 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
     WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
   `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; workspaceId: string }>()
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
   try {
     // Keep the D1 row as the retry anchor until private storage and Agent cleanup succeed.
     await env.MEDIA_BUCKET.delete(asset.objectKey)
     const agent = await getAgentByName(env.CAMPAIGN_AGENT, asset.workspaceId)
     await agent.resetPlanForAsset(assetId)
     await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(assetId, asset.workspaceId).run()
-    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+    return deletedResponse()
   } catch {
-    return json({ error: '未能刪除商品圖片。' }, { status: 503 })
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM media_assets
+        WHERE id = ? AND workspace_id = ? AND kind = 'product-source'
+      `).bind(assetId, asset.workspaceId).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('product-asset-delete-reconciliation-pending')
+    } catch {
+      console.error('product-asset-delete-reconciliation-failed')
+    }
+    return json({ error: '未能刪除商品圖片。 Unable to delete product image.' }, { status: 503 })
   }
 }
 

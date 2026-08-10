@@ -418,6 +418,94 @@ describe('private product assets', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
   })
 
+  it('reconciles an asset delete that commits before D1 reports failure', async () => {
+    const owner = await registerAccount('Ambiguous Asset Delete')
+    const uploaded = await uploadPng(owner.cookie, 'ambiguous-delete.png')
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    const stored = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ?')
+      .bind(asset.id)
+      .first<{ objectKey: string }>()
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM media_assets')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after asset delete commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const deleted = await dispatch(asset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: ambiguousDb })
+
+    expect(deleted.status).toBe(204)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
+    expect(await env.MEDIA_BUCKET.get(stored!.objectKey)).toBeNull()
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json()))
+      .toMatchObject({ state: { stage: 'idle', revision: 0 } })
+  })
+
+  it('keeps an asset retry anchor when its D1 delete does not commit', async () => {
+    const owner = await registerAccount('Rejected Asset Delete')
+    const uploaded = await uploadPng(owner.cookie, 'retry-delete.png')
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    const stored = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ?')
+      .bind(asset.id)
+      .first<{ objectKey: string }>()
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM media_assets')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before asset delete commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const failed = await dispatch(asset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: rejectingDb })
+
+    expect(failed.status).toBe(503)
+    expect(await failed.json()).toEqual({ error: '未能刪除商品圖片。 Unable to delete product image.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 1 })
+    expect(await env.MEDIA_BUCKET.get(stored!.objectKey)).toBeNull()
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json()))
+      .toMatchObject({ state: { stage: 'idle', revision: 0 } })
+
+    const retried = await dispatch(asset.previewUrl, {
+      method: 'DELETE',
+      headers: { cookie: owner.cookie, origin: 'https://app.test' }
+    })
+    expect(retried.status).toBe(204)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM media_assets WHERE id = ?').bind(asset.id).first()).toEqual({ count: 0 })
+  })
+
   it('preserves an approved Agent plan when private asset deletion fails', async () => {
     const owner = await registerAccount('Failed Asset Delete')
     const uploaded = await uploadPng(owner.cookie, 'keep-on-failure.png')
