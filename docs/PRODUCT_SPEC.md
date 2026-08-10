@@ -122,7 +122,7 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 - Agent plan 在寫入 Durable Object 或呼叫可選 provider 前，先核對來源圖屬於目前 workspace 且 D1／R2 SHA-256、大小、MIME、asset kind 與 metadata 一致；preview、Agent 批准及 Queue 讀取亦會再次核對，任一不一致均不返回 object body、不改寫有效 revision、不批准亦不呼叫 provider；
 - R2 驗收後若 D1 insert 回報失敗，Worker 會重新核對同 workspace、同 server-generated asset ID 的 canonical row；已提交且欄位完全一致則返回成功，明確未提交才清理剛建立的單一 R2 object。若 reconciliation 狀態不可讀，會 fail closed 而不盲目刪除可能已被 D1 引用的 object；
 - 來源圖和輸出不得互相覆寫。
-- 使用者可逐一刪除明確的商品圖或已完成輸出；刪除前的 workspace-scoped D1 metadata 不可讀時回固定雙語 no-store `503`，不執行 R2、Agent 或 D1 mutation。商品圖只有在私人 R2 delete 完成後，才會在 Durable Object 內按 asset identity 重設目前實際引用它的計劃，再刪除 D1 記錄。若 R2 delete call 拒絕，後續的 D1 與 Agent mutation 不會執行；刪除同 workspace 的無關圖片亦不會清除現有 revision。商品圖及已完成輸出的最終 D1 DELETE 若回應不確定，會以 workspace-scoped row absence reconciliation 分辨已提交與仍可重試狀態，不會把保留的 retry anchor 誤報為成功。
+- 使用者可逐一刪除明確的商品圖或已完成輸出；browser client 每次只接受一個 bounded safe ID、呼叫一條同源 DELETE route 且不傳 body，只把 `204` 或 workspace-scoped `404` 當作已不存在。其他 2xx、處理中 conflict、授權或儲存故障均保留本機項目並顯示固定雙語訊息，不解析 server error detail。刪除前的 workspace-scoped D1 metadata 不可讀時回固定雙語 no-store `503`，不執行 R2、Agent 或 D1 mutation。商品圖只有在私人 R2 delete 完成後，才會在 Durable Object 內按 asset identity 重設目前實際引用它的計劃，再刪除 D1 記錄。若 R2 delete call 拒絕，後續的 D1 與 Agent mutation 不會執行；刪除同 workspace 的無關圖片亦不會清除現有 revision。商品圖及已完成輸出的最終 D1 DELETE 若回應不確定，會以 workspace-scoped row absence reconciliation 分辨已提交與仍可重試狀態，不會把保留的 retry anchor 誤報為成功。
 
 ## 7. Campaign Pack 與保真
 

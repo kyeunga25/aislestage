@@ -25,6 +25,7 @@ import {
   productAssetUploadUnavailableMessage,
   uploadProductAsset
 } from './lib/product-asset-client'
+import { deletePrivateResource } from './lib/private-delete-client'
 import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product } from './lib/types'
 import { loadPlatformStatus, loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 
@@ -218,11 +219,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     try {
       const deletedAssetId = image.asset?.id || null
       if (image.asset) {
-        const response = await fetch(`/api/assets/${encodeURIComponent(image.asset.id)}`, { method: 'DELETE', credentials: 'same-origin' })
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({})) as { error?: string }
-          throw new Error(data.error || '未能刪除商品圖片。')
-        }
+        await deletePrivateResource('product-asset', image.asset.id)
       }
       if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
       let planReloadFailed = false
@@ -249,11 +246,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setNotice('')
     try {
       if (session?.user.id !== 'demo-user') {
-        const response = await fetch(`/api/generations/${encodeURIComponent(result.id)}`, { method: 'DELETE', credentials: 'same-origin' })
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({})) as { error?: string }
-          throw new Error(data.error || '未能刪除輸出。')
-        }
+        await deletePrivateResource('generation', result.id)
       }
       setServerResults((current) => current.filter((item) => item.id !== result.id))
     } catch (error) {
