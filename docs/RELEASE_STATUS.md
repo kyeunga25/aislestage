@@ -29,6 +29,7 @@
 - [x] password／invite registration batch ambiguous commit 以 server-generated user／workspace IDs、canonical account fields、owner membership、初始 allowance 及 invite linkage reconciliation；已提交可建立 session，其他同 email 帳號不可冒充本次成功；
 - [x] session INSERT ambiguous commit 以本次 token hash、user ID 與 exact expiry reconciliation；完整相符才發出原 hardened cookie，其他狀態不回傳 token 識別資料；
 - [x] password session／active user／workspace membership 讀取不可用時，`/api/session` 及受保護 API 回雙語 no-store `503 unavailable` 並保留 cookie；只有已確認無效 session 才清 cookie；
+- [x] 前端 bootstrap normalizer 只接受 active user／workspace、合法角色、safe-integer allowance 及跨欄位一致的 restricted health envelope；malformed／矛盾成功回應 fail closed，不會開啟 client feature controls；
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes；清單與 Pack response 共用，網絡、非成功、外部 URL 或 malformed 回應保留 session／既有輸出；

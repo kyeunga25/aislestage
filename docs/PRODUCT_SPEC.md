@@ -44,6 +44,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - invite registration 以單一 D1 batch 建立帳號、workspace、owner membership、初始 allowance 並消耗邀請；若 D1 回報不確定，只在本次 server-generated user／workspace IDs、canonical password account fields、membership、allowance 及 invite linkage 全部相符時恢復成功並發出 session，不能只憑相同 email 已存在而宣稱成功；
 - 建立 session 的 D1 回應若不確定，只在本次隨機 token hash 對應同一 user、exact expiry，且 active user／workspace authorization 重讀成功時才發出原 token cookie；任何其他狀態均返回雙語 `503` 而不返回 cookie 或 token 識別資料，reconciliation／authorization 不可讀時並最佳努力移除未交付 session row；
 - password session 的 session／active user／workspace membership 不可讀時返回雙語 no-store `503 unavailable` 並保留 cookie 作重試錨點；只有已確認無效、過期或無 active workspace 的 session 才回未登入及清 cookie；
+- 工作區 bootstrap 只接受 active user、active workspace、合法角色、bounded identity 文字與非負整數額度的完整 session envelope；health success 亦須是 restricted release 並符合 registration／generation 的跨欄位關係。Malformed 或矛盾資料 fail closed，不可打開註冊、生成或審核 UI；
 - session `last_seen_at` 是不延長 expiry 的 best-effort telemetry；它只在 user、expiry 與 active workspace authorization 完成後更新，寫入失敗不會拒絕已核實的 session；
 - logout 的 session DELETE 回應不確定時，只在同一 token hash 已不存在時清除 browser cookie；若 server row 仍存在或不可讀，保留 cookie 供安全重試並不宣稱登出完成；
 - 登入／註冊 abuse event 只保存單向 email／IP keys；寫入回應不確定時只接受本次 event ID 之 exact hashed fields 與 event type。同一 event identity 可在 missing／首輪不可讀狀態做一次有界重試；唯一鍵與再次 post-read 確保已提交 event 不重複，衝突不覆寫。最終未確認或 rate-limit 狀態不可讀時返回雙語 `503`，不建立登入 session，亦不繼續帳號／密碼流程；

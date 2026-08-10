@@ -15,15 +15,11 @@ import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgen
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
-import { normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
+import type { AccessFailureReason } from './lib/access-login'
 import { loadGenerations, loadGenerationSnapshot, normalizeGenerationResults } from './lib/generation-loader'
-import type { AuthUser, BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset, SessionPayload, WorkspaceSummary } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAsset } from './lib/types'
+import { loadPlatformStatus, loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 import { workflowById } from './lib/workflows'
-
-type AuthedSession = {
-  user: AuthUser
-  currentWorkspace: WorkspaceSummary
-}
 
 const demoSession: AuthedSession = {
   user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User', accountStatus: 'active', accountType: 'test' },
@@ -33,21 +29,6 @@ const demoSession: AuthedSession = {
 const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', authMode: 'access', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
 const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', registrationMode: 'open', registrationOpen: true, generationEnabled: true, generationMode: 'deterministic' }
 const demoPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', generationEnabled: true, generationMode: 'deterministic' }
-
-async function loadSession() {
-  const response = await fetch('/api/session', { credentials: 'same-origin' })
-  const data = await response.json() as SessionPayload
-  if (!response.ok || !data.authenticated || !data.user || !data.currentWorkspace) {
-    return { session: null, failure: normalizeAccessFailureReason(data.code) || 'authentication-required' }
-  }
-  return { session: { user: data.user, currentWorkspace: data.currentWorkspace }, failure: null }
-}
-
-async function loadPlatformStatus() {
-  const response = await fetch('/api/health', { credentials: 'same-origin' })
-  if (!response.ok) throw new Error('Platform status is unavailable.')
-  return response.json() as Promise<PlatformStatus>
-}
 
 async function agentAction(path: string, body?: unknown) {
   const response = await fetch(`/api/campaign-agent${path}`, body === undefined ? { credentials: 'same-origin' } : {

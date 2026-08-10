@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildCampaignPlan, initialCampaignAgentState } from '../src/lib/campaign-agent'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from '../src/lib/campaign-agent-loader'
 import { loadGenerations, loadGenerationSnapshot } from '../src/lib/generation-loader'
+import { loadPlatformStatus, loadSession } from '../src/lib/workspace-bootstrap-loader'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -164,6 +165,116 @@ describe('Campaign Agent state loading', () => {
 
     await expect(loadCampaignAgentState()).rejects.toThrow(
       'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    )
+  })
+})
+
+describe('workspace bootstrap loading', () => {
+  const canonicalSession = {
+    authenticated: true,
+    user: {
+      id: 'user-bootstrap-test',
+      email: 'owner@example.test',
+      name: '測試商戶',
+      accountStatus: 'active',
+      accountType: 'beta'
+    },
+    currentWorkspace: {
+      id: 'workspace-bootstrap-test',
+      name: '測試工作區',
+      role: 'owner',
+      accessStatus: 'active',
+      availableOutputs: 6,
+      reservedOutputs: 0
+    }
+  }
+  const canonicalPlatformStatus = {
+    status: 'ok',
+    service: 'campaign-asset-worker',
+    releaseMode: 'restricted',
+    authMode: 'access',
+    registrationMode: 'closed',
+    registrationOpen: false,
+    generationEnabled: false,
+    generationMode: 'disabled',
+    agentMode: 'deterministic'
+  }
+
+  it('accepts a canonical active session', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalSession)))
+
+    await expect(loadSession()).resolves.toEqual({
+      session: {
+        user: canonicalSession.user,
+        currentWorkspace: canonicalSession.currentWorkspace
+      },
+      failure: null
+    })
+  })
+
+  it('rejects an authenticated session with an unknown workspace role', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      ...canonicalSession,
+      currentWorkspace: { ...canonicalSession.currentWorkspace, role: 'super-admin' }
+    })))
+
+    await expect(loadSession()).rejects.toThrow(
+      '登入資料暫時無法確認。 Session data is temporarily unavailable.'
+    )
+  })
+
+  it('rejects non-integer output allowance data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      ...canonicalSession,
+      currentWorkspace: { ...canonicalSession.currentWorkspace, availableOutputs: '6' }
+    })))
+
+    await expect(loadSession()).rejects.toThrow(
+      '登入資料暫時無法確認。 Session data is temporarily unavailable.'
+    )
+  })
+
+  it('maps a non-success session response to a bounded supported reason', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      code: 'unavailable',
+      error: 'synthetic private session detail'
+    }, { status: 503 })))
+
+    await expect(loadSession()).resolves.toEqual({ session: null, failure: 'unavailable' })
+  })
+
+  it('accepts the exact unauthenticated session envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ authenticated: false })))
+
+    await expect(loadSession()).resolves.toEqual({ session: null, failure: 'authentication-required' })
+  })
+
+  it('accepts a canonical restricted platform status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(canonicalPlatformStatus)))
+
+    await expect(loadPlatformStatus()).resolves.toEqual(canonicalPlatformStatus)
+  })
+
+  it('rejects contradictory Access registration state', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      ...canonicalPlatformStatus,
+      registrationMode: 'open',
+      registrationOpen: false
+    })))
+
+    await expect(loadPlatformStatus()).rejects.toThrow(
+      '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
+    )
+  })
+
+  it('rejects contradictory generation availability state', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      ...canonicalPlatformStatus,
+      generationEnabled: true
+    })))
+
+    await expect(loadPlatformStatus()).rejects.toThrow(
+      '平台狀態暫時無法確認。 Platform status is temporarily unavailable.'
     )
   })
 })
