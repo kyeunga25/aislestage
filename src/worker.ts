@@ -707,16 +707,23 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const assetId = crypto.randomUUID()
   const storedFilename = `product-image.${extensionForContentType(value.type)}`
   const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}.${extensionForContentType(value.type)}`
-  await env.MEDIA_BUCKET.put(objectKey, bytes, {
-    httpMetadata: { contentType: value.type },
-    customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id }
-  })
+  const contentDigest = await sha256Bytes(bytes)
+  const contentSha256 = base64Url(new Uint8Array(contentDigest))
 
   try {
+    const stored = await env.MEDIA_BUCKET.put(objectKey, bytes, {
+      httpMetadata: { contentType: value.type },
+      customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id },
+      sha256: contentDigest
+    })
+    if (!stored || r2Sha256(stored) !== contentSha256) throw new TypeError('Product asset storage integrity verification failed.')
     await env.DB.prepare(`
-      INSERT INTO media_assets (id, workspace_id, created_by_user_id, kind, object_key, original_filename, content_type, size_bytes)
-      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?)
-    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size).run()
+      INSERT INTO media_assets (
+        id, workspace_id, created_by_user_id, kind, object_key,
+        original_filename, content_type, size_bytes, content_sha256
+      )
+      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?)
+    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size, contentSha256).run()
   } catch {
     await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
     return json({ error: '未能儲存商品圖片。' }, { status: 503 })
@@ -733,16 +740,50 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   }, { status: 201 })
 }
 
-async function productAsset(request: Request, env: Env, session: SessionContext, assetId: string) {
-  const asset = await env.DB.prepare(`
-    SELECT a.object_key AS objectKey, a.content_type AS contentType
+type StoredProductAsset = {
+  objectKey: string
+  workspaceId: string
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+  sizeBytes: number
+  contentSha256: string | null
+}
+
+async function productAssetForWorkspace(env: Env, workspaceId: string, assetId: string) {
+  return env.DB.prepare(`
+    SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId,
+      a.content_type AS contentType, a.size_bytes AS sizeBytes,
+      a.content_sha256 AS contentSha256
     FROM media_assets a
     JOIN workspaces w ON w.id = a.workspace_id
-    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
-  `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; contentType: string }>()
+    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source'
+      AND w.access_status = 'active'
+  `).bind(assetId, workspaceId).first<StoredProductAsset>()
+}
+
+function hasCanonicalProductAssetMetadata(asset: StoredProductAsset, object: R2Object) {
+  const metadata = object.customMetadata
+  return productImageTypes.has(asset.contentType)
+    && Number.isSafeInteger(asset.sizeBytes) && asset.sizeBytes > 0 && object.size === asset.sizeBytes
+    && typeof asset.contentSha256 === 'string' && /^[A-Za-z0-9_-]{43}$/.test(asset.contentSha256)
+    && r2Sha256(object) === asset.contentSha256
+    && object.httpMetadata?.contentType === asset.contentType
+    && metadata?.kind === 'product-source'
+    && metadata?.workspaceId === asset.workspaceId
+}
+
+function invalidProductAsset() {
+  return json({ error: '商品圖片完整性驗證失敗，請重新上傳。 Product image integrity check failed; upload it again.' }, { status: 409 })
+}
+
+async function productAsset(request: Request, env: Env, session: SessionContext, assetId: string) {
+  const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
+  if (!hasCanonicalProductAssetMetadata(asset, object)) {
+    await object.body.cancel().catch(() => undefined)
+    return invalidProductAsset()
+  }
   return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
 }
 
@@ -776,6 +817,12 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
     if (action === 'plan') return json({ state: await agent.planBrief(body.brief) })
     if (action === 'approve') {
+      const state = await agent.getPlan()
+      if (state.stage === 'awaiting-approval' && state.brief?.assetId) {
+        const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
+        const object = asset ? await env.MEDIA_BUCKET.head(asset.objectKey) : null
+        if (!asset || !object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
+      }
       const result = await agent.approvePlan(Number(body.revision))
       return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
     }
@@ -824,14 +871,14 @@ async function requireCurrentGenerationExecution(env: Env, input: GenerationInpu
 }
 
 async function generationSourceAsset(env: Env, input: GenerationInput) {
-  const asset = await env.DB.prepare(`
-    SELECT object_key AS objectKey, content_type AS contentType
-    FROM media_assets
-    WHERE id = ? AND workspace_id = ? AND kind = 'product-source'
-  `).bind(input.referenceAssetIds[0], input.workspaceId).first<{ objectKey: string; contentType: 'image/png' | 'image/jpeg' | 'image/webp' }>()
-  if (!asset) throw new Error('Approved product asset is unavailable.')
+  const asset = await productAssetForWorkspace(env, input.workspaceId, input.referenceAssetIds[0])
+  if (!asset) throw new TerminalGenerationError('Approved product asset is unavailable.')
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
-  if (!object) throw new Error('Approved product asset is unavailable.')
+  if (!object) throw new TerminalGenerationError('Approved product asset is unavailable.')
+  if (!hasCanonicalProductAssetMetadata(asset, object)) {
+    await object.body.cancel().catch(() => undefined)
+    throw new TerminalGenerationError('Approved product asset integrity check failed.')
+  }
   return {
     base64: bytesToBase64(new Uint8Array(await object.arrayBuffer())),
     contentType: asset.contentType

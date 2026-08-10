@@ -51,6 +51,13 @@ async function uploadJpeg(cookie: string, bytes: Uint8Array, name = 'product.jpg
   })
 }
 
+function base64Url(bytes: ArrayBuffer) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+}
+
 const jpegScanHeader = [0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]
 const jpegFrameHeader = [0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00]
 
@@ -62,6 +69,15 @@ describe('private product assets', () => {
     const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number } }
     expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: 12 })
 
+    const storedAsset = await env.DB.prepare(`
+      SELECT object_key AS objectKey, content_sha256 AS contentSha256, size_bytes AS sizeBytes
+      FROM media_assets WHERE id = ?
+    `).bind(payload.asset.id).first<{ objectKey: string; contentSha256: string; sizeBytes: number }>()
+    expect(storedAsset).toMatchObject({ sizeBytes: 12, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })
+    const storedObject = storedAsset ? await env.MEDIA_BUCKET.head(storedAsset.objectKey) : null
+    expect(storedObject?.checksums.sha256?.byteLength).toBe(32)
+    expect(base64Url(storedObject!.checksums.sha256!)).toBe(storedAsset!.contentSha256)
+
     const preview = await dispatch(payload.asset.previewUrl, { headers: { cookie: owner.cookie } })
     expect(preview.status).toBe(200)
     expect(preview.headers.get('cache-control')).toBe('private, max-age=300')
@@ -72,6 +88,45 @@ describe('private product assets', () => {
     expect(forbidden.status).toBe(404)
     const forbiddenDelete = await dispatch(payload.asset.previewUrl, { method: 'DELETE', headers: { cookie: otherOwner.cookie, origin: 'https://app.test' } })
     expect(forbiddenDelete.status).toBe(404)
+  })
+
+  it('fails closed when private R2 product bytes change while metadata remains unchanged', async () => {
+    const owner = await registerAccount('Asset Digest Guard')
+    const uploaded = await uploadPng(owner.cookie, 'digest-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string; previewUrl: string } }
+    const row = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ?')
+      .bind(asset.id)
+      .first<{ objectKey: string }>()
+    const original = row?.objectKey ? await env.MEDIA_BUCKET.get(row.objectKey) : null
+    expect(original).not.toBeNull()
+    const replacement = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 1, 1, 1])
+    const replacementDigest = await crypto.subtle.digest('SHA-256', replacement)
+    await env.MEDIA_BUCKET.put(row!.objectKey, replacement, {
+      httpMetadata: original!.httpMetadata,
+      customMetadata: original!.customMetadata,
+      sha256: replacementDigest
+    })
+
+    const preview = await dispatch(asset.previewUrl, { headers: { cookie: owner.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+    expect(await preview.json()).toMatchObject({ error: expect.stringContaining('完整性') })
+
+    const planned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: validBrief(asset.id) })
+    })
+    expect(planned.status).toBe(200)
+    const { state } = await planned.json() as { state: { revision: number } }
+    const approved = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: state.revision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await dispatch('/api/campaign-agent', { headers: { cookie: owner.cookie } }).then((response) => response.json()))
+      .toMatchObject({ state: { stage: 'awaiting-approval', revision: state.revision } })
   })
 
   it('rejects an allowlisted MIME type when the file signature does not match', async () => {

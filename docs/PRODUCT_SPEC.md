@@ -93,8 +93,10 @@ idle -> needs-input -> awaiting-approval -> approved
 - browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
 - source object 存於 workspace-scoped private R2 key；
+- Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；
 - browser 只收到 asset ID 及授權 preview URL；
 - 跨 workspace 返回 not found；
+- preview、Agent 批准及 Queue 讀取都會重新核對 D1／R2 SHA-256、大小、MIME、asset kind 與 workspace metadata；任一不一致均不返回 object body、不批准亦不呼叫 provider；
 - D1 寫入失敗時清理剛建立的單一 R2 object；
 - 來源圖和輸出不得互相覆寫。
 - 使用者可逐一刪除明確的商品圖或已完成輸出；刪除商品圖會同時重設其 Agent 計劃。
@@ -138,6 +140,7 @@ Cron Trigger -> expired session and auth-attempt cleanup
 - 商品圖、價格、優惠、CTA 及雙語文案可逐項核對；
 - 完成輸出預設為草稿，只有 owner／admin 核准後才返回 download URL；重送及相反決定併發不會覆蓋首個審核結果；
 - D1 與 R2 的 output SHA-256／format／provenance metadata 不一致時，不可核准，preview 與 download 亦不返回私人 object body；
+- D1 與 R2 的來源圖 SHA-256／大小／MIME／provenance metadata 不一致時，不可預覽或批准，Queue 亦不可開始 provider work；
 - 匿名及跨 workspace 不可讀取私人資料；
 - deterministic mode 不接觸 provider；
 - desktop、mobile、keyboard focus、無水平溢出及破圖檢查通過；

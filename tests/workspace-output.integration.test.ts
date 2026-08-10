@@ -534,6 +534,28 @@ describe('workspace authorization and output allowance integrity', () => {
     await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
   })
 
+  it('terminally fails before provider work when the canonical source asset bytes have changed', async () => {
+    const account = await registerAccount('Queue Changed Source')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const asset = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .first<{ objectKey: string }>()
+    const original = asset?.objectKey ? await env.MEDIA_BUCKET.get(asset.objectKey) : null
+    expect(original).not.toBeNull()
+    const replacement = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 2, 2, 2, 2])
+    const replacementDigest = await crypto.subtle.digest('SHA-256', replacement)
+    await env.MEDIA_BUCKET.put(asset!.objectKey, replacement, {
+      httpMetadata: original!.httpMetadata,
+      customMetadata: original!.customMetadata,
+      sha256: replacementDigest
+    })
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
   it('rejects a queue message whose input does not match the canonical D1 input', async () => {
     const account = await registerAccount('Queue Message Identity')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

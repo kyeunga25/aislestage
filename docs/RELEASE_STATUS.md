@@ -13,6 +13,7 @@
 - [x] provider header／body 共用 30 秒 deadline；逾時的 bounded Queue retry 及 terminal allowance release 經隔離 integration 測試核對；
 - [x] 完成輸出預設為私人草稿，owner／admin 的不可變審核決定與逐項受控下載已通過隔離 integration 及 browser QA；
 - [x] Queue output SHA-256 經 R2 寫入驗收；approve／preview／download 在 D1 與 R2 digest、MIME 或 provenance metadata 不一致時 fail closed；
+- [x] 來源商品圖 SHA-256 經 R2 寫入驗收；preview／Agent approve／Queue 在 D1 與 R2 digest、大小、MIME 或 provenance metadata 不一致時於 provider work 前 fail closed；
 - [x] `/app` 與 `/app/*` 採 Worker-first，工作區 shell 在 Access JWT 及 active D1 membership 驗證後才返回；
 - [x] feature branch 的完整 repository checks，以及 390–1280px browser／visual QA 完成；
 - [ ] fixed-SHA PR、正式 deployment 及 live acceptance 完成。
