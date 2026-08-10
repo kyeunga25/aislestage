@@ -340,6 +340,59 @@ describe('workspace authorization and output allowance integrity', () => {
     }
   })
 
+  it('keeps a queued Campaign Pack retryable when its final result snapshot is unreadable', async () => {
+    const account = await registerAccount('Pack Result Snapshot Availability')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const idempotencyKey = crypto.randomUUID()
+    const resultReadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT id, campaign_pack_id AS campaignPackId') || !query.includes('ORDER BY created_at ASC')) return statement
+        return {
+          bind: () => ({
+            all: async () => { throw new TypeError('synthetic Campaign Pack result snapshot failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const sentMessages: GenerationMessage[] = []
+    const sendBatch = vi.fn(async (messages: Array<{ body: GenerationMessage }>) => {
+      sentMessages.push(...messages.map((message) => message.body))
+    })
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(account.cookie, input, idempotencyKey, {
+      ...env,
+      DB: resultReadFailureDb,
+      GENERATION_QUEUE: holdingQueue
+    })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: 'Campaign Pack 狀態暫時無法讀取。 Campaign Pack state is temporarily unavailable.'
+    })
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sentMessages).toHaveLength(3)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+      .bind(account.currentWorkspace.id, idempotencyKey)
+      .first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
+      .bind(account.currentWorkspace.id)
+      .first()).toEqual({ count: 3 })
+
+    const replay = await createCampaignPack(account.cookie, input, idempotencyKey, manuallyDeliveredEnv())
+    expect(replay.status).toBe(200)
+    const replayPayload = await replay.json() as { replayed: boolean; generations: Array<{ id: string }> }
+    expect(replayPayload.replayed).toBe(true)
+    expect(replayPayload.generations.map((generation) => generation.id).sort())
+      .toEqual(sentMessages.map((message) => message.generationId).sort())
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+  })
+
   it('dispatches a committed Campaign Pack when reconciliation is temporarily unreadable', async () => {
     const account = await registerAccount('Unreadable Pack Reconciliation')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)

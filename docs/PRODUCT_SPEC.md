@@ -125,6 +125,8 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 
 正式 UI 固定提交三個已批准輸出。Campaign Pack API 只接受 contract 指定的八個外層欄位，每個 output 只接受 `workflowId` 與 `aspectRatio`，Brief／brand／product 亦只接受已知欄位；未知欄位或 malformed envelope 會在任何批准查詢、額度預留或資料寫入前以 `400` 拒絕。單輸出相容 route 套用相同內層 schema 及完整 GenerationInput 外層鍵集合。D1 會在同一 batch 建立 pack、三個 reservation 及三個 generation records；不足三個可用輸出時不留下部分 pack。若 batch 已提交但 D1 回應失敗，Worker 會在 Queue 發送前以 exact pack、canonical queued rows、未產生 output 的初始狀態及唯一 reservation ledgers 對帳；完整相符才視為建立成功，明確不存在才查找同 idempotency key 的併發結果，衝突則 fail closed。若對帳暫時不可讀，仍會發送只含本次 server-generated IDs 的 bounded Queue batch 以避免已提交工作滯留，但向 client 返回通用 `503`；沒有對應 D1 row 的 Queue delivery 不會取得處理權。重送相同 idempotency key 只有在 canonical generation identities（revision、brief、asset、workflow 及比例）完全相同時才返回原有 pack；同 key 搭配不同請求會 `409`，不改寫既有 pack 或額度。
 
+若 pack commit 與 Queue send 已成功，但最終 generation snapshot 暫時不可讀，API 返回固定雙語 no-store `503`，保留 queued rows 與 reservation 且不重送 Queue。正式 UI 保留原 idempotency key；相同請求重試會以 canonical replay 返回原 pack／generation IDs。
+
 在上述 reservation 之前，Campaign Pack 與單輸出 route 均會重新確認 active workspace scope 及商品 asset ownership。Workspace／asset D1 preflight 不可讀時返回固定雙語 no-store `503 unavailable`，而不是 `400`／`404`；不建立 Campaign Pack、generation、ledger、reservation 或 Queue message。
 
 單輸出相容 route 的 reservation batch 或 generation INSERT 若回報失敗，會以同一 server-generated generation ID 核對唯一 reservation ledger 及完整 canonical queued row。已提交狀態會繼續至 Queue send；明確沒有 generation row 才退回 reservation；未知或衝突狀態不會盲目釋放額度或留下一筆已知未入 Queue 的 queued row。

@@ -94,6 +94,7 @@
 - [x] Campaign Pack idempotency key 綁定完整 canonical generation identities，同 key 不同 payload fail closed；
 - [x] Campaign Pack／單輸出在 reservation 前重讀 active workspace 及 asset ownership；任一 preflight 不可讀回雙語 no-store `503`，且不建立 pack／generation／ledger／Queue message；
 - [x] Campaign Pack D1 batch ambiguous commit 以 server-generated pack／generation IDs、canonical queued rows 及唯一 reservations reconciliation；已提交仍送入 Queue，無對應 row 的 delivery 安全 no-op；
+- [x] Campaign Pack commit／Queue send 後的 final generation snapshot 不可讀時回固定雙語 no-store `503`；保留 queued／reservation，同 idempotency key 重試恢復原三個 IDs 且不重送 Queue；
 - [x] 單輸出 reservation batch／generation INSERT ambiguous commit 以 generation ID、唯一 ledger 及 canonical queued row reconciliation；已提交繼續入 Queue，明確無 row 才退回；
 - [x] Queue claim UPDATE 回應不確定時不執行 provider／R2 work、不提前 release；queued／同 attempt processing／暫時不可讀狀態保留 reservation 並由下一 attempt 恢復；
 - [x] processing attempt fence 覆蓋 canonical／approval／asset 重核、completion、retry 及 terminal mutation；舊 attempt 在 provider 或 R2 後被接管均不會覆寫較新狀態，未引用 object 會清理；

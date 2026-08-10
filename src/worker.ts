@@ -2111,6 +2111,13 @@ function generationPreflightUnavailable() {
   }, { status: 503 })
 }
 
+function campaignPackStateUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: 'Campaign Pack 狀態暫時無法讀取。 Campaign Pack state is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
@@ -2147,7 +2154,8 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
     if (replay) return replay
   } catch {
-    return json({ error: 'Campaign Pack replay state is temporarily unavailable.' }, { status: 503 })
+    console.error('campaign-pack-replay-read-failed')
+    return campaignPackStateUnavailable()
   }
   for (const input of inputs) {
     const issues = validateCompositionInput(input)
@@ -2245,7 +2253,14 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
 
   if (creationReconciliationUnavailable) return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
 
-  return json({ campaignPackId, generations: await packGenerations(env, workspace.id, campaignPackId), reservedOutputs: outputCount }, { status: 202 })
+  let generations: ReturnType<typeof generationPayload>[]
+  try {
+    generations = await packGenerations(env, workspace.id, campaignPackId)
+  } catch {
+    console.error('campaign-pack-result-read-failed')
+    return campaignPackStateUnavailable()
+  }
+  return json({ campaignPackId, generations, reservedOutputs: outputCount }, { status: 202 })
 }
 
 async function reconcileQueuedGeneration(env: Env, workspaceId: string, generationId: string, input: GenerationInput): Promise<'committed' | 'not-committed' | 'conflict'> {
