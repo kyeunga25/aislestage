@@ -1,6 +1,6 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
 import { loadCampaignAgentState, normalizeCampaignAgentState } from './campaign-agent-loader'
-import { readBoundedJsonResponse } from './bounded-json-response'
+import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 import type { CampaignAgentState, CampaignBrief } from './types'
 
@@ -132,8 +132,11 @@ async function submitCampaignAgentAttempt(
         await response.body?.cancel().catch(() => undefined)
         throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, false)
       }
-      const data = await readBoundedJsonResponse(response, MAX_AGENT_ACTION_RESPONSE_BYTES)
-      if (signal.aborted) throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, true)
+      const outcome = await readBoundedJsonResponseOutcome(response, MAX_AGENT_ACTION_RESPONSE_BYTES)
+      if (signal.aborted || outcome.kind === 'stream-error') {
+        throw new CampaignAgentAttemptError(campaignAgentActionUnavailableMessage, true)
+      }
+      const data = outcome.kind === 'value' ? outcome.value : null
       const state = request.action === 'plan'
         ? expectedBrief && currentRevision !== null && canonicalPlanResponse(data, expectedBrief, currentRevision)
         : request.action === 'approve' && canonicalApprovalResponse(data, request.revision)

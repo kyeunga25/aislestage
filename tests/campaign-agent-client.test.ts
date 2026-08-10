@@ -78,14 +78,16 @@ describe('Campaign Agent action client', () => {
 
   it('rejects an action response whose streamed body exceeds the client limit', async () => {
     const state = buildCampaignPlan(brief, 1)
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+    const fetchMock = vi.fn(async () => new Response(
       `${' '.repeat(256 * 1024)}${JSON.stringify({ state })}`,
       { headers: { 'content-type': 'application/json' } }
-    )))
+    ))
+    vi.stubGlobal('fetch', fetchMock)
 
     await expect(submitCampaignAgentAction({ action: 'plan', brief, currentRevision: 0 })).rejects.toThrow(
       'Campaign Agent 暫時未能完成這個動作。 Campaign Agent action is temporarily unavailable.'
     )
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('reconciles an ambiguous plan failure without sending a second plan mutation', async () => {
@@ -150,6 +152,27 @@ describe('Campaign Agent action client', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('reconciles an immediate plan response stream failure without replaying the mutation', async () => {
+    const state = buildCampaignPlan(brief, 1)
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method !== 'POST') return Response.json({ state })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('synthetic response stream failure'))
+        }
+      })
+      return new Response(body, { headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(submitCampaignAgentAction({ action: 'plan', brief, currentRevision: 0 })).resolves.toEqual(state)
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/campaign-agent/plan',
+      '/api/campaign-agent'
+    ])
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1)
+  })
+
   it('fails closed when plan reconciliation finds only the submitted revision', async () => {
     const state = buildCampaignPlan(brief, 2)
     const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => init?.method === 'POST'
@@ -205,6 +228,28 @@ describe('Campaign Agent action client', () => {
       JSON.stringify({ revision: 1 })
     ])
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries an immediate approval response stream failure with the same revision', async () => {
+    const planned = buildCampaignPlan(brief, 1)
+    const state = { ...planned, stage: 'approved' as const, approvedAt: '2026-08-10T12:00:00.000Z' }
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) return Response.json({ state, replayed: true })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError('synthetic response stream failure'))
+        }
+      })
+      return new Response(body, { headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(submitCampaignAgentAction({ action: 'approve', revision: 1 })).resolves.toEqual(state)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => call[1]?.body)).toEqual([
+      JSON.stringify({ revision: 1 }),
+      JSON.stringify({ revision: 1 })
+    ])
   })
 
   it('does not retry an approval conflict', async () => {
