@@ -191,6 +191,22 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = ?')
       .bind(account.currentWorkspace.id, 'reservation')
       .first<{ count: number }>()).toEqual({ count: 3 })
+
+    for (const conflictingInput of [
+      { ...input, approvedRevision: input.approvedRevision + 1 },
+      { ...input, product: { ...input.product, price: 'HK$101' } }
+    ]) {
+      const conflict = await createCampaignPack(account.cookie, conflictingInput, idempotencyKey)
+      expect(conflict.status).toBe(409)
+      expect(await conflict.json()).toMatchObject({ error: expect.stringMatching(/idempotency key.*different Campaign Pack request/) })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ? AND campaign_pack_id = ?')
+        .bind(account.currentWorkspace.id, payload.campaignPackId)
+        .first()).toEqual({ count: 3 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = ?')
+        .bind(account.currentWorkspace.id, 'reservation')
+        .first()).toEqual({ count: 3 })
+    }
   })
 
   it('completes, privately reads, and explicitly deletes a synthetic three-ratio deterministic Campaign Pack', async () => {

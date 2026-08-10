@@ -96,7 +96,7 @@ D1 batch 會在同一交易內：
 3. 為每個輸出建立 reservation ledger；
 4. 建立三個 queued generation 記錄。
 
-沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 會返回原有 pack，不再預留。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
+沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 時，Worker 會把新請求 sanitize 成 canonical GenerationInput identities，與既有 pack 的所有 `input_json` identities 排序比對；數量、revision、brief、asset、workflow 或比例任一不同均 `409`，只有完全相同才返回原 pack 且不再預留。相同 helper 亦處理 D1 唯一鍵競爭。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
 
 ## Human output review
 

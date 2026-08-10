@@ -1477,6 +1477,37 @@ async function packGenerations(env: Env, workspaceId: string, campaignPackId: st
   return result.results.map(generationPayload)
 }
 
+async function campaignPackReplayResponse(env: Env, workspaceId: string, idempotencyKey: string, inputs: GenerationInput[]) {
+  const existing = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+    .bind(workspaceId, idempotencyKey)
+    .first<{ id: string }>()
+  if (!existing) return null
+
+  const stored = await env.DB.prepare(`
+    SELECT input_json AS inputJson
+    FROM generations
+    WHERE workspace_id = ? AND campaign_pack_id = ?
+  `).bind(workspaceId, existing.id).all<{ inputJson: string }>()
+  const requestedIdentities = inputs.map(generationInputIdentity).sort()
+  const storedIdentities: string[] = []
+  for (const row of stored.results) {
+    if (typeof row.inputJson !== 'string' || row.inputJson.length > MAX_GENERATION_BODY_BYTES) break
+    try {
+      const input = JSON.parse(row.inputJson) as unknown
+      if (!validInput(input)) break
+      storedIdentities.push(generationInputIdentity(input))
+    } catch {
+      break
+    }
+  }
+  storedIdentities.sort()
+  if (storedIdentities.length !== requestedIdentities.length
+    || storedIdentities.some((identity, index) => identity !== requestedIdentities[index])) {
+    return json({ error: '此 idempotency key 已用於不同的 Campaign Pack 請求。 This idempotency key is already bound to a different Campaign Pack request.' }, { status: 409 })
+  }
+  return json({ campaignPackId: existing.id, generations: await packGenerations(env, workspaceId, existing.id), replayed: true })
+}
+
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
   if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
@@ -1487,11 +1518,6 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   if (parsedPack.request.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
   const workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
-
-  const existing = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
-    .bind(workspace.id, parsedPack.request.idempotencyKey)
-    .first<{ id: string }>()
-  if (existing) return json({ campaignPackId: existing.id, generations: await packGenerations(env, workspace.id, existing.id), replayed: true })
 
   const brief = sanitizeCampaignBrief({
     assetId: parsedPack.request.referenceAssetIds[0],
@@ -1508,6 +1534,12 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     referenceImageUrls: [],
     referenceAssetIds: [parsedPack.request.referenceAssetIds[0]]
   }))
+  try {
+    const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
+    if (replay) return replay
+  } catch {
+    return json({ error: 'Campaign Pack replay state is temporarily unavailable.' }, { status: 503 })
+  }
   for (const input of inputs) {
     const issues = validateCompositionInput(input)
     if (issues.length) return json({ error: issues[0], issues }, { status: 422 })
@@ -1552,10 +1584,8 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     }
     const results = await env.DB.batch(statements)
     if (!results[0].meta.changes) {
-      const replay = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
-        .bind(workspace.id, parsedPack.request.idempotencyKey)
-        .first<{ id: string }>()
-      if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
+      const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
+      if (replay) return replay
       const current = await env.DB.prepare('SELECT available, reserved FROM output_allowances WHERE workspace_id = ?')
         .bind(workspace.id)
         .first<{ available: number; reserved: number }>()
@@ -1565,10 +1595,8 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
       return json({ error: `至少需要 ${outputCount} 個可用輸出。` }, { status: 409 })
     }
   } catch {
-    const replay = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
-      .bind(workspace.id, parsedPack.request.idempotencyKey)
-      .first<{ id: string }>()
-    if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
+    const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs).catch(() => null)
+    if (replay) return replay
     return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
   }
 
