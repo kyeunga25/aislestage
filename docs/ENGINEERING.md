@@ -69,7 +69,7 @@ npm run cf:types:check
 - JSON／multipart 寫入會先精確核對大小寫不敏感的 base media type，再進入 bounded body parser；標準 charset／boundary 參數可用，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；受保護 route 仍會先完成必要的 session／membership 核對；
 - active user 必須同時擁有 active workspace membership；
 - 無權資產與輸出一律返回 not found，避免跨 workspace 枚舉；
-- 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；每個 auth event 另有 server-generated ID，INSERT 回應失敗時必須由該 ID 讀回完全相同的 email hash、IP hash 及 event type 才可繼續，真正缺失或不可讀時維持 fail closed；
+- 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；每個 auth event 另有 server-generated ID，INSERT 回應失敗時必須由該 ID 讀回完全相同的 email hash、IP hash 及 event type 才可繼續。Event 明確未寫入或 rate-limit count 暫時不可讀時，password auth route 以專用錯誤邊界返回雙語 no-store `503`；成功密碼不會在 security event 未確認時取得 session，其他程式錯誤亦不會被這個邊界吞掉；
 - 定期 trigger 清理過期 session、7 日前的登入嘗試、已過期 pending／revoked invite hash，以及 30 日前已使用 invite 的 hash／account linkage。
 
 ## Campaign Agent lifecycle

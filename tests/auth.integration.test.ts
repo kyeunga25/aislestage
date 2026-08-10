@@ -384,6 +384,72 @@ describe('restricted registration authentication', () => {
     expect((await dispatch('/api/session', { headers: { cookie: cookieFrom(login) } })).status).toBe(200)
   })
 
+  it('fails closed without a session when an authentication event does not commit', async () => {
+    const account = await registerAccount('Rejected Auth Event')
+    await dispatch('/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    })
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO auth_attempts')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before auth event commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const login = await dispatch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.20', origin: 'https://app.test' },
+      body: JSON.stringify({ email: account.user.email, password: 'SecurePass123!' })
+    }, { ...env, DB: rejectingDb })
+
+    expect(login.status).toBe(503)
+    expect(login.headers.get('cache-control')).toBe('no-store')
+    expect(await login.json()).toEqual({ error: '登入安全狀態暫時無法確認。 Authentication security state is temporarily unavailable.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?')
+      .bind(account.user.id)
+      .first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM auth_attempts
+      WHERE email = ? AND event_type = 'login_success'
+    `).bind(await hashValue(account.user.email)).first()).toEqual({ count: 0 })
+  })
+
+  it('fails closed before credential lookup when rate-limit state is unreadable', async () => {
+    const rateLimitFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT COUNT(*) AS count') || !query.includes('FROM auth_attempts')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic auth rate-limit read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const login = await dispatch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.21', origin: 'https://app.test' },
+      body: JSON.stringify({ email: 'unreadable@example.test', password: 'SecurePass123!' })
+    }, { ...env, DB: rateLimitFailureDb })
+
+    expect(login.status).toBe(503)
+    expect(login.headers.get('cache-control')).toBe('no-store')
+    expect(await login.json()).toEqual({ error: '登入安全狀態暫時無法確認。 Authentication security state is temporarily unavailable.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?')
+      .bind('unreadable@example.test')
+      .first()).toEqual({ count: 0 })
+  })
+
   it('does not make active-session authorization depend on last-seen telemetry', async () => {
     const account = await registerAccount('Last Seen Telemetry')
     const telemetryFailureDb = {

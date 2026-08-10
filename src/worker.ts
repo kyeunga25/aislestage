@@ -82,6 +82,7 @@ const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
 const accessJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
 
 class TerminalGenerationError extends Error {}
+class AuthenticationSecurityStateError extends Error {}
 
 const json = (body: unknown, init: ResponseInit = {}) => {
   const headers = new Headers(init.headers)
@@ -280,7 +281,7 @@ async function recordAuthAttempt(env: Env, request: Request, eventType: 'login_f
       // Report only the bounded event below; auth keys and database details stay private.
     }
     console.error('auth-attempt-reconciliation-failed')
-    throw new TypeError('Authentication event storage is unavailable.')
+    throw new AuthenticationSecurityStateError('Authentication event storage is unavailable.')
   }
 }
 
@@ -289,14 +290,19 @@ async function authAttemptCount(env: Env, request: Request, options: { email?: s
   const email = options.email ? await sha256(options.email) : ''
   const placeholders = options.eventTypes.map(() => '?').join(',')
   const bindings: unknown[] = options.email ? [email, ip, ...options.eventTypes, `-${options.minutes} minutes`] : [ip, ...options.eventTypes, `-${options.minutes} minutes`]
-  const result = await env.DB.prepare(`
-    SELECT COUNT(*) AS count
-    FROM auth_attempts
-    WHERE ${options.email ? 'email = ? AND ip_address = ?' : 'ip_address = ?'}
-      AND event_type IN (${placeholders})
-      AND created_at >= datetime('now', ?)
-  `).bind(...bindings).first<{ count: number }>()
-  return result?.count ?? 0
+  try {
+    const result = await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM auth_attempts
+      WHERE ${options.email ? 'email = ? AND ip_address = ?' : 'ip_address = ?'}
+        AND event_type IN (${placeholders})
+        AND created_at >= datetime('now', ?)
+    `).bind(...bindings).first<{ count: number }>()
+    return result?.count ?? 0
+  } catch {
+    console.error('auth-rate-limit-read-failed')
+    throw new AuthenticationSecurityStateError('Authentication rate-limit state is unavailable.')
+  }
 }
 
 async function isLoginRateLimited(env: Env, request: Request, email: string) {
@@ -330,6 +336,18 @@ function registrationMode(env: Env) {
 
 function authMode(env: Env): 'access' | 'password' {
   return env.AUTH_MODE === 'access' ? 'access' : 'password'
+}
+
+async function guardedPasswordAuth(action: 'login' | 'register', operation: () => Promise<Response>) {
+  try {
+    return await operation()
+  } catch (error) {
+    if (!(error instanceof AuthenticationSecurityStateError)) throw error
+    const message = action === 'login'
+      ? '登入安全狀態暫時無法確認。 Authentication security state is temporarily unavailable.'
+      : '註冊安全狀態暫時無法確認。 Registration security state is temporarily unavailable.'
+    return json({ error: message }, { status: 503 })
+  }
 }
 
 function isWorkspaceAppPath(pathname: string) {
@@ -2476,8 +2494,16 @@ export default {
       if (session instanceof Response) return session
       return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
     }
-    if (url.pathname === '/api/auth/register' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password registration is disabled.' }, { status: 404 }) : register(request, env)
-    if (url.pathname === '/api/auth/login' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password login is disabled.' }, { status: 404 }) : login(request, env)
+    if (url.pathname === '/api/auth/register' && request.method === 'POST') {
+      return activeAuthMode === 'access'
+        ? json({ error: 'Password registration is disabled.' }, { status: 404 })
+        : guardedPasswordAuth('register', () => register(request, env))
+    }
+    if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+      return activeAuthMode === 'access'
+        ? json({ error: 'Password login is disabled.' }, { status: 404 })
+        : guardedPasswordAuth('login', () => login(request, env))
+    }
     if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
       if (activeAuthMode === 'access') {
         const session = await requireSession(request, env)
