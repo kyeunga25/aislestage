@@ -14,10 +14,11 @@ import { Sidebar } from './components/Sidebar'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
 import { submitCampaignAgentAction } from './lib/campaign-agent-client'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
+import { createCampaignPack } from './lib/campaign-pack-client'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
 import { isPublicDemoPath } from './lib/demo-mode'
 import type { AccessFailureReason } from './lib/access-login'
-import { loadGenerations, loadGenerationSnapshot, normalizeGenerationResults } from './lib/generation-loader'
+import { loadGenerations, loadGenerationSnapshot } from './lib/generation-loader'
 import { generationReviewSourceInvalidMessage, submitGenerationReview } from './lib/generation-review-client'
 import {
   productAssetSizeMessage,
@@ -298,39 +299,17 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     try {
       const selectedPlan = agentState.plan.filter((item) => item.selected)
       generationRequestKey.current ||= crypto.randomUUID()
-      const response = await fetch('/api/campaign-packs', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          idempotencyKey: generationRequestKey.current,
-          workspaceId: session.currentWorkspace.id,
-          approvedRevision: agentState.revision,
-          intent,
-          brand,
-          product,
-          referenceAssetIds: image.asset ? [image.asset.id] : [],
-          outputs: selectedPlan.map((item) => ({ workflowId: item.workflowId, aspectRatio: item.ratio }))
-        })
+      const pack = await createCampaignPack({
+        idempotencyKey: generationRequestKey.current,
+        workspaceId: session.currentWorkspace.id,
+        approvedRevision: agentState.revision,
+        intent,
+        brand,
+        product,
+        referenceAssetIds: image.asset ? [image.asset.id] : [],
+        outputs: selectedPlan.map((item) => ({ workflowId: item.workflowId, aspectRatio: item.ratio }))
       })
-      const data = await response.json().catch(() => ({})) as {
-        campaignPackId?: string
-        generations?: unknown
-        error?: string
-      }
-      if (!response.ok) throw new Error(data.error || '未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
-      if (typeof data.campaignPackId !== 'string' || !data.campaignPackId || data.campaignPackId.length > 64) {
-        throw new Error('未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
-      }
-      let created: GenerationResult[]
-      try {
-        created = normalizeGenerationResults(data.generations)
-      } catch {
-        throw new Error('未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
-      }
-      if (!created.length || created.some((item) => item.campaignPackId !== data.campaignPackId)) {
-        throw new Error('未能建立完整 Campaign Pack。 Unable to create a complete Campaign Pack.')
-      }
+      const created = pack.generations
       generationRequestKey.current = null
       setSession((current) => current ? {
         ...current,

@@ -35,6 +35,7 @@
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes；清單與 Pack response 共用，網絡、非成功、外部 URL 或 malformed 回應保留 session／既有輸出；
+- [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
 - [x] password browser logout 只在 exact `200 application/json { "ok": true }` 後清空私人 state，故障時保持登入並可重試；Access logout 使用固定同源 path，不接受 response-controlled redirect；
