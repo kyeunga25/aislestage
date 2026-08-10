@@ -61,4 +61,27 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('刪除中…<span class="visually-hidden"> Deleting…</span>')
     expect(markup.match(/disabled=""/g)).toHaveLength(2)
   })
+
+  it('keeps the last trusted rows visible while a serialized refresh is unavailable', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="campaigns"
+      brand={starterBrand}
+      product={starterProduct}
+      results={results}
+      imageUrl=""
+      isRefreshingResults
+      notice="輸出清單暫時無法讀取。 Generation list is temporarily unavailable."
+      onRefreshResults={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('aria-busy="true"')
+    expect(markup).toContain('aria-label="正在重新載入私人輸出 · Reloading private outputs"')
+    expect(markup).toContain('disabled=""')
+    expect(markup).toContain('class="lucide lucide-refresh-cw spin"')
+    expect(markup).toContain('role="alert"')
+    expect(markup).toContain('Generation list is temporarily unavailable.')
+    expect(markup).toContain('Campaign Pack · 2 個輸出')
+  })
 })

@@ -131,7 +131,7 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 
 若 pack commit 與 Queue send 已成功，但最終 generation snapshot 暫時不可讀，API 返回固定雙語 no-store `503`，保留 queued rows 與 reservation 且不重送 Queue。正式 UI 保留原 idempotency key；相同請求重試會以 canonical replay 返回原 pack／generation IDs。Replay 可能已 queued、processing、completed 或 failed，browser 必須先重新讀取 authoritative session allowance，不可再次一律扣減／reserve 三個輸出；terminal replay 會立即套用並完成額度刷新，不需多等一次 generation poll。
 
-建立成功後的 browser poll 只綁定該 pack 的 exact 三個 generation IDs，最多執行 16 個固定 interval。暫時讀取失敗會保留最後可信快照；任何成功讀取都會重設連續失敗計數，第三次連續失敗才解除鎖並顯示「已排隊、狀態暫不可讀」的雙語恢復提示，同時盡量刷新 authoritative allowance。只有三個目標 ID 全部 terminal 才宣告完成；到達 bounded window 而仍在 queued／processing，會引導使用者稍後從 Campaign Packs 再讀取，不會把 Queue 中工作誤畫成建立失敗。
+建立成功後的 browser poll 只綁定該 pack 的 exact 三個 generation IDs，最多執行 16 個固定 interval。暫時讀取失敗會保留最後可信快照；任何成功讀取都會重設連續失敗計數，第三次連續失敗才解除鎖並顯示「已排隊、狀態暫不可讀」的雙語恢復提示，同時盡量刷新 authoritative allowance。只有三個目標 ID 全部 terminal 才宣告完成；到達 bounded window 而仍在 queued／processing，會引導使用者稍後從 Campaign Packs 再讀取，不會把 Queue 中工作誤畫成建立失敗。進入 Campaign Packs／素材庫或明確按「重新載入」時會序列化執行一個 15 秒 bounded generation-list GET；審核／刪除期間停用，較舊 hydration／refresh 亦不能覆蓋較新 snapshot 或登出狀態。失敗保留現有 rows 並在 collection view 顯示固定雙語錯誤，公開 Demo 不發私人 request。
 
 在上述 reservation 之前，Campaign Pack 與單輸出 route 均會重新確認 active workspace scope 及商品 asset ownership。Workspace／asset D1 preflight 不可讀時返回固定雙語 no-store `503 unavailable`，而不是 `400`／`404`；不建立 Campaign Pack、generation、ledger、reservation 或 Queue message。
 

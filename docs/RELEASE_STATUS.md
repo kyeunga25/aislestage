@@ -43,6 +43,7 @@
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
 - [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
 - [x] Pack 建立後的 poll 綁定 exact 三個 generation IDs 與 16 個固定 interval；成功讀取重設 failure count，最多容許兩次連續暫時 GET 故障並保留最後可信快照，第三次才以雙語 queued-but-unavailable 狀態解除鎖，不誤報建立失敗；
+- [x] 進入／手動重新載入 Campaign Packs 或素材庫會序列化執行單一 15 秒 bounded generation-list GET；審核／刪除期間停用，request epoch 阻止舊 hydration／refresh 覆蓋新 snapshot 或登出狀態，故障保留 rows 並在 collection view 顯示雙語錯誤；Demo 不發私人 request；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
 - [x] password browser logout 只在 exact `200 application/json { "ok": true }` 後清空私人 state，故障時保持登入並可重試；Access logout 使用固定同源 path，不接受 response-controlled redirect；

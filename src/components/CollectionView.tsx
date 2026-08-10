@@ -1,4 +1,4 @@
-import { ArrowLeft, Box, Image as ImageIcon, Layers3, PackageCheck, Trash2 } from 'lucide-react'
+import { ArrowLeft, Box, Image as ImageIcon, Layers3, PackageCheck, RefreshCw, Trash2 } from 'lucide-react'
 import type { NavigationSection } from './Icon'
 import type { BrandPack, GenerationResult, Product } from '../lib/types'
 
@@ -9,6 +9,10 @@ type Props = {
   results: GenerationResult[]
   imageUrl: string
   deletingResultId?: string | null
+  isRefreshingResults?: boolean
+  refreshDisabled?: boolean
+  notice?: string
+  onRefreshResults?: () => void
   onBack: () => void
   onDeleteResult: (result: GenerationResult) => void
 }
@@ -20,9 +24,23 @@ const sectionCopy = {
   assets: { icon: ImageIcon, title: '素材庫', description: '集中查看各個比例的私人生成素材。' }
 } as const
 
-export function CollectionView({ section, brand, product, results, imageUrl, deletingResultId = null, onBack, onDeleteResult }: Props) {
+export function CollectionView({
+  section,
+  brand,
+  product,
+  results,
+  imageUrl,
+  deletingResultId = null,
+  isRefreshingResults = false,
+  refreshDisabled = false,
+  notice = '',
+  onRefreshResults,
+  onBack,
+  onDeleteResult
+}: Props) {
   const meta = sectionCopy[section]
   const Icon = meta.icon
+  const resultCollection = section === 'campaigns' || section === 'assets'
   const campaignPacks = Array.from(results.reduce((groups, item) => {
     const key = item.campaignPackId || `legacy-${item.id}`
     const group = groups.get(key) || []
@@ -30,8 +48,9 @@ export function CollectionView({ section, brand, product, results, imageUrl, del
     groups.set(key, group)
     return groups
   }, new Map<string, GenerationResult[]>()).entries())
-  return <section className="collection-view">
-    <div className="collection-heading"><div><span><Icon size={21} /></span><div><h1>{meta.title}</h1><p>{meta.description}</p></div></div><button className="outline-button" type="button" onClick={onBack}><ArrowLeft size={16} />返回工作台</button></div>
+  return <section className="collection-view" aria-busy={resultCollection ? isRefreshingResults : undefined}>
+    <div className="collection-heading"><div className="collection-heading-main"><span><Icon size={21} /></span><div><h1>{meta.title}</h1><p>{meta.description}</p></div></div><div className="collection-actions">{resultCollection && onRefreshResults ? <button className="outline-button" type="button" onClick={onRefreshResults} disabled={isRefreshingResults || refreshDisabled} aria-label={isRefreshingResults ? '正在重新載入私人輸出 · Reloading private outputs' : '重新載入私人輸出 · Refresh private outputs'}><RefreshCw className={isRefreshingResults ? 'spin' : undefined} size={16} />{isRefreshingResults ? '重新載入中…' : '重新載入'}</button> : null}<button className="outline-button" type="button" onClick={onBack}><ArrowLeft size={16} />返回工作台</button></div></div>
+    {notice ? <p className="workspace-notice collection-notice" role="alert">{notice}</p> : null}
     {section === 'campaigns' ? <div className="data-panel"><div className="data-head"><strong>最近素材包</strong><span>{campaignPacks.length} 套</span></div>{campaignPacks.length ? campaignPacks.map(([packId, items]) => {
       const failed = items.some((item) => item.status === 'failed')
       const completed = items.every((item) => item.status === 'completed')
