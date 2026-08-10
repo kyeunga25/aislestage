@@ -40,6 +40,7 @@
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
+- [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
 - [x] password browser logout 只在 exact `200 application/json { "ok": true }` 後清空私人 state，故障時保持登入並可重試；Access logout 使用固定同源 path，不接受 response-controlled redirect；
@@ -111,6 +112,7 @@
 - [x] Campaign Pack／單輸出在 reservation 前重讀 active workspace 及 asset ownership；任一 preflight 不可讀回雙語 no-store `503`，且不建立 pack／generation／ledger／Queue message；
 - [x] Campaign Pack D1 batch ambiguous commit 以 server-generated pack／generation IDs、canonical queued rows 及唯一 reservations reconciliation；已提交仍送入 Queue，無對應 row 的 delivery 安全 no-op；
 - [x] Campaign Pack commit／Queue send 後的 final generation snapshot 不可讀時回固定雙語 no-store `503`；保留 queued／reservation，同 idempotency key 重試恢復原三個 IDs 且不重送 Queue；
+- [x] Campaign Pack replay 先重新載入 authoritative session allowance，不重複套用固定三輸出的本機 reservation 推算；terminal replay 立即套用並略過額外 poll；
 - [x] 單輸出 reservation batch／generation INSERT ambiguous commit 以 generation ID、唯一 ledger 及 canonical queued row reconciliation；已提交繼續入 Queue，明確無 row 才退回；
 - [x] Queue claim UPDATE 回應不確定時不執行 provider／R2 work、不提前 release；queued／同 attempt processing／暫時不可讀狀態保留 reservation 並由下一 attempt 恢復；
 - [x] processing attempt fence 覆蓋 canonical／approval／asset 重核、completion、retry 及 terminal mutation；舊 attempt 在 provider 或 R2 後被接管均不會覆寫較新狀態，未引用 object 會清理；

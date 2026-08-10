@@ -109,7 +109,7 @@ Campaign Pack 與單輸出相容 route 在任何 allowance、generation row 或 
 
 `POST /api/campaign-packs` 接受一個 client-generated idempotency key，以及 1–3 個已批准輸出。外層 JSON 必須恰好包含公開 contract 的八個欄位，每個 output 亦只能包含 `workflowId` 與 `aspectRatio`，而共用 Brief／brand／product 內層欄位同樣必須已知；未知欄位或 malformed envelope 會在批准狀態、allowance、D1 及 Queue 操作前以 `400` 拒絕。舊有單輸出 route 亦只接受完整 GenerationInput 鍵集合，不會把未知頂層或內層欄位寫入 `input_json`。正式 UI 固定提交 1:1、4:5、9:16 三個輸出。
 
-正式 UI 的 Campaign Pack client 在 32 KiB UTF-8 cap 前重建 canonical eight-field body，要求一個 source asset、正整數 revision 及三組唯一且受 workflow 支援的比例。新建只接受 exact `202`／`reservedOutputs` envelope，重播只接受 exact `200`／`replayed: true` envelope；兩者都以共享 generation normalizer 及 UUID、pack ID、generation count、approved revision、requested output-set binding 驗證，non-success body 不會解析或反映。
+正式 UI 的 Campaign Pack client 在 32 KiB UTF-8 cap 前重建 canonical eight-field body，要求一個 source asset、正整數 revision 及三組唯一且受 workflow 支援的比例。新建只接受 exact `202`／`reservedOutputs` envelope，重播只接受 exact `200`／`replayed: true` envelope；兩者都以共享 generation normalizer 及 UUID、pack ID、generation count、approved revision、requested output-set binding 驗證，non-success body 不會解析或反映。每次 browser attempt 連完整 64 KiB response 讀取有 30 秒 deadline；transport／deadline、HTTP `408` 或 `5xx` 最多以同一 canonical body 及 idempotency key 自動重試一次，validation／authorization／allowance 或 approval conflict／non-canonical success 不重送。Request 及 bounded polling 期間，approved brief、source image mutation、Agent 重規劃及重複建立入口保持鎖定，避免中途失效 retry identity。
 
 D1 batch 會在同一交易內：
 
@@ -120,7 +120,7 @@ D1 batch 會在同一交易內：
 
 沒有足夠 allowance 時，整個 batch 不留下部分記錄。重送同一 workspace + idempotency key 時，Worker 會把新請求 sanitize 成 canonical GenerationInput identities，與既有 pack 的所有 `input_json` identities 排序比對；數量、revision、brief、asset、workflow 或比例任一不同均 `409`，只有完全相同才返回原 pack 且不再預留。相同 helper 亦處理 D1 唯一鍵競爭。若 D1 batch 已提交但回應傳輸失敗，Worker 會先核對 exact pack、三個 canonical queued rows、空白 output state 及每個輸出的唯一 reservation ledger；完整 commit 才發送 Queue 並返回 `202`，明確未提交才回退至 idempotency replay，衝突則以無識別資料事件及通用 `503` fail closed。若 reconciliation 本身暫時不可讀，Worker 仍發送只含本次 server-generated IDs 的 bounded Queue batch，避免可能已提交的 pack 永久滯留，但不宣稱成功；未對應 D1 row 的孤兒 delivery 無法取得 generation claim，只會安全 ack。Queue batch 入列失敗時，三個輸出全部標示失敗並各自退回；重複 delivery 由 generation claim 與 unique ledger event 保持冪等。
 
-Pack 已提交且 Queue send 成功後，最終 generation snapshot 讀取若暫時不可用，Worker 回固定雙語 no-store `503`，不釋放 reservation、不重送 Queue，亦不猜測 response payload。Client 保留同一 idempotency key；重試會從已提交 canonical identities 讀回原 pack 與原 generation IDs。
+Pack 已提交且 Queue send 成功後，最終 generation snapshot 讀取若暫時不可用，Worker 回固定雙語 no-store `503`，不釋放 reservation、不重送 Queue，亦不猜測 response payload。Client 保留同一 idempotency key；重試會從已提交 canonical identities 讀回原 pack 與原 generation IDs。有效 replay 可能已 queued、processing、completed 或 failed，因此 browser 先重新讀取 authoritative session allowance，不會再次一律扣減／reserve 三個輸出；已 terminal 的 replay 會直接顯示並完成額度刷新，不額外等待一次 generation poll。
 
 單輸出相容 route 亦把 reservation、generation row 及 Queue send 視為分段狀態機。Reservation batch 拋錯時會以 workspace + server-generated generation ID 核對唯一 ledger event；已提交 reservation 才繼續。Generation INSERT 拋錯時會核對完整 queued row、canonical `input_json`、成本、revision 及空白 output state；已提交才送 Queue，明確沒有 row 才釋放 reservation。Reconciliation 不可讀或發生欄位衝突時只返回通用 `503` 及無識別資料事件，不做可能造成 queued row／allowance 分離的盲目補償。
 

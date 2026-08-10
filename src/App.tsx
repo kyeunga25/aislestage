@@ -67,6 +67,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const productImageDeleteLock = useRef(false)
   const generationDeleteLock = useRef(false)
   const generationReviewLock = useRef(false)
+  const campaignPackLock = useRef(false)
 
   function applyCampaignState(nextState: CampaignAgentState) {
     setAgentState(nextState)
@@ -103,6 +104,13 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (availabilityErrors.length) setNotice(availabilityErrors.join(' '))
   }
 
+  async function refreshSessionState() {
+    const refreshedSession = await loadSession().catch(() => null)
+    if (!refreshedSession?.session) return false
+    setSession(refreshedSession.session)
+    return true
+  }
+
   useEffect(() => {
     if (demoMode) return
 
@@ -134,21 +142,25 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   function changeBrand(next: BrandPack) {
+    if (campaignPackLock.current) return
     setBrand(next)
     invalidatePlan()
   }
 
   function changeProduct(next: Product) {
+    if (campaignPackLock.current) return
     setProduct(next)
     invalidatePlan()
   }
 
   function changeIntent(next: string) {
+    if (campaignPackLock.current) return
     setIntent(next)
     invalidatePlan()
   }
 
   async function planCampaign() {
+    if (campaignPackLock.current) return
     generationRequestKey.current = null
     setAgentBusy(true)
     setNotice('')
@@ -167,6 +179,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function approveCampaign() {
+    if (campaignPackLock.current) return
     setAgentBusy(true)
     setNotice('')
     try {
@@ -184,6 +197,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function uploadProductImage(file: File) {
+    if (campaignPackLock.current) return
     generationRequestKey.current = null
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
       setNotice(productAssetTypeMessage)
@@ -220,7 +234,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function deleteProductImage() {
-    if (productImageDeleteLock.current) return
+    if (campaignPackLock.current || productImageDeleteLock.current) return
     const confirmation = demoMode
       ? '移除這張本機 Demo 圖片？引用此圖的 Agent 計劃亦會重設。 Remove this local demo image? A plan using it will also reset.'
       : '刪除這張私人商品圖片？只有引用此圖的 Agent 計劃會重設。 Delete this private product image? Only a plan using it will reset.'
@@ -303,16 +317,18 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   async function generatePack() {
-    if (!session || agentState.stage !== 'approved') return
+    if (!session || agentState.stage !== 'approved' || campaignPackLock.current) return
     if (!platformStatus.generationEnabled) {
       setNotice('計劃已保存；這個部署目前不接受外部 AI 生成請求。')
       return
     }
+    campaignPackLock.current = true
     setIsGenerating(true)
     setNotice('')
     if (session.user.id === 'demo-user') {
       window.setTimeout(() => {
         setServerResults(demoResults.map((result) => ({ ...result, imageUrl: campaignScene, status: 'completed' })))
+        campaignPackLock.current = false
         setIsGenerating(false)
         window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
       }, 950)
@@ -334,16 +350,36 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       })
       const created = pack.generations
       generationRequestKey.current = null
-      setSession((current) => current ? {
-        ...current,
-        currentWorkspace: {
-          ...current.currentWorkspace,
-          availableOutputs: Math.max(0, current.currentWorkspace.availableOutputs - created.length),
-          reservedOutputs: current.currentWorkspace.reservedOutputs + created.length
-        }
-      } : current)
-      setServerResults((current) => [...created, ...current])
       const generationIds = new Set(created.map((item) => item.id))
+      let sessionRefreshed = false
+      if (pack.replayed) {
+        sessionRefreshed = await refreshSessionState()
+        if (!sessionRefreshed) {
+          setNotice('Campaign Pack 已恢復，但暫時未能重新載入額度。 Campaign Pack recovered, but allowance could not be reloaded.')
+        }
+      } else {
+        setSession((current) => current ? {
+          ...current,
+          currentWorkspace: {
+            ...current.currentWorkspace,
+            availableOutputs: Math.max(0, current.currentWorkspace.availableOutputs - created.length),
+            reservedOutputs: current.currentWorkspace.reservedOutputs + created.length
+          }
+        } : current)
+      }
+      setServerResults((current) => [...created, ...current.filter((item) => !generationIds.has(item.id))])
+      if (created.every((item) => item.status === 'completed' || item.status === 'failed')) {
+        const failed = created.find((item) => item.status === 'failed')
+        if (!sessionRefreshed && !pack.replayed) sessionRefreshed = await refreshSessionState()
+        if (failed) {
+          const failureNotice = failed.errorMessage || '部分素材未能完成，可用輸出數已自動退回。'
+          setNotice(sessionRefreshed
+            ? failureNotice
+            : `${failureNotice} 額度暫時未能重新載入。 Allowance could not be reloaded yet.`)
+        }
+        window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+        return
+      }
       for (let attempt = 0; attempt < 16; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1_250))
         const latest = await loadGenerations(session.currentWorkspace.id)
@@ -352,8 +388,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         if (pack.length === generationIds.size && pack.every((item) => item.status === 'completed' || item.status === 'failed')) {
           const failed = pack.find((item) => item.status === 'failed')
           if (failed) setNotice(failed.errorMessage || '部分素材未能完成，可用輸出數已自動退回。')
-          const refreshedSession = await loadSession().catch(() => null)
-          if (refreshedSession?.session) setSession(refreshedSession.session)
+          await refreshSessionState()
           window.setTimeout(() => document.getElementById('campaign-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
           return
         }
@@ -361,9 +396,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setNotice('素材仍在背景處理，可稍後在 Campaign Packs 查看最新狀態。')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '未能建立 Campaign Pack。')
-      const refreshedSession = await loadSession().catch(() => null)
-      if (refreshedSession?.session) setSession(refreshedSession.session)
+      await refreshSessionState()
     } finally {
+      campaignPackLock.current = false
       setIsGenerating(false)
     }
   }
@@ -432,7 +467,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           {demoMode
             ? <p className="preview-notice" role="status"><strong>公開互動 Demo</strong><span>只在目前瀏覽器記憶體處理合成資料；不會上傳、保存或呼叫外部 AI。</span></p>
             : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
-          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
+          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} generationBusy={isGenerating} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
           {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'} reviewingId={reviewingId} reviewingDecision={reviewingDecision} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
           <section className="support-panel" id="support" aria-labelledby="support-title">

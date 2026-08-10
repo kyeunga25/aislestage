@@ -90,7 +90,7 @@ a { color: inherit; }
 .panel-heading p,.agent-heading p { margin: 5px 0 0; color: var(--subtle); font-size: 14px; line-height: 1.6; }
 .panel-heading.split { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
 .private-label { display: flex; align-items: center; gap: 5px; color: var(--mint); font-size: 13px; font-weight: 700; line-height: 1.4; white-space: nowrap; }
-.compact-fields { display: grid; gap: 13px; margin-top: 19px; }
+.compact-fields { min-width: 0; display: grid; gap: 13px; margin: 19px 0 0; border: 0; padding: 0; }
 .compact-fields > label,.field-row label,.bilingual-fields label { min-width: 0; display: grid; gap: 7px; color: #536176; font-size: 14px; font-weight: 650; line-height: 1.45; }
 .compact-fields input,.compact-fields select,.selling-points input { width: 100%; border: 1px solid #d9e0ea; border-radius: 6px; outline: none; background: #fff; color: var(--text); font-size: 15px; }
 .compact-fields input,.compact-fields select { height: 44px; padding: 0 12px; font-size: 15px; }

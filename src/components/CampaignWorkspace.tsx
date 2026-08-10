@@ -18,6 +18,7 @@ type Props = {
   intent: string
   image: ImageState
   imageDeleteBusy?: boolean
+  generationBusy?: boolean
   agentState: CampaignAgentState
   agentBusy: boolean
   generationAvailable: boolean
@@ -34,7 +35,7 @@ type Props = {
 export type { ImageState }
 
 export function CampaignWorkspace(props: Props) {
-  const { brand, product, intent, image, imageDeleteBusy = false, agentState, agentBusy, generationAvailable, onBrandChange, onProductChange, onIntentChange, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
+  const { brand, product, intent, image, imageDeleteBusy = false, generationBusy = false, agentState, agentBusy, generationAvailable, onBrandChange, onProductChange, onIntentChange, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
   const inputRef = useRef<HTMLInputElement>(null)
   const englishReady = Boolean(
     product.nameEn
@@ -52,7 +53,7 @@ export function CampaignWorkspace(props: Props) {
     && englishReady
   )
   const imageReady = image.status === 'ready' || image.status === 'demo'
-  const imageMutationBusy = image.status === 'uploading' || imageDeleteBusy
+  const imageMutationBusy = image.status === 'uploading' || imageDeleteBusy || generationBusy
   const agentReady = agentState.stage === 'awaiting-approval' || agentState.stage === 'approved'
 
   const setProduct = (key: keyof Product, value: string | string[]) => onProductChange({ ...product, [key]: value })
@@ -93,9 +94,9 @@ export function CampaignWorkspace(props: Props) {
     </ol>
 
     <div className="studio-grid">
-      <section className="brief-panel" aria-labelledby="brief-title">
+      <section className="brief-panel" aria-labelledby="brief-title" aria-busy={generationBusy}>
         <div className="panel-heading"><h2 id="brief-title">品牌與商品資料</h2><p>只使用已核實、可以公開宣傳的資料。</p></div>
-        <div className="compact-fields">
+        <fieldset className="compact-fields" disabled={generationBusy}>
           <label><span>品牌名稱</span><input value={brand.name} maxLength={campaignBriefLimits.brand.name} onChange={(event) => setBrand('name', event.target.value)} /></label>
           <label><span>商品名稱</span><input value={product.name} maxLength={campaignBriefLimits.product.name} onChange={(event) => setProduct('name', event.target.value)} /></label>
           <label><span>商品類別</span><input value={product.category} maxLength={campaignBriefLimits.product.category} onChange={(event) => setProduct('category', event.target.value)} /></label>
@@ -113,25 +114,25 @@ export function CampaignWorkspace(props: Props) {
               <label><span>Call to action</span><input lang="en" value={brand.ctaEn} maxLength={campaignBriefLimits.brand.ctaEn} onChange={(event) => setBrand('ctaEn', event.target.value)} /></label>
             </div>
           </details>
-        </div>
+        </fieldset>
         <div className={`facts-status ${factsReady ? 'ready' : ''}`}><ShieldCheck size={17} /><span><strong>{factsReady ? '資料已就緒' : '仍需補充資料'}</strong><small>{factsReady ? '所有必填欄位已完成' : 'Agent 會指出仍欠缺的項目'}</small></span></div>
       </section>
 
-      <section className="product-panel" aria-labelledby="product-image-title" aria-busy={imageDeleteBusy}>
+      <section className="product-panel" aria-labelledby="product-image-title" aria-busy={imageDeleteBusy || generationBusy}>
         <div className="panel-heading split"><div><h2 id="product-image-title">商品圖片</h2><p>建議正面 1:1、解析度 2000px 以上。</p></div>{image.status === 'ready' ? <span className="private-label"><ShieldCheck size={13} />私人保存</span> : null}</div>
         <div className={`product-canvas${image.url ? '' : ' empty'}`}>{image.url
           ? <img src={image.url} alt={`${product.name || '商品'} 商品原圖`} />
           : <div><ImagePlus size={28} /><strong>加入商品原圖</strong><span>圖片只會透過已授權的工作區路徑顯示</span></div>}
         </div>
         <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={imageMutationBusy}>
-          {image.status === 'uploading' || imageDeleteBusy ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
-          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : imageDeleteBusy ? '正在安全刪除… Deleting securely…' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
+          {image.status === 'uploading' || imageDeleteBusy || generationBusy ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
+          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : imageDeleteBusy ? '正在安全刪除… Deleting securely…' : generationBusy ? '素材包建立中… Pack creation in progress…' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
         </button>
         <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} disabled={imageMutationBusy} />
-        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{imageDeleteBusy ? '正在刪除這張私人商品圖片 · Deleting this private product image' : image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageMutationBusy}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label={imageDeleteBusy ? '正在刪除圖片 · Deleting image' : '刪除圖片'} disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
+        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{imageDeleteBusy ? '正在刪除這張私人商品圖片 · Deleting this private product image' : generationBusy ? '商品圖片已鎖定至正在建立的素材包 · Product image locked to the Campaign Pack in progress' : image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageMutationBusy}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label={imageDeleteBusy ? '正在刪除圖片 · Deleting image' : '刪除圖片'} disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
       </section>
 
-      <CampaignAgentPanel state={agentState} busy={agentBusy} generationAvailable={generationAvailable} onPlan={onPlan} onApprove={onApprove} onGenerate={onGenerate} />
+      <CampaignAgentPanel state={agentState} busy={agentBusy} generationBusy={generationBusy} generationAvailable={generationAvailable} onPlan={onPlan} onApprove={onApprove} onGenerate={onGenerate} />
     </div>
   </>
 }

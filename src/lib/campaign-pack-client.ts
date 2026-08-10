@@ -1,5 +1,6 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
 import { readBoundedJsonResponse } from './bounded-json-response'
+import { fetchWithTimeout } from './fetch-with-timeout'
 import { normalizeGenerationResults } from './generation-loader'
 import type { AspectRatio, BrandPack, GenerationResult, Product, WorkflowId } from './types'
 import { workflows } from './workflows'
@@ -27,6 +28,8 @@ export const campaignPackUnavailableMessage = 'Campaign Pack 建立暫時無法�
 
 const MAX_CAMPAIGN_PACK_BODY_BYTES = 32_768
 const MAX_CAMPAIGN_PACK_RESPONSE_BYTES = 64 * 1024
+const CAMPAIGN_PACK_TIMEOUT_MS = 30_000
+const CAMPAIGN_PACK_ATTEMPTS = 2
 const requestKeys = new Set(['idempotencyKey', 'workspaceId', 'approvedRevision', 'intent', 'brand', 'product', 'referenceAssetIds', 'outputs'])
 const outputKeys = new Set(['workflowId', 'aspectRatio'])
 const createdResponseKeys = new Set(['campaignPackId', 'generations', 'reservedOutputs'])
@@ -34,6 +37,13 @@ const replayResponseKeys = new Set(['campaignPackId', 'generations', 'replayed']
 const idempotencyKeyPattern = /^[a-z0-9_-]{16,100}$/i
 const resourceIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+class CampaignPackAttemptError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message)
+    this.name = 'CampaignPackAttemptError'
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -148,36 +158,55 @@ function normalizePackResponse(data: unknown, status: 200 | 202, request: Campai
   return { campaignPackId: data.campaignPackId, generations, replayed }
 }
 
-export async function createCampaignPack(value: CampaignPackClientRequest): Promise<CampaignPackClientResult> {
-  const canonical = canonicalRequest(value)
-  if (!canonical) throw new Error(campaignPackRequestInvalidMessage)
-
-  let response: Response
-  try {
-    response = await fetch('/api/campaign-packs', {
+async function createCampaignPackAttempt(canonical: NonNullable<ReturnType<typeof canonicalRequest>>) {
+  return fetchWithTimeout(
+    '/api/campaign-packs',
+    {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body: canonical.body
-    })
-  } catch {
-    throw new Error(campaignPackUnavailableMessage)
+    },
+    CAMPAIGN_PACK_TIMEOUT_MS,
+    async (response, signal) => {
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new CampaignPackAttemptError(
+          packFailureMessage(response.status),
+          response.status === 408 || response.status >= 500
+        )
+      }
+      if (response.status !== 200 && response.status !== 202) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new CampaignPackAttemptError(campaignPackResponseInvalidMessage, false)
+      }
+      const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      if (contentType !== 'application/json') {
+        await response.body?.cancel().catch(() => undefined)
+        throw new CampaignPackAttemptError(campaignPackResponseInvalidMessage, false)
+      }
+      const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_PACK_RESPONSE_BYTES)
+      if (signal.aborted) throw new CampaignPackAttemptError(campaignPackUnavailableMessage, true)
+      const pack = normalizePackResponse(data, response.status, canonical.request)
+      if (!pack) throw new CampaignPackAttemptError(campaignPackResponseInvalidMessage, false)
+      return pack
+    }
+  )
+}
+
+export async function createCampaignPack(value: CampaignPackClientRequest): Promise<CampaignPackClientResult> {
+  const canonical = canonicalRequest(value)
+  if (!canonical) throw new Error(campaignPackRequestInvalidMessage)
+
+  for (let attempt = 0; attempt < CAMPAIGN_PACK_ATTEMPTS; attempt += 1) {
+    try {
+      return await createCampaignPackAttempt(canonical)
+    } catch (error) {
+      const retryable = !(error instanceof CampaignPackAttemptError) || error.retryable
+      if (retryable && attempt + 1 < CAMPAIGN_PACK_ATTEMPTS) continue
+      if (error instanceof CampaignPackAttemptError) throw new Error(error.message)
+      throw new Error(campaignPackUnavailableMessage)
+    }
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(packFailureMessage(response.status))
-  }
-  if (response.status !== 200 && response.status !== 202) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignPackResponseInvalidMessage)
-  }
-  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
-  if (contentType !== 'application/json') {
-    await response.body?.cancel().catch(() => undefined)
-    throw new Error(campaignPackResponseInvalidMessage)
-  }
-  const data = await readBoundedJsonResponse(response, MAX_CAMPAIGN_PACK_RESPONSE_BYTES)
-  const pack = normalizePackResponse(data, response.status, canonical.request)
-  if (!pack) throw new Error(campaignPackResponseInvalidMessage)
-  return pack
+  throw new Error(campaignPackUnavailableMessage)
 }
