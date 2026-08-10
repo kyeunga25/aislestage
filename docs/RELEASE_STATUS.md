@@ -42,6 +42,7 @@
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
 - [x] password browser logout 只在 exact `200 application/json { "ok": true }` 後清空私人 state，故障時保持登入並可重試；Access logout 使用固定同源 path，不接受 response-controlled redirect；
+- [x] password logout 每次 attempt 連完整 response 有 15 秒 deadline；transport／deadline／`408`／`5xx` 最多以同一 cookie 自動重試一次，兩次失敗後解除按鈕並保持登入；authorization、malformed／oversized success 不重送；
 - [x] auth-attempt INSERT ambiguous commit 以 server-generated event ID、email／IP hashes 及 event type reconciliation；已提交不重複，真正缺失或不可讀維持 fail closed；
 - [x] invite CLI 只接受明確列出的唯一參數；未知、位置、重複、缺值、不合法 account type 及受保護 flags 均在產生邀請或執行 Wrangler 前 fail closed；
 - [x] owner onboarding CLI 必須明確且唯一選擇 local／remote target；未知、位置、重複、帶值、缺少／衝突 target 及混合 self-test flags 均在讀取 identity 或執行 Wrangler 前 fail closed；
