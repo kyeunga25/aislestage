@@ -36,6 +36,34 @@ const loginMessages: Record<AccessFailureReason | 'ready', LoginMessage> = {
     status: '這次 Access session 不可使用。',
     tone: 'error'
   },
+  'authentication-expired': {
+    title: '安全登入 session 已過期',
+    titleEn: 'The secure sign-in session has expired',
+    body: 'Cloudflare Access session 已超過有效時間。請先安全登出，再重新開始登入；過期憑證不會被 Worker 接受。',
+    status: '這次 Access session 已失效。',
+    tone: 'warning'
+  },
+  'authentication-audience-mismatch': {
+    title: '登入憑證不屬於這個應用程式',
+    titleEn: 'The sign-in token is for a different application',
+    body: 'Cloudflare Access 已返回應用程式，但 JWT audience 與目前部署不一致。私人內容會保持鎖定，請由管理員核對 Access application 設定。',
+    status: 'Worker 已拒絕不相符的 audience。',
+    tone: 'error'
+  },
+  'authentication-issuer-mismatch': {
+    title: '登入憑證來源不相符',
+    titleEn: 'The sign-in token issuer does not match',
+    body: 'Cloudflare Access 已返回應用程式，但 JWT issuer 與目前部署不一致。私人內容會保持鎖定，請由管理員核對 team domain。',
+    status: 'Worker 已拒絕不相符的 issuer。',
+    tone: 'error'
+  },
+  'authentication-signature-invalid': {
+    title: '登入憑證簽章未能驗證',
+    titleEn: 'The sign-in token signature could not be verified',
+    body: 'Worker 未能以目前 Access 公開金鑰驗證 JWT 簽章。請先安全登出再重新登入；如問題持續，請由管理員核對 Access 應用程式。',
+    status: '未經驗證的憑證不會開放私人內容。',
+    tone: 'error'
+  },
   'identity-incomplete': {
     title: '登入身份資料不完整',
     titleEn: 'The verified identity is incomplete',
@@ -86,6 +114,10 @@ export function AccessLoginPage({ reason, returnTo }: Props) {
   const destination = safePrivateReturnPath(returnTo || query.get('returnTo'))
   const message = loginMessages[activeReason || 'ready']
   const canResetIdentity = activeReason === 'authentication-invalid'
+    || activeReason === 'authentication-expired'
+    || activeReason === 'authentication-audience-mismatch'
+    || activeReason === 'authentication-issuer-mismatch'
+    || activeReason === 'authentication-signature-invalid'
     || activeReason === 'identity-incomplete'
     || activeReason === 'membership-required'
     || activeReason === 'access-denied'
