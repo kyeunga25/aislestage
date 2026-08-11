@@ -3,6 +3,21 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import worker, { type Env } from '../src/worker'
 
 const APP_ORIGIN = 'https://app.test'
+const VALID_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+const VALID_WEBP_BASE64 = 'UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=='
+
+function decodeBase64(value: string) {
+  const binary = atob(value)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+export function validPngBytes() {
+  return decodeBase64(VALID_PNG_BASE64)
+}
+
+export function validWebpBytes() {
+  return decodeBase64(VALID_WEBP_BASE64)
+}
 
 export type RegisteredAccount = {
   cookie: string

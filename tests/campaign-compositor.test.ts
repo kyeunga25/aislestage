@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { composeCampaignSvg, validateCompositionInput } from '../src/lib/campaign-compositor'
+import { wrapCampaignText } from '../src/lib/campaign-copy'
 import type { GenerationInput } from '../src/lib/types'
 
 function input(overrides: Partial<GenerationInput> = {}): GenerationInput {
@@ -41,6 +42,32 @@ describe('deterministic Campaign Pack composition', () => {
 
   it('rejects copy that cannot fit the narrowest approved layout', () => {
     const unsafe = input({ brand: { ...input().brand, cta: '這是一個不能安全放入按鈕的超長行動呼籲' } })
-    expect(validateCompositionInput(unsafe)).toContain('CTA 超出素材安全區。')
+    expect(validateCompositionInput(unsafe)).toEqual(expect.arrayContaining([expect.stringContaining('CTA 超出素材安全區。')]))
+  })
+
+  it('rejects fragmented detail copy that exceeds one ratio line budget', () => {
+    const fragmented = input({
+      workflowId: 'promo-poster',
+      aspectRatio: '9:16',
+      product: {
+        ...input().product,
+        benefits: ['A'.repeat(24), 'B'.repeat(24), 'C'.repeat(24)],
+        specifications: `${'D'.repeat(24)} ${'E'.repeat(24)}`
+      }
+    })
+
+    expect(() => composeCampaignSvg({ input: fragmented, source: { base64: 'iVBORw0KGgo=', contentType: 'image/png' } })).toThrow('Commercial text exceeds the deterministic composition safe area.')
+    expect(validateCompositionInput(fragmented)).toEqual(expect.arrayContaining([expect.stringContaining('商品賣點與規格超出素材安全區。')]))
+  })
+
+  it('breaks an unspaced product identifier without losing exact characters', () => {
+    const identifier = 'ABCDEFGHIJKLMNOPQR'
+    const safeInput = input({ product: { ...input().product, name: identifier } })
+
+    expect(validateCompositionInput(safeInput)).toEqual([])
+    expect(wrapCampaignText(identifier, 5, 2)).toEqual(['ABCDEFGHI', 'JKLMNOPQR'])
+    const svg = composeCampaignSvg({ input: safeInput, source: { base64: 'iVBORw0KGgo=', contentType: 'image/png' } })
+    expect(svg).toContain('>ABCDEFGHI</tspan>')
+    expect(svg).toContain('>JKLMNOPQR</tspan>')
   })
 })

@@ -72,6 +72,15 @@ function withWorkspaceShell(baseEnv: Env) {
   return { assetEnv, fetchAsset }
 }
 
+function expectWorkspaceShellSecurityHeaders(response: Response) {
+  expect(response.headers.get('x-frame-options')).toBe('DENY')
+  expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+  expect(response.headers.get('permissions-policy')).toBe('camera=(), microphone=(), geolocation=(), payment=()')
+  expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
+  expect(response.headers.get('content-security-policy')).toContain("base-uri 'self'")
+  expect(response.headers.get('content-security-policy')).toContain("form-action 'self'")
+}
+
 describe('Cloudflare Access authentication', () => {
   it('fails closed when protected Access configuration is missing', async () => {
     const response = await dispatch('/api/session', {}, {
@@ -128,7 +137,9 @@ describe('Cloudflare Access authentication', () => {
     }, assetEnv)
     expect(allowed.status).toBe(200)
     expect(allowed.headers.get('cache-control')).toBe('private, no-store')
+    expect(allowed.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(allowed.headers.get('x-content-type-options')).toBe('nosniff')
+    expectWorkspaceShellSecurityHeaders(allowed)
     expect(await allowed.text()).toContain('AisleStage workspace')
     expect(fetchAsset).toHaveBeenCalledOnce()
   })
@@ -138,6 +149,7 @@ describe('Cloudflare Access authentication', () => {
     const response = await dispatch('/app', {}, assetEnv)
 
     expect(response.status).toBe(200)
+    expectWorkspaceShellSecurityHeaders(response)
     expect(fetchAsset).toHaveBeenCalledOnce()
   })
 
@@ -175,6 +187,80 @@ describe('Cloudflare Access authentication', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 1 })
   })
 
+  it('reconciles Access auto-provision that commits before D1 reports failure', async () => {
+    const fixture = await accessFixture()
+    let provisionBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (provisionBatch) {
+          provisionBatch = false
+          throw new TypeError('synthetic response failure after Access provision commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: ambiguousDb })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      authenticated: true,
+      user: { email: fixture.email, accountType: 'beta' },
+      currentWorkspace: { role: 'owner', accessStatus: 'active', availableOutputs: 3, reservedOutputs: 0 }
+    })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM workspace_memberships wm
+      JOIN users u ON u.id = wm.user_id
+      WHERE u.email = ? AND wm.role = 'owner'
+    `).bind(fixture.email).first()).toEqual({ count: 1 })
+  })
+
+  it('reports Access unavailable when auto-provision definitely does not commit', async () => {
+    const fixture = await accessFixture()
+    const rejectingDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: async () => { throw new TypeError('synthetic failure before Access provision commit') }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: rejectingDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 0 })
+  })
+
+  it('reports Access unavailable when auto-provision reconciliation cannot be read', async () => {
+    const fixture = await accessFixture()
+    const unreadableDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('WHERE access_subject_hash = ? AND email = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic Access provision reconciliation failure') }
+          })
+        }
+      },
+      batch: async () => { throw new TypeError('synthetic failure before Access provision commit') }
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: unreadableDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 0 })
+  })
+
   it('keeps a valid Access identity outside the app when no workspace invitation can be provisioned', async () => {
     const fixture = await accessFixture({ autoProvision: false })
     const response = await dispatch('/api/session', { headers: { 'cf-access-jwt-assertion': fixture.token } }, fixture.accessEnv)
@@ -195,14 +281,14 @@ describe('Cloudflare Access authentication', () => {
     const response = await dispatch('/api/session', { headers: { 'cf-access-jwt-assertion': fixture.token } }, wrongAudienceEnv)
 
     expect(response.status).toBe(401)
-    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-invalid' })
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-audience-mismatch' })
 
     const { assetEnv, fetchAsset } = withWorkspaceShell(wrongAudienceEnv)
     const appResponse = await dispatch('/app', {
       headers: { 'cf-access-jwt-assertion': fixture.token }
     }, assetEnv)
     expect(appResponse.status).toBe(302)
-    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=authentication-invalid&returnTo=%2Fapp')
+    expect(appResponse.headers.get('location')).toBe('https://app.test/login?reason=authentication-audience-mismatch&returnTo=%2Fapp')
     expect(fetchAsset).not.toHaveBeenCalled()
   })
 
@@ -212,6 +298,7 @@ describe('Cloudflare Access authentication', () => {
       headers: { 'cf-access-jwt-assertion': wrongIssuer.token }
     }, wrongIssuer.accessEnv)
     expect(wrongIssuerResponse.status).toBe(401)
+    expect(await wrongIssuerResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-issuer-mismatch' })
 
     const now = Math.floor(Date.now() / 1000)
     const expired = await accessFixture({ issuedAt: now - 600, expirationTime: now - 60 })
@@ -219,7 +306,20 @@ describe('Cloudflare Access authentication', () => {
       headers: { 'cf-access-jwt-assertion': expired.token }
     }, expired.accessEnv)
     expect(expiredResponse.status).toBe(401)
-    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-invalid' })
+    expect(await expiredResponse.json()).toMatchObject({ authenticated: false, code: 'authentication-expired' })
+  })
+
+  it('rejects a tampered assertion with a signature-specific failure', async () => {
+    const fixture = await accessFixture()
+    const parts = fixture.token.split('.')
+    const replacement = parts[2].startsWith('a') ? 'b' : 'a'
+    const tampered = `${parts[0]}.${parts[1]}.${replacement}${parts[2].slice(1)}`
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': tampered }
+    }, fixture.accessEnv)
+
+    expect(response.status).toBe(401)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'authentication-signature-invalid' })
   })
 
   it('rejects a verified assertion that omits the required identity claim', async () => {
@@ -230,6 +330,52 @@ describe('Cloudflare Access authentication', () => {
 
     expect(response.status).toBe(401)
     expect(await response.json()).toMatchObject({ authenticated: false, code: 'identity-incomplete' })
+  })
+
+  it('reports Access unavailable when the bound-subject lookup cannot be read', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const subjectLookupFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes("WHERE access_subject_hash = ? AND auth_mode = 'access'")) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic bound-subject lookup failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: subjectLookupFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+  })
+
+  it('reports Access unavailable when the onboarding email lookup cannot be read', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const emailLookupFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('WHERE email = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic onboarding email lookup failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: emailLookupFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
   })
 
   it('binds a protected pre-onboarded identity to one active owner workspace', async () => {
@@ -250,6 +396,81 @@ describe('Cloudflare Access authentication', () => {
       .first<{ subjectHash: string | null }>()
     expect(stored?.subjectHash).toBeTruthy()
     expect(stored?.subjectHash).not.toBe(fixture.subject)
+  })
+
+  it('reconciles an Access subject update that commits before D1 reports failure', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const seeded = await seedAccessOwner(fixture.email)
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET access_subject_hash = ?')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after Access subject commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: ambiguousDb })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      authenticated: true,
+      user: { id: seeded.userId, email: fixture.email },
+      currentWorkspace: { id: seeded.workspaceId, role: 'owner', accessStatus: 'active' }
+    })
+    const stored = await env.DB.prepare(`
+      SELECT auth_mode AS authMode, access_subject_hash AS subjectHash
+      FROM users
+      WHERE id = ?
+    `).bind(seeded.userId).first<{ authMode: string; subjectHash: string | null }>()
+    expect(stored?.authMode).toBe('access')
+    expect(stored?.subjectHash).toBeTruthy()
+    expect(stored?.subjectHash).not.toBe(fixture.subject)
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)).status).toBe(200)
+  })
+
+  it('keeps an unbound Access account retryable when the subject update does not commit', async () => {
+    const fixture = await accessFixture({ autoProvision: false })
+    const seeded = await seedAccessOwner(fixture.email)
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET access_subject_hash = ?')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before Access subject commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, { ...fixture.accessEnv, DB: rejectingDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ authenticated: false, code: 'unavailable' })
+    expect(await env.DB.prepare('SELECT access_subject_hash AS subjectHash FROM users WHERE id = ?')
+      .bind(seeded.userId)
+      .first()).toEqual({ subjectHash: null })
+    expect((await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)).status).toBe(200)
   })
 
   it('denies a bound identity when its account or workspace is disabled', async () => {

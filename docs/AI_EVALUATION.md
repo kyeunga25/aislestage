@@ -1,6 +1,6 @@
 # AI 評估與成本閘門 / AI evaluation and cost gates
 
-核對日期：2026-08-07
+核對日期：2026-08-10
 
 這份文件定義 AisleStage 評估外部 AI 的公開安全合約。它不指定 production 模型，也不代表已啟用付費推理。所有評估先使用合成商品、合成商業資料與固定輸入；沒有明確批准時，部署保持 `GENERATION_MODE=disabled`、`ASSISTED_PROVIDER=disabled`。
 
@@ -41,12 +41,15 @@
 
 1. `GENERATION_MODE=assisted`，以及明確的 server-side `ASSISTED_PROVIDER` allowlist；
 2. `ASSISTED_DATA_POLICY=approved`，raw prompt、response 與圖片 payload logging 關閉；
-3. 每次只使用一張商品原圖、一個候選及固定輸出尺寸，retry 與並發有上限；
-4. enqueue 前先完成 output reservation；成功 settle，永久失敗 release；
-5. 每個 workspace 的並發、每日 assisted output 與抽象 budget units 不超過 deployment policy；
-6. `ASSISTED_EVALUATION=approved`，固定合成 fixtures、OCR／保真檢查及人工評分全部通過；
-7. `ASSISTED_BUDGET_MODE=approved`，而且 provider credential 只存在於 server-side secret；
-8. `GENERATION_MODE=disabled` 可立即停止新請求，既有 Queue message 亦會 fail closed 並退回 reservation。
+3. 圖片 adapter 只接受 1–4,000 字元 prompt、空的 reference URL 清單及四個已知比例；不支援的輸入會在任何 provider egress 前拒絕。每次只使用一個候選及固定輸出尺寸，比例只會映射至 `1024x1024`、`1024x1280`、`1024x1536` 或 `1536x1024`；回傳 PNG 的 IHDR 必須精確符合該次 request，retry 與並發有上限；
+4. provider success response 以串流實際位元組及 chunk 數限制讀取，不以 `Content-Length` 作唯一保護；文字 JSON 上限 64 KiB，image JSON 上限 12 MiB，base64 解碼後的壓縮 PNG 上限 8 MiB；
+5. JSON MIME／UTF-8、exact local schema、欄位長度及 base64 全部再驗證；PNG 亦須通過 signature、chunk order／CRC、非空 IDAT、canonical IEND、indexed-color PLTE 與 bit depth 容量約束、共用的單邊 8192 px／32 MP 尺寸上限，並在解壓前核對 IHDR 與 server 選定的 request 尺寸完全一致，且不得含 EXIF、文字 metadata 或 private chunks。IDAT zlib 會串流解壓並核對 IHDR 對應的 scanline 長度與 filter 0–4，decoded scanline 總量上限為 128 MiB；文字 request 的 output token 上限固定，未使用的 error body 立即取消；
+6. 每個 provider request 由送出、完整讀取 response body 至 PNG 驗證／解壓共用 30 秒 deadline；逾時會中止 request、按 408 類暫時故障以 60 秒延遲最多重試三次，之後才永久失敗並釋放一次 reservation；
+7. enqueue 前先完成 output reservation；成功 settle，永久失敗 release；
+8. 每個 workspace 的並發、每日 assisted output 與抽象 budget units 不超過 deployment policy；
+9. `ASSISTED_EVALUATION=approved`，固定合成 fixtures、OCR／保真檢查及人工評分全部通過；
+10. `ASSISTED_BUDGET_MODE=approved`，而且 provider credential 只存在於 server-side secret；
+11. `GENERATION_MODE=disabled` 可立即停止新請求，既有 Queue message 亦會 fail closed 並退回 reservation。
 
 Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 workspace 的商業保證。AI Gateway analytics 不能取代應用層的用量與一致性控制。
 
@@ -60,6 +63,7 @@ Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 
 - [FLUX.2 dev model](https://developers.cloudflare.com/workers-ai/models/flux-2-dev/) — multi-reference 候選能力；
 - [AI Gateway logging](https://developers.cloudflare.com/ai-gateway/observability/logging/) — metadata-only logging 與 payload collection 控制；
 - [AI Gateway Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/) — 支援範圍、額外費用、spend limits 與 ZDR 邊界；
+- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)、[Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) 及 [AbortController](https://developers.cloudflare.com/workers/runtime-apis/web-standards/#abortcontroller-and-abortsignal) — 128 MB isolate 記憶體界線、避免無界 buffer 及中止逾時 subrequest 的官方依據；
 - [Cloudflare Queues delivery](https://developers.cloudflare.com/queues/reference/how-queues-works/) — at-least-once delivery 及 duplicate-safe consumer 要求。
 
 這些資料易變。每次模型評估或 release 前必須重新核對官方頁面的更新日期、模型狀態、價格、輸入格式、logging policy 與限制。

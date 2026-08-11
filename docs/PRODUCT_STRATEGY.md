@@ -36,7 +36,8 @@ The source product should remain unchanged wherever practical. Generative models
 4. Choose a bounded campaign intent or preset.
 5. Generate structured scene, layout, and copy suggestions.
 6. Compose the approved product and exact overlays.
-7. Review coordinated formats and download the selected assets.
+7. Review each coordinated format as a private draft and record an explicit human decision.
+8. Download only the approved assets through the controlled workspace route.
 
 ## Design principles
 

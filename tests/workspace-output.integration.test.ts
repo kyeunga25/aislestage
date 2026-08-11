@@ -1,8 +1,25 @@
 import { env } from 'cloudflare:workers'
 import { createExecutionContext, createMessageBatch, getQueueResult } from 'cloudflare:test'
+import { getAgentByName } from 'agents'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker, { type Env, type GenerationMessage } from '../src/worker'
-import { dispatch, generationInput, registerAccount } from './helpers'
+import { dispatch, generationInput, registerAccount, validPngBytes } from './helpers'
+
+const syntheticPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAlklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADvBgQeAAGfIdLmAAAAAElFTkSuQmCC'
+const syntheticMetadataPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAEnRFWHRzeW50aGV0aWMgbWV0YWRhdGE+upmKAAAAlklEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADvBgQeAAGfIdLmAAAAAElFTkSuQmCC'
+const syntheticInvalidFilterPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAABAAAAAQAAQAAAABXZhYuAAAAl0lEQVR4nO3BIQEAAAACIIv/LztEoAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3g0YtAAGs3n7/gAAAABJRU5ErkJggg=='
+const syntheticWrongSizePngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+
+function bytesBase64Url(bytes: Uint8Array) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
+async function sha256Base64Url(value: string) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
+  return bytesBase64Url(digest)
+}
 
 function approvedAssistedEnv(envOverride: Env = env): Env {
   return {
@@ -17,6 +34,18 @@ function approvedAssistedEnv(envOverride: Env = env): Env {
   }
 }
 
+function manuallyDeliveredEnv(envOverride: Env = env): Env {
+  const holdingQueue = {
+    send: async () => undefined,
+    sendBatch: async () => undefined
+  } as unknown as Queue<GenerationMessage>
+  return { ...envOverride, GENERATION_QUEUE: holdingQueue }
+}
+
+function manuallyDeliveredAssistedEnv(): Env {
+  return approvedAssistedEnv(manuallyDeliveredEnv())
+}
+
 async function createGeneration(cookie: string, input: ReturnType<typeof generationInput>, envOverride: Env = env) {
   return dispatch('/api/generations', {
     method: 'POST',
@@ -25,31 +54,35 @@ async function createGeneration(cookie: string, input: ReturnType<typeof generat
   }, envOverride)
 }
 
+function campaignPackBody(input: Awaited<ReturnType<typeof approvedInput>>, idempotencyKey = crypto.randomUUID()) {
+  return {
+    idempotencyKey,
+    workspaceId: input.workspaceId,
+    approvedRevision: input.approvedRevision,
+    intent: input.intent,
+    brand: input.brand,
+    product: input.product,
+    referenceAssetIds: input.referenceAssetIds,
+    outputs: [
+      { workflowId: 'store-main', aspectRatio: '1:1' },
+      { workflowId: 'meta-ad', aspectRatio: '4:5' },
+      { workflowId: 'promo-poster', aspectRatio: '9:16' }
+    ]
+  }
+}
+
 async function createCampaignPack(cookie: string, input: Awaited<ReturnType<typeof approvedInput>>, idempotencyKey = crypto.randomUUID(), envOverride: Env = env) {
   return dispatch('/api/campaign-packs', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie, origin: 'https://app.test' },
-    body: JSON.stringify({
-      idempotencyKey,
-      workspaceId: input.workspaceId,
-      approvedRevision: input.approvedRevision,
-      intent: input.intent,
-      brand: input.brand,
-      product: input.product,
-      referenceAssetIds: input.referenceAssetIds,
-      outputs: [
-        { workflowId: 'store-main', aspectRatio: '1:1' },
-        { workflowId: 'meta-ad', aspectRatio: '4:5' },
-        { workflowId: 'promo-poster', aspectRatio: '9:16' }
-      ]
-    })
+    body: JSON.stringify(campaignPackBody(input, idempotencyKey))
   }, envOverride)
 }
 
 async function approvedInput(cookie: string, workspaceId: string) {
   const form = new FormData()
-  form.set('file', new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'product.png', { type: 'image/png' }))
-  const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test' }, body: form })
+  form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
+  const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
   const { asset } = await upload.json() as { asset: { id: string } }
   const seed = generationInput(workspaceId, asset.id)
   const planned = await dispatch('/api/campaign-agent/plan', {
@@ -92,6 +125,56 @@ async function ledgerCount(generationId: string, eventType: string) {
   return row?.count ?? 0
 }
 
+async function expectTerminalGenerationState(
+  account: Awaited<ReturnType<typeof registerAccount>>,
+  generationId: string
+) {
+  expect(await env.DB.prepare('SELECT status, output_key AS outputKey FROM generations WHERE id = ?')
+    .bind(generationId)
+    .first<{ status: string; outputKey: string | null }>()).toEqual({ status: 'failed', outputKey: null })
+  expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+  expect(await ledgerCount(generationId, 'reservation')).toBe(1)
+  expect(await ledgerCount(generationId, 'release')).toBe(1)
+  expect(await ledgerCount(generationId, 'settlement')).toBe(0)
+  expect(await env.MEDIA_BUCKET.get(`workspaces/${account.currentWorkspace.id}/generations/${generationId}.svg`)).toBeNull()
+}
+
+async function expectTerminalQueueFailure(
+  account: Awaited<ReturnType<typeof registerAccount>>,
+  generationId: string,
+  queuedInput: ReturnType<typeof generationInput>,
+  attempts = 1,
+  envOverride: Env = approvedAssistedEnv()
+) {
+  const fetchMock = vi.fn(async () => { throw new Error('External providers must not be called for stale work.') })
+  vi.stubGlobal('fetch', fetchMock)
+
+  const result = await deliver({ generationId, input: queuedInput }, attempts, crypto.randomUUID(), envOverride)
+  expect(result.explicitAcks).toHaveLength(1)
+  expect(fetchMock).not.toHaveBeenCalled()
+  await expectTerminalGenerationState(account, generationId)
+}
+
+async function completedDeterministicGeneration(
+  account: Awaited<ReturnType<typeof registerAccount>>
+) {
+  const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+  const queued = await createGeneration(account.cookie, input)
+  expect(queued.status).toBe(202)
+  const { id } = await queued.json() as { id: string }
+  const delivery = await deliver({ generationId: id, input })
+  expect(delivery.explicitAcks).toHaveLength(1)
+  return { id, input }
+}
+
+async function markApprovedForDeliveryTamperTest(generationId: string, userId: string) {
+  await env.DB.prepare(`
+    UPDATE generations
+    SET review_status = 'approved', reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?
+    WHERE id = ?
+  `).bind(userId, generationId).run()
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -119,19 +202,335 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = ?')
       .bind(account.currentWorkspace.id, 'reservation')
       .first<{ count: number }>()).toEqual({ count: 3 })
+
+    for (const conflictingInput of [
+      { ...input, approvedRevision: input.approvedRevision + 1 },
+      { ...input, product: { ...input.product, price: 'HK$101' } }
+    ]) {
+      const conflict = await createCampaignPack(account.cookie, conflictingInput, idempotencyKey)
+      expect(conflict.status).toBe(409)
+      expect(await conflict.json()).toMatchObject({ error: expect.stringMatching(/idempotency key.*different Campaign Pack request/) })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ? AND campaign_pack_id = ?')
+        .bind(account.currentWorkspace.id, payload.campaignPackId)
+        .first()).toEqual({ count: 3 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = ?')
+        .bind(account.currentWorkspace.id, 'reservation')
+        .first()).toEqual({ count: 3 })
+    }
+  })
+
+  it('does not reserve a Campaign Pack when asset preflight state is unreadable', async () => {
+    const account = await registerAccount('Pack Asset Preflight Availability')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assetFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT COUNT(*) AS count FROM media_assets') || !query.includes('id IN')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic pack asset preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const sendBatch = vi.fn(async () => undefined)
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(account.cookie, input, crypto.randomUUID(), {
+      ...env,
+      DB: assetFailureDb,
+      GENERATION_QUEUE: holdingQueue
+    })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '素材建立前置狀態暫時無法讀取。 Generation preflight state is temporarily unavailable.'
+    })
+    expect(sendBatch).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('does not reserve a single output when workspace preflight state is unreadable', async () => {
+    const account = await registerAccount('Output Workspace Preflight Availability')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const workspaceFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM workspace_memberships wm') || !query.includes('WHERE wm.user_id = ? AND wm.workspace_id = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic generation workspace preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, {
+      ...env,
+      DB: workspaceFailureDb,
+      GENERATION_QUEUE: holdingQueue
+    })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '素材建立前置狀態暫時無法讀取。 Generation preflight state is temporarily unavailable.'
+    })
+    expect(send).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(account.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('reconciles a Campaign Pack batch that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Pack Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    let creationBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (creationBatch) {
+          creationBatch = false
+          throw new TypeError('synthetic response failure after Campaign Pack commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+    const sentGenerationIds: string[] = []
+    const sendBatch = vi.fn(async (messages: Array<{ body: GenerationMessage }>) => {
+      sentGenerationIds.push(...messages.map((message) => message.body.generationId))
+    })
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(
+      account.cookie,
+      input,
+      crypto.randomUUID(),
+      { ...env, DB: ambiguousDb, GENERATION_QUEUE: holdingQueue }
+    )
+
+    expect(response.status).toBe(202)
+    const payload = await response.json() as {
+      campaignPackId: string
+      generations: Array<{ id: string; status: string }>
+      reservedOutputs: number
+    }
+    expect(payload.generations).toHaveLength(3)
+    expect(payload.generations.every((generation) => generation.status === 'queued')).toBe(true)
+    expect(payload.reservedOutputs).toBe(3)
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sentGenerationIds.sort()).toEqual(payload.generations.map((generation) => generation.id).sort())
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE id = ? AND workspace_id = ?')
+      .bind(payload.campaignPackId, account.currentWorkspace.id)
+      .first()).toEqual({ count: 1 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+    for (const generation of payload.generations) {
+      expect(await ledgerCount(generation.id, 'reservation')).toBe(1)
+      expect(await ledgerCount(generation.id, 'settlement')).toBe(0)
+      expect(await ledgerCount(generation.id, 'release')).toBe(0)
+    }
+  })
+
+  it('keeps a queued Campaign Pack retryable when its final result snapshot is unreadable', async () => {
+    const account = await registerAccount('Pack Result Snapshot Availability')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const idempotencyKey = crypto.randomUUID()
+    const resultReadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT id, campaign_pack_id AS campaignPackId') || !query.includes('ORDER BY created_at ASC')) return statement
+        return {
+          bind: () => ({
+            all: async () => { throw new TypeError('synthetic Campaign Pack result snapshot failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const sentMessages: GenerationMessage[] = []
+    const sendBatch = vi.fn(async (messages: Array<{ body: GenerationMessage }>) => {
+      sentMessages.push(...messages.map((message) => message.body))
+    })
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(account.cookie, input, idempotencyKey, {
+      ...env,
+      DB: resultReadFailureDb,
+      GENERATION_QUEUE: holdingQueue
+    })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: 'Campaign Pack 狀態暫時無法讀取。 Campaign Pack state is temporarily unavailable.'
+    })
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sentMessages).toHaveLength(3)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+      .bind(account.currentWorkspace.id, idempotencyKey)
+      .first()).toEqual({ count: 1 })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
+      .bind(account.currentWorkspace.id)
+      .first()).toEqual({ count: 3 })
+
+    const replay = await createCampaignPack(account.cookie, input, idempotencyKey, manuallyDeliveredEnv())
+    expect(replay.status).toBe(200)
+    const replayPayload = await replay.json() as { replayed: boolean; generations: Array<{ id: string }> }
+    expect(replayPayload.replayed).toBe(true)
+    expect(replayPayload.generations.map((generation) => generation.id).sort())
+      .toEqual(sentMessages.map((message) => message.generationId).sort())
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+  })
+
+  it('dispatches a committed Campaign Pack when reconciliation is temporarily unreadable', async () => {
+    const account = await registerAccount('Unreadable Pack Reconciliation')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const idempotencyKey = crypto.randomUUID()
+    let creationBatch = true
+    const unreadableDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT workspace_id AS workspaceId, idempotency_key AS idempotencyKey')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic reconciliation read failure') }
+          })
+        }
+      },
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (creationBatch) {
+          creationBatch = false
+          throw new TypeError('synthetic response failure after Campaign Pack commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+    const sentMessages: GenerationMessage[] = []
+    const sendBatch = vi.fn(async (messages: Array<{ body: GenerationMessage }>) => {
+      sentMessages.push(...messages.map((message) => message.body))
+    })
+    const holdingQueue = { send: async () => undefined, sendBatch } as unknown as Queue<GenerationMessage>
+
+    const response = await createCampaignPack(
+      account.cookie,
+      input,
+      idempotencyKey,
+      { ...env, DB: unreadableDb, GENERATION_QUEUE: holdingQueue }
+    )
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'Unable to create Campaign Pack.' })
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    expect(sentMessages).toHaveLength(3)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 3 })
+
+    const replay = await createCampaignPack(account.cookie, input, idempotencyKey, manuallyDeliveredEnv())
+    expect(replay.status).toBe(200)
+    const replayPayload = await replay.json() as { generations: Array<{ id: string }>; replayed: boolean }
+    expect(replayPayload.replayed).toBe(true)
+    expect(replayPayload.generations.map((generation) => generation.id).sort())
+      .toEqual(sentMessages.map((message) => message.generationId).sort())
+
+    const deterministicEnv = { ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined }
+    for (const message of sentMessages) {
+      const delivered = await deliver(message, 1, crypto.randomUUID(), deterministicEnv)
+      expect(delivered.explicitAcks).toHaveLength(1)
+    }
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
+    for (const message of sentMessages) {
+      expect(await ledgerCount(message.generationId, 'settlement')).toBe(1)
+      expect(await ledgerCount(message.generationId, 'release')).toBe(0)
+    }
+  })
+
+  it('rejects unknown Campaign Pack envelope fields without reserving outputs', async () => {
+    const account = await registerAccount('Strict Campaign Pack Envelope')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const validBody = campaignPackBody(input)
+    const malformedBodies = [
+      { ...validBody, unexpected: true },
+      { ...validBody, brand: { ...validBody.brand, unexpected: true } },
+      { ...validBody, product: { ...validBody.product, unexpected: true } },
+      {
+        ...validBody,
+        outputs: validBody.outputs.map((output, index) => index === 0 ? { ...output, unexpected: true } : output)
+      }
+    ]
+
+    for (const body of malformedBodies) {
+      const response = await dispatch('/api/campaign-packs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+        body: JSON.stringify(body)
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: 'Invalid Campaign Pack payload.' })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM campaign_packs WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+    }
+  })
+
+  it('rejects unknown single-generation fields without reserving outputs', async () => {
+    const account = await registerAccount('Strict Generation Input')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const malformedInputs = [
+      { ...input, unexpected: true },
+      { ...input, brand: { ...input.brand, unexpected: true } },
+      { ...input, product: { ...input.product, unexpected: true } }
+    ]
+
+    for (const malformedInput of malformedInputs) {
+      const response = await dispatch('/api/generations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+        body: JSON.stringify(malformedInput)
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: 'Invalid generation payload.' })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?')
+        .bind(account.currentWorkspace.id)
+        .first()).toEqual({ count: 0 })
+    }
   })
 
   it('completes, privately reads, and explicitly deletes a synthetic three-ratio deterministic Campaign Pack', async () => {
     const account = await registerAccount('Synthetic Campaign Pack')
     const otherOwner = await registerAccount('Synthetic Other Owner')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    const deterministicEnv = {
+    const deterministicEnv = manuallyDeliveredEnv({
       ...env,
       GENERATION_MODE: 'deterministic' as const,
       AGENT_MODE: 'deterministic' as const,
       ASSISTED_PROVIDER: 'disabled',
       OPENAI_API_KEY: undefined
-    }
+    })
 
     const created = await createCampaignPack(account.cookie, input, crypto.randomUUID(), deterministicEnv)
     expect(created.status).toBe(202)
@@ -147,15 +546,20 @@ describe('workspace authorization and output allowance integrity', () => {
 
     const fetchMock = vi.fn(async () => { throw new Error('External providers must remain disabled.') })
     vi.stubGlobal('fetch', fetchMock)
-    for (const generation of payload.generations) {
+    for (const [index, generation] of payload.generations.entries()) {
       const result = await deliver({
         generationId: generation.id,
         input: { ...input, workflowId: generation.workflowId, aspectRatio: generation.aspectRatio }
       }, 1, crypto.randomUUID(), deterministicEnv)
       expect(result.explicitAcks).toHaveLength(1)
+      expect({
+        row: await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?').bind(generation.id).first(),
+        settlement: await ledgerCount(generation.id, 'settlement'),
+        release: await ledgerCount(generation.id, 'release')
+      }, generation.aspectRatio).toEqual({ row: { status: 'completed', processingAttempt: 1 }, settlement: 1, release: 0 })
+      expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 2 - index })
     }
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 0, reserved: 0 })
 
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
       headers: { cookie: account.cookie }
@@ -164,6 +568,14 @@ describe('workspace authorization and output allowance integrity', () => {
     const listedPayload = await listed.json() as { generations: Array<{ id: string; status: string; imageUrl: string }> }
     expect(listedPayload.generations).toHaveLength(3)
     expect(listedPayload.generations.every((item) => item.status === 'completed' && item.imageUrl)).toBe(true)
+    for (const generation of listedPayload.generations) {
+      expect(Object.keys(generation).sort()).toEqual([
+        'approvedRevision', 'aspectRatio', 'campaignPackId', 'contentType', 'createdAt',
+        'downloadUrl', 'errorMessage', 'id', 'imageUrl', 'provenance', 'reviewedAt',
+        'reviewStatus', 'status', 'workflowId'
+      ].sort())
+      expect(JSON.stringify(generation)).not.toMatch(/output[_-]?key|storage|workspaces\//i)
+    }
 
     const stored = await env.DB.prepare(`
       SELECT id, output_key AS outputKey
@@ -176,7 +588,8 @@ describe('workspace authorization and output allowance integrity', () => {
       const preview = await dispatch(generation.imageUrl, { headers: { cookie: account.cookie } }, deterministicEnv)
       expect(preview.status).toBe(200)
       expect(preview.headers.get('content-type')).toBe('image/svg+xml')
-      expect(preview.headers.get('cache-control')).toBe('private, max-age=300')
+      expect(preview.headers.get('cache-control')).toBe('private, no-store')
+      expect(preview.headers.get('cross-origin-resource-policy')).toBe('same-origin')
       expect(await preview.text()).toContain('data:image/png;base64,')
 
       const crossWorkspace = await dispatch(generation.imageUrl, { headers: { cookie: otherOwner.cookie } }, deterministicEnv)
@@ -257,6 +670,60 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ? AND event_type = 'release'").bind(account.currentWorkspace.id).first()).toEqual({ count: 3 })
   })
 
+  it('reports the generation list unavailable when workspace scope cannot be rechecked', async () => {
+    const account = await registerAccount('Generation Scope Availability')
+    const scopeFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('WHERE wm.user_id = ? AND wm.workspace_id = ?')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic generation workspace scope failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: scopeFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    })
+  })
+
+  it('reports the generation list unavailable after workspace scope succeeds', async () => {
+    const account = await registerAccount('Generation List Availability')
+    const listFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations') || !query.includes('ORDER BY created_at DESC')) return statement
+        return {
+          bind: () => ({
+            all: async () => { throw new TypeError('synthetic generation list failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    }, { ...env, DB: listFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({
+      code: 'unavailable',
+      error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+    })
+  })
+
   it('prevents one workspace from listing, generating with, or reading another workspace assets', async () => {
     const ownerA = await registerAccount('Owner A')
     const ownerB = await registerAccount('Owner B')
@@ -268,22 +735,137 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(create.status).toBe(404)
 
     const generationId = crypto.randomUUID()
-    const outputKey = `workspaces/${ownerB.currentWorkspace.id}/generations/${generationId}.png`
-    await env.MEDIA_BUCKET.put(outputKey, 'private-image', { httpMetadata: { contentType: 'image/png' } })
+    const outputKey = `workspaces/${ownerB.currentWorkspace.id}/generations/${generationId}.svg`
+    const privateOutput = '<svg xmlns="http://www.w3.org/2000/svg"><text>private-output</text></svg>'
+    const privateDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(privateOutput))
+    const privateSha256 = await sha256Base64Url(privateOutput)
+    await env.MEDIA_BUCKET.put(outputKey, privateOutput, {
+      httpMetadata: { contentType: 'image/svg+xml' },
+      customMetadata: {
+        workflow: 'store-main',
+        approvedRevision: '1',
+        compositionVersion: 'deterministic-svg-v1',
+        generationMode: 'deterministic'
+      },
+      sha256: privateDigest
+    })
     await env.DB.prepare(`
-      INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, output_key, completed_at)
-      VALUES (?, ?, 'store-main', '1:1', 'completed', 2, 2, '{}', ?, CURRENT_TIMESTAMP)
-    `).bind(generationId, ownerB.currentWorkspace.id, outputKey).run()
+      INSERT INTO generations (
+        id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost,
+        input_json, output_key, output_content_type, approved_revision,
+        composition_version, generation_mode, output_sha256, completed_at
+      )
+      VALUES (?, ?, 'store-main', '1:1', 'completed', 2, 2, '{}', ?, 'image/svg+xml', 1,
+        'deterministic-svg-v1', 'deterministic', ?, CURRENT_TIMESTAMP)
+    `).bind(generationId, ownerB.currentWorkspace.id, outputKey, privateSha256).run()
 
     const forbiddenImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerA.cookie } })
     expect(forbiddenImage.status).toBe(404)
 
     const ownerImage = await dispatch(`/api/generations/${generationId}/image`, { headers: { cookie: ownerB.cookie } })
     expect(ownerImage.status).toBe(200)
-    expect(new TextDecoder().decode(await ownerImage.arrayBuffer())).toBe('private-image')
-    expect(ownerImage.headers.get('cache-control')).toBe('private, max-age=300')
+    expect(new TextDecoder().decode(await ownerImage.arrayBuffer())).toBe(privateOutput)
+    expect(ownerImage.headers.get('cache-control')).toBe('private, no-store')
     const forbiddenDelete = await dispatch(`/api/generations/${generationId}`, { method: 'DELETE', headers: { cookie: ownerA.cookie, origin: 'https://app.test' } })
     expect(forbiddenDelete.status).toBe(404)
+  })
+
+  it('reconciles a reservation batch that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Reservation Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    let reservationBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (reservationBatch) {
+          reservationBatch = false
+          throw new TypeError('synthetic response failure after reservation commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, { ...env, DB: ambiguousDb, GENERATION_QUEUE: holdingQueue })
+
+    expect(response.status).toBe(202)
+    const { id } = await response.json() as { id: string }
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first()).toEqual({ status: 'queued' })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('reconciles a generation insert that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Generation Insert')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO generations')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after generation commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, { ...env, DB: ambiguousDb, GENERATION_QUEUE: holdingQueue })
+
+    expect(response.status).toBe(202)
+    const { id } = await response.json() as { id: string }
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first()).toEqual({ status: 'queued' })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('releases a reservation when a generation insert definitely does not commit', async () => {
+    const account = await registerAccount('Rejected Generation Insert')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('INSERT INTO generations')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before generation commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const send = vi.fn(async () => undefined)
+    const holdingQueue = { send, sendBatch: async () => undefined } as unknown as Queue<GenerationMessage>
+
+    const response = await createGeneration(account.cookie, input, { ...env, DB: rejectingDb, GENERATION_QUEUE: holdingQueue })
+
+    expect(response.status).toBe(503)
+    expect(send).not.toHaveBeenCalled()
+    const reservation = await env.DB.prepare(`
+      SELECT generation_id AS generationId
+      FROM output_ledger
+      WHERE workspace_id = ? AND event_type = 'reservation'
+    `).bind(account.currentWorkspace.id).first<{ generationId: string }>()
+    expect(reservation?.generationId).toBeTruthy()
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(reservation!.generationId).first()).toEqual({ count: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await ledgerCount(reservation!.generationId, 'reservation')).toBe(1)
+    expect(await ledgerCount(reservation!.generationId, 'release')).toBe(1)
   })
 
   it('does not reserve outputs when the allowance is insufficient', async () => {
@@ -326,6 +908,104 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await ledgerCount(generation!.id, 'release')).toBe(1)
   })
 
+  it('retries without releasing when a queue claim definitely does not commit', async () => {
+    const account = await registerAccount('Rejected Queue Claim')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const queued = await createGeneration(account.cookie, input)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes("SET status = 'processing', processing_attempt = ?")) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before queue claim commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const fetchMock = vi.fn(async () => { throw new Error('An unclaimed generation must not call a provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const messageId = crypto.randomUUID()
+
+    const delivered = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...env, DB: rejectingDb }
+    )
+
+    expect(delivered.explicitAcks).toHaveLength(0)
+    expect(delivered.retryMessages).toEqual([{ msgId: messageId }])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'queued', processingAttempt: 0 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('defers an unconfirmed committed queue claim to the next attempt', async () => {
+    const account = await registerAccount('Ambiguous Queue Claim')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const queued = await createGeneration(account.cookie, input)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes("SET status = 'processing', processing_attempt = ?")) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after queue claim commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const fetchMock = vi.fn(async () => { throw new Error('An unconfirmed claim must not call a provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const messageId = crypto.randomUUID()
+
+    const ambiguous = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...env, DB: ambiguousDb }
+    )
+
+    expect(ambiguous.explicitAcks).toHaveLength(0)
+    expect(ambiguous.retryMessages).toEqual([{ msgId: messageId }])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await env.DB.prepare(`
+      SELECT status, processing_attempt AS processingAttempt, output_key AS outputKey
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ status: 'processing', processingAttempt: 1, outputKey: null })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+
+    const recovered = await deliver({ generationId: id, input }, 2, messageId)
+    expect(recovered.explicitAcks).toEqual([messageId])
+    expect(recovered.retryMessages).toHaveLength(0)
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'completed', processingAttempt: 2 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
   it('settles one successful generation once under duplicate queue delivery', async () => {
     const account = await registerAccount('Successful Queue')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
@@ -340,7 +1020,7 @@ describe('workspace authorization and output allowance integrity', () => {
         return Response.json({ output_text: JSON.stringify({ imagePrompt: 'A clean background', headline: 'Headline', body: 'Body', hashtags: ['#test'], cta: 'Buy' }) })
       }
       if (url.endsWith('/v1/images/generations')) {
-        return Response.json({ data: [{ b64_json: btoa('fake-png') }] })
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })
@@ -369,10 +1049,381 @@ describe('workspace authorization and output allowance integrity', () => {
     expect(await output?.text()).toContain('<svg')
   })
 
+  it('reconciles a completion batch that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Completion Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const deterministicEnv = manuallyDeliveredEnv({ ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined })
+    const queued = await createGeneration(account.cookie, input, deterministicEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    let completionBatch = true
+    const ambiguousDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        const result = await env.DB.batch<T>(statements)
+        if (completionBatch) {
+          completionBatch = false
+          throw new TypeError('synthetic response failure after completion commit')
+        }
+        return result
+      }
+    } as unknown as typeof env.DB
+
+    const fetchMock = vi.fn(async () => { throw new Error('Deterministic generation must not call an external provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+    const delivered = await deliver(
+      { generationId: id, input },
+      1,
+      crypto.randomUUID(),
+      { ...deterministicEnv, DB: ambiguousDb }
+    )
+
+    expect(delivered.explicitAcks).toHaveLength(1)
+    expect(delivered.retryMessages).toHaveLength(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+    const generation = await env.DB.prepare('SELECT status, output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ status: string; outputKey: string }>()
+    expect(generation?.status).toBe('completed')
+    expect(await env.MEDIA_BUCKET.head(generation!.outputKey)).not.toBeNull()
+    expect(await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } }, deterministicEnv).then((response) => response.status)).toBe(200)
+  })
+
+  it('removes an uncommitted output before retrying completion', async () => {
+    const account = await registerAccount('Rejected Completion Commit')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const deterministicEnv = manuallyDeliveredEnv({ ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined })
+    const queued = await createGeneration(account.cookie, input, deterministicEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const rejectingDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: async () => { throw new TypeError('synthetic failure before completion commit') }
+    } as unknown as typeof env.DB
+    const messageId = crypto.randomUUID()
+
+    const delivered = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...deterministicEnv, DB: rejectingDb }
+    )
+
+    expect(delivered.explicitAcks).toHaveLength(0)
+    expect(delivered.retryMessages).toEqual([{ msgId: messageId }])
+    expect(await env.DB.prepare('SELECT status FROM generations WHERE id = ?').bind(id).first()).toEqual({ status: 'queued' })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+    expect(await env.MEDIA_BUCKET.head(`workspaces/${account.currentWorkspace.id}/generations/${id}.svg`)).toBeNull()
+  })
+
+  it('terminally fails a queued generation after its approved brief is replanned', async () => {
+    const account = await registerAccount('Queue Replan')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+
+    const replanned = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({
+        brief: {
+          assetId: input.referenceAssetIds[0],
+          intent: input.intent,
+          brand: input.brand,
+          product: { ...input.product, promotion: 'A changed, unapproved offer' }
+        }
+      })
+    }, assistedEnv)
+    expect(replanned.status).toBe(200)
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('revalidates approval on a retry and releases once after the Agent is reset', async () => {
+    const account = await registerAccount('Queue Reset Retry')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    await env.DB.prepare("UPDATE generations SET status = 'processing', processing_attempt = 1 WHERE id = ?").bind(id).run()
+
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, account.currentWorkspace.id)
+    await agent.resetPlan()
+    await expectTerminalQueueFailure(account, id, input, 2, assistedEnv)
+
+    const duplicate = await deliver({ generationId: id, input }, 3, crypto.randomUUID(), assistedEnv)
+    expect(duplicate.explicitAcks).toHaveLength(1)
+    expect(await ledgerCount(id, 'release')).toBe(1)
+  })
+
+  it('terminally fails claimed work when the canonical workspace is suspended', async () => {
+    const account = await registerAccount('Queue Suspended Workspace')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    await env.DB.prepare("UPDATE workspaces SET access_status = 'suspended' WHERE id = ?").bind(account.currentWorkspace.id).run()
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('terminally fails before provider or R2 work when the canonical source asset is gone', async () => {
+    const account = await registerAccount('Queue Missing Source')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const asset = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .first<{ objectKey: string }>()
+    await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(input.referenceAssetIds[0], account.currentWorkspace.id).run()
+    if (asset) await env.MEDIA_BUCKET.delete(asset.objectKey)
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('terminally fails before provider work when the canonical source asset bytes have changed', async () => {
+    const account = await registerAccount('Queue Changed Source')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const asset = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .first<{ objectKey: string }>()
+    const original = asset?.objectKey ? await env.MEDIA_BUCKET.get(asset.objectKey) : null
+    expect(original).not.toBeNull()
+    const replacement = validPngBytes()
+    replacement[replacement.byteLength - 1] ^= 1
+    const replacementDigest = await crypto.subtle.digest('SHA-256', replacement)
+    await env.MEDIA_BUCKET.put(asset!.objectKey, replacement, {
+      httpMetadata: original!.httpMetadata,
+      customMetadata: original!.customMetadata,
+      sha256: replacementDigest
+    })
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('rejects a queue message whose input does not match the canonical D1 input', async () => {
+    const account = await registerAccount('Queue Message Identity')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const tampered = { ...input, product: { ...input.product, price: 'Unapproved queue value' } }
+
+    await expectTerminalQueueFailure(account, id, tampered, 1, assistedEnv)
+  })
+
+  it('rechecks approval after copy egress and blocks image-provider egress after a concurrent replan', async () => {
+    const account = await registerAccount('Queue Provider Replan')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        const agent = await getAgentByName(env.CAMPAIGN_AGENT, account.currentWorkspace.id)
+        await agent.planBrief({
+          assetId: input.referenceAssetIds[0],
+          intent: input.intent,
+          brand: input.brand,
+          product: { ...input.product, promotion: 'Concurrent unapproved replan' }
+        })
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expectTerminalGenerationState(account, id)
+  })
+
+  it('fences a stale queue attempt after a newer attempt takes ownership', async () => {
+    const account = await registerAccount('Queue Attempt Fence')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    let providerCalls = 0
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      providerCalls += 1
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        if (providerCalls === 2) {
+          await env.DB.prepare(`
+            UPDATE generations
+            SET processing_attempt = 2
+            WHERE id = ? AND status = 'processing' AND processing_attempt = 1
+          `).bind(id).run()
+        }
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const messageId = crypto.randomUUID()
+
+    const stale = await deliver({ generationId: id, input }, 1, messageId, assistedEnv)
+
+    expect(stale.explicitAcks).toEqual([messageId])
+    expect(stale.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await env.DB.prepare(`
+      SELECT status, processing_attempt AS processingAttempt, output_key AS outputKey
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ status: 'processing', processingAttempt: 2, outputKey: null })
+    expect(await env.MEDIA_BUCKET.head(`workspaces/${account.currentWorkspace.id}/generations/${id}.svg`)).toBeNull()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+
+    const recovered = await deliver({ generationId: id, input }, 3, messageId, assistedEnv)
+    expect(recovered.explicitAcks).toEqual([messageId])
+    expect(recovered.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'completed', processingAttempt: 3 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('cleans a stale output when ownership changes immediately before completion', async () => {
+    const account = await registerAccount('Queue Completion Fence')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const queued = await createGeneration(account.cookie, input)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    let completionBatch = true
+    const preemptingDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch<T = unknown>(statements: D1PreparedStatement[]) {
+        if (completionBatch) {
+          completionBatch = false
+          await env.DB.prepare(`
+            UPDATE generations
+            SET processing_attempt = 2
+            WHERE id = ? AND status = 'processing' AND processing_attempt = 1
+          `).bind(id).run()
+        }
+        return env.DB.batch<T>(statements)
+      }
+    } as unknown as typeof env.DB
+    const messageId = crypto.randomUUID()
+
+    const stale = await deliver(
+      { generationId: id, input },
+      1,
+      messageId,
+      { ...env, DB: preemptingDb }
+    )
+
+    expect(stale.explicitAcks).toEqual([messageId])
+    expect(stale.retryMessages).toHaveLength(0)
+    expect(await env.DB.prepare(`
+      SELECT status, processing_attempt AS processingAttempt, output_key AS outputKey
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ status: 'processing', processingAttempt: 2, outputKey: null })
+    expect(await env.MEDIA_BUCKET.head(`workspaces/${account.currentWorkspace.id}/generations/${id}.svg`)).toBeNull()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+
+    const recovered = await deliver({ generationId: id, input }, 3, messageId)
+    expect(recovered.explicitAcks).toEqual([messageId])
+    expect(recovered.retryMessages).toHaveLength(0)
+    expect(await env.DB.prepare('SELECT status, processing_attempt AS processingAttempt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'completed', processingAttempt: 3 })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+    expect(await ledgerCount(id, 'release')).toBe(0)
+  })
+
+  it('rechecks workspace activity immediately before R2 put after provider execution', async () => {
+    const account = await registerAccount('Queue Provider Suspension')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        await env.DB.prepare("UPDATE workspaces SET access_status = 'suspended' WHERE id = ?").bind(account.currentWorkspace.id).run()
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expectTerminalGenerationState(account, id)
+  })
+
+  it('rechecks source ownership immediately before R2 put after provider execution', async () => {
+    const account = await registerAccount('Queue Provider Source Delete')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    const asset = await env.DB.prepare('SELECT object_key AS objectKey FROM media_assets WHERE id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .first<{ objectKey: string }>()
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(input.referenceAssetIds[0], account.currentWorkspace.id).run()
+        if (asset) await env.MEDIA_BUCKET.delete(asset.objectKey)
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 1, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expectTerminalGenerationState(account, id)
+  })
+
   it('builds a private deterministic SVG without contacting an external provider', async () => {
     const account = await registerAccount('Deterministic Output')
     const input = await approvedInput(account.cookie, account.currentWorkspace.id)
-    const deterministicEnv = { ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined }
+    const deterministicEnv = manuallyDeliveredEnv({ ...env, GENERATION_MODE: 'deterministic' as const, OPENAI_API_KEY: undefined })
     const queued = await createGeneration(account.cookie, input, deterministicEnv)
     expect(queued.status).toBe(202)
     const { id } = await queued.json() as { id: string }
@@ -418,7 +1469,7 @@ describe('workspace authorization and output allowance integrity', () => {
         return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Recovered background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
       }
       if (url.endsWith('/v1/images/generations')) {
-        return Response.json({ data: [{ b64_json: btoa('recovered-png') }] })
+        return Response.json({ data: [{ b64_json: syntheticPngBase64 }] })
       }
       throw new Error(`Unexpected request: ${url}`)
     })
@@ -466,5 +1517,688 @@ describe('workspace authorization and output allowance integrity', () => {
     const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, { headers: { cookie: account.cookie } })
     const payload = await listed.json() as { generations: Array<{ id: string; errorMessage: string }> }
     expect(payload.generations.find((item) => item.id === id)?.errorMessage).not.toContain('provider')
+  })
+
+  it.each([
+    { label: 'metadata', imageBase64: syntheticMetadataPngBase64 },
+    { label: 'invalid decoded scanlines', imageBase64: syntheticInvalidFilterPngBase64 },
+    { label: 'wrong dimensions', imageBase64: syntheticWrongSizePngBase64 }
+  ])('never stores provider PNG $label and releases the reserved output after terminal failure', async ({ imageBase64 }) => {
+    const account = await registerAccount('Provider Image Boundary')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = approvedAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+
+    const fetchMock = vi.fn(async (request: RequestInfo | URL) => {
+      const url = typeof request === 'string' ? request : request instanceof URL ? request.href : request.url
+      if (url.endsWith('/v1/responses')) {
+        return Response.json({ output_text: JSON.stringify({ imagePrompt: 'Synthetic background', headline: 'Headline', body: 'Body', hashtags: [], cta: 'Buy' }) })
+      }
+      if (url.endsWith('/v1/images/generations')) {
+        return Response.json({ data: [{ b64_json: imageBase64 }] })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deliver({ generationId: id, input }, 4, crypto.randomUUID(), assistedEnv)
+    expect(result.explicitAcks).toHaveLength(1)
+    expect(result.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expectTerminalGenerationState(account, id)
+  })
+
+  it('retries a provider deadline without releasing allowance, then releases exactly once after the retry limit', async () => {
+    const account = await registerAccount('Provider Deadline Retry')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    expect(queued.status).toBe(202)
+    const { id } = await queued.json() as { id: string }
+    const messageId = crypto.randomUUID()
+    const fetchMock = vi.fn(async () => { throw new TypeError('OpenAI copy request failed: 408') })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const retry = await deliver({ generationId: id, input }, 1, messageId, assistedEnv)
+    expect(retry.retryMessages).toEqual([{ msgId: messageId }])
+    expect(retry.explicitAcks).toHaveLength(0)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 1 })
+    expect(await ledgerCount(id, 'release')).toBe(0)
+    expect(await env.DB.prepare('SELECT status, error_message AS errorMessage FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'queued', errorMessage: '素材處理暫時未能完成，系統會自動重試。' })
+
+    const terminal = await deliver({ generationId: id, input }, 4, messageId, assistedEnv)
+    expect(terminal.explicitAcks).toEqual([messageId])
+    expect(terminal.retryMessages).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 3, reserved: 0 })
+    expect(await ledgerCount(id, 'reservation')).toBe(1)
+    expect(await ledgerCount(id, 'settlement')).toBe(0)
+    expect(await ledgerCount(id, 'release')).toBe(1)
+    expect(await env.DB.prepare('SELECT status, error_message AS errorMessage FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ status: 'failed', errorMessage: '素材未能完成，可用輸出數已自動退回。' })
+  })
+})
+
+describe('explicit private output deletion', () => {
+  it('keeps private output state unchanged when delete preflight metadata is unreadable', async () => {
+    const account = await registerAccount('Output Delete Preflight Availability')
+    const { id } = await completedDeterministicGeneration(account)
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const preflightFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SELECT g.output_key AS outputKey, g.status') || !query.includes('JOIN workspaces w')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic output delete preflight failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const failed = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: preflightFailureDb })
+
+    expect(failed.status).toBe(503)
+    expect(failed.headers.get('cache-control')).toBe('no-store')
+    expect(await failed.json()).toEqual({ error: '未能刪除輸出。 Unable to delete output.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 1 })
+    expect(await env.MEDIA_BUCKET.head(stored!.outputKey)).not.toBeNull()
+  })
+
+  it('reconciles a generation delete that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Output Delete')
+    const { id } = await completedDeterministicGeneration(account)
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM generations')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after generation delete commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const deleted = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: ambiguousDb })
+
+    expect(deleted.status).toBe(204)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 0 })
+    expect(await env.MEDIA_BUCKET.get(stored!.outputKey)).toBeNull()
+  })
+
+  it('keeps a generation retry anchor when its D1 delete does not commit', async () => {
+    const account = await registerAccount('Rejected Output Delete')
+    const { id } = await completedDeterministicGeneration(account)
+    const stored = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('DELETE FROM generations')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before generation delete commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const failed = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    }, { ...env, DB: rejectingDb })
+
+    expect(failed.status).toBe(503)
+    expect(await failed.json()).toEqual({ error: '未能刪除輸出。 Unable to delete output.' })
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 1 })
+    expect(await env.MEDIA_BUCKET.get(stored!.outputKey)).toBeNull()
+
+    const retried = await dispatch(`/api/generations/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: account.cookie, origin: 'https://app.test' }
+    })
+    expect(retried.status).toBe(204)
+    expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM generations WHERE id = ?').bind(id).first()).toEqual({ count: 0 })
+  })
+})
+
+describe('human output review and controlled delivery', () => {
+  it('keeps a draft unchanged when review metadata cannot be read', async () => {
+    const account = await registerAccount('Review Metadata Availability')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const metadataFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations g') || !query.includes('g.output_key AS outputKey')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic review metadata read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, DB: metadataFailureDb })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
+  })
+
+  it('keeps a draft unchanged when approval object metadata cannot be read', async () => {
+    const account = await registerAccount('Review Object Availability')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const unavailableBucket = {
+      head: async () => { throw new TypeError('synthetic review object metadata failure') }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    const response = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, MEDIA_BUCKET: unavailableBucket })
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
+  })
+
+  it('returns a retryable failure when a committed review cannot be reloaded', async () => {
+    const account = await registerAccount('Review Reload Availability')
+    const { id, input } = await completedDeterministicGeneration(account)
+    let metadataReads = 0
+    const reloadFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations g') || !query.includes('g.output_key AS outputKey')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              first: async () => {
+                metadataReads += 1
+                if (metadataReads === 2) throw new TypeError('synthetic committed review reload failure')
+                return bound.first()
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+    const request = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }
+
+    const response = await dispatch(`/api/generations/${id}/review`, request, { ...env, DB: reloadFailureDb })
+
+    expect(metadataReads).toBe(2)
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id).first()).toMatchObject({ reviewStatus: 'approved', reviewedAt: expect.any(String) })
+
+    const replayed = await dispatch(`/api/generations/${id}/review`, request)
+    expect(replayed.status).toBe(200)
+    expect(await replayed.json()).toMatchObject({ generation: { reviewStatus: 'approved' }, replayed: true })
+  })
+
+  it('reconciles a review update that commits before D1 reports failure', async () => {
+    const account = await registerAccount('Ambiguous Output Review')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const ambiguousDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET review_status = ?')) return statement
+        return {
+          bind: (...values: unknown[]) => {
+            const bound = statement.bind(...values)
+            return {
+              run: async () => {
+                await bound.run()
+                throw new TypeError('synthetic response failure after review commit')
+              }
+            }
+          }
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, DB: ambiguousDb })
+
+    expect(approved.status).toBe(200)
+    expect(await approved.json()).toMatchObject({
+      generation: { id, reviewStatus: 'approved', downloadUrl: `/api/generations/${id}/download` },
+      replayed: true
+    })
+    expect(await env.DB.prepare(`
+      SELECT review_status AS reviewStatus, approved_revision AS approvedRevision,
+        reviewed_by_user_id AS reviewedByUserId
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({
+      reviewStatus: 'approved',
+      approvedRevision: input.approvedRevision,
+      reviewedByUserId: account.user.id
+    })
+    expect((await dispatch(`/api/generations/${id}/download`, {
+      headers: { cookie: account.cookie }
+    })).status).toBe(200)
+  })
+
+  it('keeps a draft retryable when the review update does not commit', async () => {
+    const account = await registerAccount('Rejected Output Review')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const rejectingDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('SET review_status = ?')) return statement
+        return {
+          bind: () => ({
+            run: async () => { throw new TypeError('synthetic failure before review commit') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    const response = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    }, { ...env, DB: rejectingDb })
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' })
+    expect(await env.DB.prepare(`
+      SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt,
+        reviewed_by_user_id AS reviewedByUserId
+      FROM generations
+      WHERE id = ?
+    `).bind(id).first()).toEqual({ reviewStatus: 'draft', reviewedAt: null, reviewedByUserId: null })
+    expect((await dispatch(`/api/generations/${id}/download`, {
+      headers: { cookie: account.cookie }
+    })).status).toBe(409)
+  })
+
+  it('keeps completed output as a private draft until an idempotent human approval unlocks download', async () => {
+    const account = await registerAccount('Output Reviewer')
+    const otherOwner = await registerAccount('Other Output Reviewer')
+    const fetchMock = vi.fn(async () => { throw new Error('Deterministic review must not call an external provider.') })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { id, input } = await completedDeterministicGeneration(account)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    const integrity = await env.DB.prepare('SELECT output_key AS outputKey, output_sha256 AS outputSha256 FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string; outputSha256: string }>()
+    const stored = integrity?.outputKey ? await env.MEDIA_BUCKET.head(integrity.outputKey) : null
+    expect(integrity?.outputSha256).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(stored?.checksums.sha256).toBeDefined()
+    expect(bytesBase64Url(new Uint8Array(stored!.checksums.sha256!))).toBe(integrity?.outputSha256)
+
+    const listed = await dispatch(`/api/generations?workspaceId=${account.currentWorkspace.id}`, {
+      headers: { cookie: account.cookie }
+    })
+    expect(listed.status).toBe(200)
+    const listedPayload = await listed.json() as {
+      generations: Array<{
+        id: string
+        reviewStatus: string
+        reviewedAt: string | null
+        imageUrl: string | null
+        downloadUrl: string | null
+        provenance: { approvedRevision: number; compositionVersion: string | null; generationMode: string | null }
+      }>
+    }
+    const draft = listedPayload.generations.find((item) => item.id === id)
+    expect(draft).toMatchObject({
+      reviewStatus: 'draft',
+      reviewedAt: null,
+      imageUrl: `/api/generations/${id}/image`,
+      downloadUrl: null,
+      provenance: {
+        approvedRevision: input.approvedRevision,
+        compositionVersion: 'deterministic-svg-v1',
+        generationMode: 'deterministic'
+      }
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(200)
+    expect(preview.headers.get('content-disposition')).toBe('inline')
+    expect(preview.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    const blockedDownload = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(blockedDownload.status).toBe(409)
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(200)
+    expect(await approved.json()).toMatchObject({
+      generation: { id, reviewStatus: 'approved', downloadUrl: `/api/generations/${id}/download` },
+      replayed: false
+    })
+
+    const replayed = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(replayed.status).toBe(200)
+    expect(await replayed.json()).toMatchObject({ generation: { reviewStatus: 'approved' }, replayed: true })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+    expect(await ledgerCount(id, 'settlement')).toBe(1)
+
+    const crossWorkspace = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: otherOwner.cookie } })
+    expect(crossWorkspace.status).toBe(404)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(200)
+    expect(download.headers.get('content-type')).toBe('image/svg+xml')
+    expect(download.headers.get('content-disposition')).toBe('attachment; filename="aislestage-1x1.svg"')
+    expect(download.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    expect(await download.text()).toContain('Test Product')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('reports private output metadata unavailable for preview and approved download', async () => {
+    const account = await registerAccount('Output Metadata Availability')
+    const { id } = await completedDeterministicGeneration(account)
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const metadataFailureDb = {
+      prepare(query: string) {
+        const statement = env.DB.prepare(query)
+        if (!query.includes('FROM generations g') || !query.includes('g.output_key AS outputKey')) return statement
+        return {
+          bind: () => ({
+            first: async () => { throw new TypeError('synthetic output metadata read failure') }
+          })
+        }
+      },
+      batch: env.DB.batch.bind(env.DB)
+    } as unknown as typeof env.DB
+
+    for (const path of [`/api/generations/${id}/image`, `/api/generations/${id}/download`]) {
+      const response = await dispatch(path, {
+        headers: { cookie: account.cookie }
+      }, { ...env, DB: metadataFailureDb })
+
+      expect(response.status, path).toBe(503)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({
+        code: 'unavailable',
+        error: '私人輸出暫時無法讀取。 Private output is temporarily unavailable.'
+      })
+    }
+  })
+
+  it('reports private output object storage unavailable for preview and approved download', async () => {
+    const account = await registerAccount('Output Object Availability')
+    const { id } = await completedDeterministicGeneration(account)
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const unavailableBucket = {
+      get: async () => { throw new TypeError('synthetic private output read failure') }
+    } as unknown as typeof env.MEDIA_BUCKET
+
+    for (const path of [`/api/generations/${id}/image`, `/api/generations/${id}/download`]) {
+      const response = await dispatch(path, {
+        headers: { cookie: account.cookie }
+      }, { ...env, MEDIA_BUCKET: unavailableBucket })
+
+      expect(response.status, path).toBe(503)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({
+        code: 'unavailable',
+        error: '私人輸出暫時無法讀取。 Private output is temporarily unavailable.'
+      })
+    }
+  })
+
+  it('fails closed when private R2 output metadata no longer matches the canonical SVG format', async () => {
+    const account = await registerAccount('R2 Output Format Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const row = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    expect(row?.outputKey).toBeTruthy()
+    const original = await env.MEDIA_BUCKET.get(row!.outputKey)
+    expect(original).not.toBeNull()
+    await env.MEDIA_BUCKET.put(row!.outputKey, '<html><script>synthetic active content</script></html>', {
+      httpMetadata: { contentType: 'text/html' },
+      customMetadata: original!.customMetadata
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+    expect(await preview.text()).not.toContain('synthetic active content')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+    expect(await download.text()).not.toContain('synthetic active content')
+  })
+
+  it('fails closed when the canonical D1 output format is not the supported SVG contract', async () => {
+    const account = await registerAccount('D1 Output Format Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    await env.DB.prepare("UPDATE generations SET output_content_type = 'text/html' WHERE id = ?")
+      .bind(id)
+      .run()
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+  })
+
+  it('fails closed when private R2 provenance metadata no longer matches D1', async () => {
+    const account = await registerAccount('R2 Output Provenance Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const row = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const original = row?.outputKey ? await env.MEDIA_BUCKET.get(row.outputKey) : null
+    expect(original).not.toBeNull()
+    const originalBody = await original!.text()
+    await env.MEDIA_BUCKET.put(row!.outputKey, originalBody, {
+      httpMetadata: { contentType: 'image/svg+xml' },
+      customMetadata: { ...original!.customMetadata, approvedRevision: String(input.approvedRevision + 1) }
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+  })
+
+  it('fails closed when private R2 output bytes change while all metadata remains canonical', async () => {
+    const account = await registerAccount('R2 Output Digest Guard')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const row = await env.DB.prepare('SELECT output_key AS outputKey FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ outputKey: string }>()
+    const original = row?.outputKey ? await env.MEDIA_BUCKET.get(row.outputKey) : null
+    expect(original).not.toBeNull()
+    const replacement = '<svg xmlns="http://www.w3.org/2000/svg"><text>synthetic replacement body</text></svg>'
+    const replacementDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(replacement))
+    await env.MEDIA_BUCKET.put(row!.outputKey, replacement, {
+      httpMetadata: original!.httpMetadata,
+      customMetadata: original!.customMetadata,
+      sha256: replacementDigest
+    })
+
+    const preview = await dispatch(`/api/generations/${id}/image`, { headers: { cookie: account.cookie } })
+    expect(preview.status).toBe(409)
+    expect(preview.headers.get('content-type')).toContain('application/json')
+    expect(await preview.text()).not.toContain('synthetic replacement body')
+
+    const approved = await dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(approved.status).toBe(409)
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus FROM generations WHERE id = ?').bind(id).first())
+      .toEqual({ reviewStatus: 'draft' })
+
+    await markApprovedForDeliveryTamperTest(id, account.user.id)
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(409)
+    expect(download.headers.get('content-type')).toContain('application/json')
+    expect(await download.text()).not.toContain('synthetic replacement body')
+  })
+
+  it('rejects unauthorized, stale, malformed, and oversized review decisions without changing the draft', async () => {
+    const account = await registerAccount('Bounded Reviewer')
+    const otherOwner = await registerAccount('Cross Workspace Reviewer')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const reviewPath = `/api/generations/${id}/review`
+
+    const crossWorkspace = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: otherOwner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(crossWorkspace.status).toBe(404)
+
+    const malformed = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'publish' })
+    })
+    expect(malformed.status).toBe(400)
+
+    const stale = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision + 1 })
+    })
+    expect(stale.status).toBe(409)
+
+    const oversized = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision, padding: 'x'.repeat(2_048) })
+    })
+    expect(oversized.status).toBe(413)
+
+    await env.DB.prepare("UPDATE workspace_memberships SET role = 'member' WHERE workspace_id = ? AND user_id = ?")
+      .bind(account.currentWorkspace.id, account.user.id)
+      .run()
+    const memberReview = await dispatch(reviewPath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision: 'approve', expectedApprovedRevision: input.approvedRevision })
+    })
+    expect(memberReview.status).toBe(403)
+
+    expect(await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt FROM generations WHERE id = ?')
+      .bind(id)
+      .first()).toEqual({ reviewStatus: 'draft', reviewedAt: null })
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
+  })
+
+  it('allows exactly one immutable decision when approve and reject race', async () => {
+    const account = await registerAccount('Concurrent Reviewer')
+    const { id, input } = await completedDeterministicGeneration(account)
+    const review = (decision: 'approve' | 'reject') => dispatch(`/api/generations/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: account.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ decision, expectedApprovedRevision: input.approvedRevision })
+    })
+
+    const responses = await Promise.all([review('approve'), review('reject')])
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409])
+    const row = await env.DB.prepare('SELECT review_status AS reviewStatus, reviewed_at AS reviewedAt, reviewed_by_user_id AS reviewedByUserId FROM generations WHERE id = ?')
+      .bind(id)
+      .first<{ reviewStatus: string; reviewedAt: string | null; reviewedByUserId: string | null }>()
+    expect(['approved', 'rejected']).toContain(row?.reviewStatus)
+    expect(row?.reviewedAt).toBeTruthy()
+    expect(row?.reviewedByUserId).toBe(account.user.id)
+
+    const download = await dispatch(`/api/generations/${id}/download`, { headers: { cookie: account.cookie } })
+    expect(download.status).toBe(row?.reviewStatus === 'approved' ? 200 : 409)
+    expect(await balance(account.currentWorkspace.id)).toEqual({ available: 2, reserved: 0 })
   })
 })

@@ -55,12 +55,20 @@ export type GenerationResult = {
   workflowId: WorkflowId
   aspectRatio: AspectRatio
   imageUrl: string | null
+  downloadUrl?: string | null
   title: string
   status: 'queued' | 'processing' | 'completed' | 'failed'
   errorMessage?: string | null
   contentType?: 'image/svg+xml' | 'image/png' | null
   approvedRevision?: number
   createdAt?: string
+  reviewStatus?: 'draft' | 'approved' | 'rejected'
+  reviewedAt?: string | null
+  provenance?: {
+    approvedRevision: number
+    compositionVersion: string | null
+    generationMode: 'deterministic' | 'assisted' | null
+  }
 }
 
 export type OutputAllowance = {
@@ -89,7 +97,7 @@ export type SessionPayload = {
   authenticated: boolean
   user?: AuthUser
   currentWorkspace?: WorkspaceSummary
-  code?: 'authentication-required' | 'membership-required' | 'configuration-error' | 'unavailable'
+  code?: 'authentication-required' | 'authentication-invalid' | 'authentication-expired' | 'authentication-audience-mismatch' | 'authentication-issuer-mismatch' | 'authentication-signature-invalid' | 'identity-incomplete' | 'membership-required' | 'configuration-error' | 'unavailable'
   error?: string
 }
 

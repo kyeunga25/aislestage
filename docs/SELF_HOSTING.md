@@ -196,6 +196,7 @@ Migration 是受保護的 state change：
 - 確認備份／Time Travel 策略與復原責任；
 - 不要把 migration output、database ID 或 SQL query result 貼到公開 log；
 - 不要在 CI 自動對未知 database 執行 migration；
+- 引入 asset／output checksum contract 的版本不會盲目回填舊物件；缺少已驗證 checksum 的既有來源圖會保持不可預覽／批准／生成，既有輸出則不可核准／交付，應在升級後由授權使用者重新建立；
 - 程式 rollback 不代表 schema rollback，不能以刪除 database 作復原方法。
 
 本公開文件不列出資料表、欄位、索引、row 或實際資料組織；唯一 schema source 是已審核的 repository migrations。
@@ -216,7 +217,33 @@ npm run cf:deploy
 
 空白 D1 沒有任何 workspace membership；這是預期的 fail-closed 狀態。不要為了進入 workspace 而開啟公開 registration 或直接在公開文件貼 SQL。
 
-可使用一次性 Access bootstrap：
+### 方法 A：受保護 D1 onboarding 工具
+
+若 migrations、目標 D1 與受保護 `wrangler.local.jsonc` 已由操作者核對，可使用 repository 內的 onboarding 工具建立既有 Access 帳戶及 owner workspace，而不必暫時開啟自動建立。實際 identity 只可經受保護的 `OWNER_LOGIN_IDENTITY` 環境變數提供；可選 `OWNER_WORKSPACE_NAME` 與 0–99 的 `OWNER_INITIAL_OUTPUT_ALLOWANCE`。不要把實際值寫進 command arguments、history、文件或 Git。
+
+操作指令必須明確選擇一個 target：
+
+| 選項 / Option | 合約 / Contract |
+| --- | --- |
+| `--local` | 只使用受保護 config 的本機 D1 / select local D1 explicitly |
+| `--remote` | 明確選擇受保護 config 對應的 remote D1 / select remote D1 explicitly |
+| `--dry-run` | 只核對 target 與輸入格式；必須配合 `--local` 或 `--remote`，不接觸 D1 / validate target and input shape without D1 access |
+| `--self-test` | 無網絡自測，只可單獨使用 / offline self-test only |
+
+```bash
+npm run cf:onboard-owner:check
+npm run cf:onboard-owner -- --remote --dry-run
+# 只在人工核對 protected config、migration 與 target 後執行：
+npm run cf:onboard-owner -- --remote
+```
+
+隔離本機流程把兩個 `--remote` 改為 `--local`。沒有 target、同時選 local／remote、未知、位置、重複或帶值 flags 都會在讀取 identity 或執行 Wrangler 前 fail closed。`--dry-run` 不讀取 D1，因此不代表 config、權限、migration 或目前資料已驗證。正式命令成功後保持 `ACCESS_AUTO_PROVISION=disabled`；該 identity 首次通過 Access 登入時才會把 subject 的單向 hash 綁定至既有帳戶。再確認另一個未受邀 identity 仍被拒絕。
+
+The protected onboarding command requires an explicit local or remote target. It receives identity values from protected environment input, rejects malformed command options before Wrangler, and leaves Access auto-provision disabled; dry-run validates input shape only and is not proof of D1 state.
+
+### 方法 B：一次性 Access bootstrap
+
+若選擇暫時使用 Access auto-provision：
 
 1. 先把 Access Allow policy 收窄至一個獲批准的 bootstrap identity；
 2. 保持 `GENERATION_MODE=disabled` 及所有 assisted gates disabled；
@@ -226,7 +253,7 @@ npm run cf:deploy
 6. 確認該 owner 可再次登入，而另一個符合 IdP 但未受邀的 identity 仍收到拒絕；
 7. 保持 Access Allow policy 收窄，不要以自動 provision 代替日常邀請管理。
 
-若無法在一次受控維護時段內完成啟用、登入、停用及驗證，停止 bootstrap 並先回復 `disabled`。
+若無法在一次受控維護時段內完成啟用、登入、停用及驗證，停止 bootstrap 並先回復 `disabled`。兩種方法只選其一，不要在 D1 onboarding 同時保持 auto-provision enabled。
 
 ## 12. 部署後驗收
 

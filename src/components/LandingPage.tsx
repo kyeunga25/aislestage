@@ -43,7 +43,7 @@ const copy = {
     ],
     flowEyebrow: '清楚、可控的工作流程', flowTitle: '三步，從已核准資料到 Campaign Pack',
     steps: [
-      ['01', '提交已核准資料', '輸入品牌、商品、價格、優惠、最多三項賣點與繁中／英文 CTA，再上傳有權使用的 PNG、JPEG 或 WebP 商品原圖。'],
+      ['01', '提交已核准資料', '輸入品牌、商品、價格、優惠、最多三項賣點與繁中／英文 CTA，再上傳有權使用且符合 4 MB／8192 px／32 MP 上限的 PNG、JPEG 或靜態 WebP 商品原圖。'],
       ['02', 'Agent 規劃', '系統檢查商業資料、來源圖及文字安全區，安排 1080 × 1080、1080 × 1350、1080 × 1920 三個輸出，不自行新增宣稱。'],
       ['03', '批准並建立', '你先核對目前 revision；修改任何資料都要重新規劃。只有批准後，系統才一次建立整套 Campaign Pack。']
     ],
@@ -101,7 +101,7 @@ const copy = {
     ],
     flowEyebrow: 'A clear, controlled workflow', flowTitle: 'Three steps from approved facts to Campaign Pack',
     steps: [
-      ['01', 'Submit approved facts', 'Add brand, product, price, offer, up to three benefits and Traditional Chinese and English CTAs, then upload an entitled PNG, JPEG or WebP source.'],
+      ['01', 'Submit approved facts', 'Add brand, product, price, offer, up to three benefits and Traditional Chinese and English CTAs, then upload an entitled PNG, JPEG or static WebP source within 4 MB, 8192 px per side and 32 MP.'],
       ['02', 'Agent plans', 'The system checks the commercial facts, source and text-safe areas, then plans 1080 × 1080, 1080 × 1350 and 1080 × 1920 outputs without inventing claims.'],
       ['03', 'Approve and create', 'Review the current revision first. Editing any fact requires a new plan; only an approved revision can create the full Campaign Pack.']
     ],

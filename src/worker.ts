@@ -1,9 +1,10 @@
 import { getAgentByName } from 'agents'
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
+import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
-import { sanitizeCampaignBrief } from './lib/campaign-agent'
+import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
+import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, MAX_IMAGE_CONTAINER_CHUNKS, pngImageDimensions } from './lib/image-validation'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
@@ -29,10 +30,30 @@ export type Env = Omit<WorkerEnv, 'GENERATION_QUEUE'> & {
 export type GenerationMessage = { generationId: string; input: GenerationInput }
 type AccountStatus = 'active' | 'suspended' | 'deactivated'
 type AccountType = 'standard' | 'beta' | 'test'
+type WorkspaceRole = 'owner' | 'admin' | 'member'
+type ReviewStatus = 'draft' | 'approved' | 'rejected'
+type CompletedGenerationMode = 'deterministic' | 'assisted'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
-type Workspace = { id: string; name: string; role: string; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
+type Workspace = { id: string; name: string; role: WorkspaceRole; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 type AccessIdentity = { subject: string; email: string; name: string }
+type GenerationRow = {
+  id: string
+  campaignPackId: string | null
+  workflowId: GenerationInput['workflowId']
+  aspectRatio: GenerationInput['aspectRatio']
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  contentType: 'image/svg+xml' | 'image/png' | null
+  approvedRevision: number
+  errorMessage: string | null
+  createdAt: string
+  reviewStatus: ReviewStatus
+  reviewedAt: string | null
+  compositionVersion: string | null
+  generationMode: CompletedGenerationMode | null
+  outputSha256: string | null
+}
+type StoredGenerationRow = GenerationRow & { outputKey: string | null }
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislestage_session'
@@ -46,15 +67,23 @@ const REGISTER_IP_LIMIT = 12
 const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AGENT_BODY_BYTES = 48_000
+const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const WORKSPACE_SHELL_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+const WORKSPACE_SHELL_PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()'
 const MAX_AUTH_ATTEMPT_DAYS = 7
+const MAX_USED_INVITE_DAYS = 30
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
 const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
 const DUMMY_PASSWORD_HASH = 'P/FKiXHHJRFZsQ7MLmqKMp+SQoYtsIWL8P2EkVxfWsE='
 const ACCESS_FAILURE_HEADER = 'x-aislestage-access-failure'
 const accessJwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
+
+class TerminalGenerationError extends Error {}
+class AuthenticationSecurityStateError extends Error {}
 
 const json = (body: unknown, init: ResponseInit = {}) => {
   const headers = new Headers(init.headers)
@@ -65,6 +94,7 @@ const json = (body: unknown, init: ResponseInit = {}) => {
 }
 
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 
 function base64Url(bytes: Uint8Array) {
   let binary = ''
@@ -83,7 +113,11 @@ function fromBase64(value: string) {
 }
 
 async function sha256(value: string) {
-  return base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', textEncoder.encode(value))))
+  return base64Url(new Uint8Array(await sha256Bytes(textEncoder.encode(value))))
+}
+
+async function sha256Bytes(value: Uint8Array<ArrayBuffer>) {
+  return crypto.subtle.digest('SHA-256', value)
 }
 
 async function hashPassword(password: string, salt = crypto.getRandomValues(new Uint8Array(16))) {
@@ -134,13 +168,57 @@ function cleanString(value: unknown, max = 120) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
-async function readBody(request: Request, maxBytes: number) {
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) return { body: null, tooLarge: true }
-  const raw = await request.text().catch(() => '')
-  if (textEncoder.encode(raw).byteLength > maxBytes) return { body: null, tooLarge: true }
+async function cancelRequestBody(request: Request) {
+  await request.body?.cancel().catch(() => undefined)
+}
+
+async function readBoundedRequestBytes(request: Request, maxBytes: number) {
+  const declaredLength = request.headers.get('content-length')
+  if (declaredLength !== null) {
+    const normalized = declaredLength.trim()
+    const parsed = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN
+    if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maxBytes) {
+      await cancelRequestBody(request)
+      return { bytes: null, tooLarge: true }
+    }
+  }
+
+  if (!request.body) return { bytes: new Uint8Array(), tooLarge: false }
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
   try {
-    return { body: JSON.parse(raw) as unknown, tooLarge: false }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value.byteLength > maxBytes - total) {
+        await reader.cancel().catch(() => undefined)
+        return { bytes: null, tooLarge: true }
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined)
+    return { bytes: null, tooLarge: false }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return { bytes, tooLarge: false }
+}
+
+async function readBody(request: Request, maxBytes: number) {
+  const bounded = await readBoundedRequestBytes(request, maxBytes)
+  if (bounded.tooLarge || !bounded.bytes) return { body: null, tooLarge: bounded.tooLarge }
+  try {
+    return { body: JSON.parse(textDecoder.decode(bounded.bytes)) as unknown, tooLarge: false }
   } catch {
     return { body: null, tooLarge: false }
   }
@@ -150,8 +228,22 @@ function getClientIp(request: Request) {
   return request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local'
 }
 
+function hasMediaType(request: Request, expected: string) {
+  const contentType = request.headers.get('content-type')
+  if (!contentType) return false
+  return contentType.split(';', 1)[0].trim().toLowerCase() === expected
+}
+
 function hasJsonContent(request: Request) {
-  return request.headers.get('content-type')?.toLowerCase().includes('application/json') ?? false
+  return hasMediaType(request, 'application/json')
+}
+
+async function unsupportedMediaType(request: Request, expected: 'application/json' | 'multipart/form-data') {
+  await cancelRequestBody(request)
+  const error = expected === 'application/json'
+    ? '需要 application/json。 Expected application/json.'
+    : '需要 multipart/form-data。 Expected multipart/form-data.'
+  return json({ error }, { status: 415 })
 }
 
 function validEmail(email: string) {
@@ -172,7 +264,32 @@ function isAllowedOrigin(request: Request, env: Env) {
 
 async function recordAuthAttempt(env: Env, request: Request, eventType: 'login_failed' | 'login_success' | 'register_failed' | 'register_success' | 'rate_limited', email = '') {
   const [emailKey, ipKey] = await Promise.all([email ? sha256(email) : '', sha256(getClientIp(request))])
-  await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), emailKey, ipKey, eventType).run()
+  const eventId = crypto.randomUUID()
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await env.DB.prepare('INSERT INTO auth_attempts (id, email, ip_address, event_type) VALUES (?, ?, ?, ?)')
+        .bind(eventId, emailKey, ipKey, eventType)
+        .run()
+      return
+    } catch {
+      try {
+        const stored = await env.DB.prepare(`
+          SELECT email, ip_address AS ipAddress, event_type AS eventType
+          FROM auth_attempts
+          WHERE id = ?
+        `).bind(eventId).first<{ email: string; ipAddress: string; eventType: string }>()
+        if (stored
+          && stored.email === emailKey
+          && stored.ipAddress === ipKey
+          && stored.eventType === eventType) return
+        if (stored) break
+      } catch {
+        // The same primary key makes one bounded retry safe even when the first read is unavailable.
+      }
+    }
+  }
+  console.error('auth-attempt-reconciliation-failed')
+  throw new AuthenticationSecurityStateError('Authentication event storage is unavailable.')
 }
 
 async function authAttemptCount(env: Env, request: Request, options: { email?: string; eventTypes: string[]; minutes: number }) {
@@ -180,14 +297,19 @@ async function authAttemptCount(env: Env, request: Request, options: { email?: s
   const email = options.email ? await sha256(options.email) : ''
   const placeholders = options.eventTypes.map(() => '?').join(',')
   const bindings: unknown[] = options.email ? [email, ip, ...options.eventTypes, `-${options.minutes} minutes`] : [ip, ...options.eventTypes, `-${options.minutes} minutes`]
-  const result = await env.DB.prepare(`
-    SELECT COUNT(*) AS count
-    FROM auth_attempts
-    WHERE ${options.email ? 'email = ? AND ip_address = ?' : 'ip_address = ?'}
-      AND event_type IN (${placeholders})
-      AND created_at >= datetime('now', ?)
-  `).bind(...bindings).first<{ count: number }>()
-  return result?.count ?? 0
+  try {
+    const result = await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM auth_attempts
+      WHERE ${options.email ? 'email = ? AND ip_address = ?' : 'ip_address = ?'}
+        AND event_type IN (${placeholders})
+        AND created_at >= datetime('now', ?)
+    `).bind(...bindings).first<{ count: number }>()
+    return result?.count ?? 0
+  } catch {
+    console.error('auth-rate-limit-read-failed')
+    throw new AuthenticationSecurityStateError('Authentication rate-limit state is unavailable.')
+  }
 }
 
 async function isLoginRateLimited(env: Env, request: Request, email: string) {
@@ -221,6 +343,18 @@ function registrationMode(env: Env) {
 
 function authMode(env: Env): 'access' | 'password' {
   return env.AUTH_MODE === 'access' ? 'access' : 'password'
+}
+
+async function guardedPasswordAuth(action: 'login' | 'register', operation: () => Promise<Response>) {
+  try {
+    return await operation()
+  } catch (error) {
+    if (!(error instanceof AuthenticationSecurityStateError)) throw error
+    const message = action === 'login'
+      ? '登入安全狀態暫時無法確認。 Authentication security state is temporarily unavailable.'
+      : '註冊安全狀態暫時無法確認。 Registration security state is temporarily unavailable.'
+    return json({ error: message }, { status: 503 })
+  }
 }
 
 function isWorkspaceAppPath(pathname: string) {
@@ -270,6 +404,23 @@ function identityFromPayload(payload: JWTPayload): AccessIdentity | null {
   return { subject, email, name }
 }
 
+function accessVerificationError(error: unknown) {
+  if (error instanceof errors.JWTExpired) {
+    return accessError('authentication-expired', 401, 'Cloudflare Access authentication has expired.')
+  }
+  if (error instanceof errors.JWTClaimValidationFailed) {
+    if (error.claim === 'aud') return accessError('authentication-audience-mismatch', 401, 'Cloudflare Access audience validation failed.')
+    if (error.claim === 'iss') return accessError('authentication-issuer-mismatch', 401, 'Cloudflare Access issuer validation failed.')
+  }
+  if (error instanceof errors.JWKSNoMatchingKey || error instanceof errors.JWSSignatureVerificationFailed) {
+    return accessError('authentication-signature-invalid', 401, 'Cloudflare Access signature validation failed.')
+  }
+  if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid) {
+    return accessError('configuration-error', 503, 'Cloudflare Access verification keys are unavailable.')
+  }
+  return accessError('authentication-invalid', 401, 'Cloudflare Access authentication is invalid.')
+}
+
 async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessIdentity | Response> {
   const configuration = accessConfiguration(env)
   if (!configuration) return accessError('configuration-error', 503, 'Access configuration is unavailable.')
@@ -288,8 +439,8 @@ async function verifyAccessIdentity(request: Request, env: Env): Promise<AccessI
     })
     const identity = identityFromPayload(payload)
     return identity || accessError('identity-incomplete', 401, 'Cloudflare Access identity claims are incomplete.')
-  } catch {
-    return accessError('authentication-invalid', 401, 'Cloudflare Access authentication is invalid.')
+  } catch (error) {
+    return accessVerificationError(error)
   }
 }
 
@@ -302,26 +453,55 @@ function validInput(value: unknown): value is GenerationInput {
     && typeof input.workflowId === 'string' && workflowIds.has(input.workflowId)
     && typeof input.aspectRatio === 'string' && ratios.has(input.aspectRatio)
     && Number.isSafeInteger(input.approvedRevision) && Number(input.approvedRevision) > 0
-    && boundedString(input.intent, 120, false)
-    && boundedString(input.brand?.name, 120)
-    && boundedString(input.brand?.tone, 240, false)
-    && boundedStringArray(input.brand?.colors, 8, 24)
-    && boundedString(input.brand?.forbiddenWords, 500, false)
+    && boundedString(input.intent, campaignBriefLimits.intent, false)
+    && boundedString(input.brand?.name, campaignBriefLimits.brand.name)
+    && boundedString(input.brand?.tone, campaignBriefLimits.brand.tone, false)
+    && boundedStringArray(input.brand?.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength)
+    && boundedString(input.brand?.forbiddenWords, campaignBriefLimits.brand.forbiddenWords, false)
     && (input.brand?.locale === 'zh-Hant' || input.brand?.locale === 'en')
-    && boundedString(input.brand?.cta, 120, false)
-    && boundedString(input.brand?.ctaEn, 120, false)
-    && boundedString(input.product?.name, 160)
-    && boundedString(input.product?.nameEn, 160)
-    && boundedString(input.product?.category, 120)
-    && boundedStringArray(input.product?.benefits, 8, 240)
-    && boundedStringArray(input.product?.benefitsEn, 8, 240)
-    && boundedString(input.product?.specifications, 1_000, false)
-    && boundedString(input.product?.price, 120, false)
-    && boundedString(input.product?.promotion, 240, false)
-    && boundedString(input.product?.promotionEn, 240, false)
-    && boundedStringArray(input.product?.channels, 12, 80)
+    && boundedString(input.brand?.cta, campaignBriefLimits.brand.cta, false)
+    && boundedString(input.brand?.ctaEn, campaignBriefLimits.brand.ctaEn, false)
+    && boundedString(input.product?.name, campaignBriefLimits.product.name)
+    && boundedString(input.product?.nameEn, campaignBriefLimits.product.nameEn)
+    && boundedString(input.product?.category, campaignBriefLimits.product.category)
+    && boundedStringArray(input.product?.benefits, campaignBriefLimits.product.benefits.items, campaignBriefLimits.product.benefits.itemLength)
+    && boundedStringArray(input.product?.benefitsEn, campaignBriefLimits.product.benefitsEn.items, campaignBriefLimits.product.benefitsEn.itemLength)
+    && boundedString(input.product?.specifications, campaignBriefLimits.product.specifications, false)
+    && boundedString(input.product?.price, campaignBriefLimits.product.price, false)
+    && boundedString(input.product?.promotion, campaignBriefLimits.product.promotion, false)
+    && boundedString(input.product?.promotionEn, campaignBriefLimits.product.promotionEn, false)
+    && boundedStringArray(input.product?.channels, campaignBriefLimits.product.channels.items, campaignBriefLimits.product.channels.itemLength)
     && Array.isArray(input.referenceImageUrls) && input.referenceImageUrls.length === 0
-    && boundedStringArray(input.referenceAssetIds, 1, 80) && input.referenceAssetIds?.length === 1
+    && boundedStringArray(input.referenceAssetIds, 1, campaignBriefLimits.assetId) && input.referenceAssetIds?.length === 1
+}
+
+function generationInputIdentity(input: GenerationInput) {
+  return JSON.stringify([
+    input.workspaceId,
+    input.workflowId,
+    input.aspectRatio,
+    input.approvedRevision,
+    input.intent,
+    input.brand.name,
+    input.brand.tone,
+    input.brand.colors,
+    input.brand.forbiddenWords,
+    input.brand.locale,
+    input.brand.cta,
+    input.brand.ctaEn,
+    input.product.name,
+    input.product.nameEn,
+    input.product.category,
+    input.product.benefits,
+    input.product.benefitsEn,
+    input.product.specifications,
+    input.product.price,
+    input.product.promotion,
+    input.product.promotionEn,
+    input.product.channels,
+    input.referenceImageUrls,
+    input.referenceAssetIds
+  ])
 }
 
 const productImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -339,32 +519,215 @@ function chunkName(bytes: Uint8Array, offset: number) {
   return String.fromCharCode(...bytes.slice(offset, offset + 4))
 }
 
+function uint32BigEndian(bytes: Uint8Array, offset: number) {
+  return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0
+}
+
+function uint32LittleEndian(bytes: Uint8Array, offset: number) {
+  return (bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000 + bytes[offset + 3] * 0x1000000) >>> 0
+}
+
+function uint24LittleEndian(bytes: Uint8Array, offset: number) {
+  return bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000
+}
+
+function webpBitstreamDimensions(bytes: Uint8Array, name: string, dataOffset: number, length: number) {
+  if (name === 'VP8L') {
+    if (length < 5 || bytes[dataOffset] !== 0x2f) return null
+    const header = uint32LittleEndian(bytes, dataOffset + 1)
+    if ((header >>> 29) !== 0) return null
+    return { width: (header & 0x3fff) + 1, height: ((header >>> 14) & 0x3fff) + 1 }
+  }
+  if (name === 'VP8 ') {
+    if (length < 10 || (bytes[dataOffset] & 1) !== 0) return null
+    if (bytes[dataOffset + 3] !== 0x9d || bytes[dataOffset + 4] !== 0x01 || bytes[dataOffset + 5] !== 0x2a) return null
+    const width = (bytes[dataOffset + 6] + bytes[dataOffset + 7] * 0x100) & 0x3fff
+    const height = (bytes[dataOffset + 8] + bytes[dataOffset + 9] * 0x100) & 0x3fff
+    return width > 0 && height > 0 ? { width, height } : null
+  }
+  return null
+}
+
+function hasValidWebpStructure(bytes: Uint8Array) {
+  if (bytes.length < 20 || uint32LittleEndian(bytes, 4) !== bytes.length - 8) return false
+  let offset = 12
+  let chunkCount = 0
+  let extended = false
+  let flags = 0
+  let canvas: { width: number; height: number } | null = null
+  let image: { name: string; width: number; height: number } | null = null
+  let sawIccProfile = false
+  let sawAlpha = false
+
+  while (offset < bytes.length) {
+    chunkCount += 1
+    if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return false
+    if (bytes.length - offset < 8) return false
+    const name = chunkName(bytes, offset)
+    const length = uint32LittleEndian(bytes, offset + 4)
+    const dataOffset = offset + 8
+    if (length > bytes.length - dataOffset) return false
+    const dataEnd = dataOffset + length
+    const paddedEnd = dataEnd + (length % 2)
+    if (paddedEnd > bytes.length || (length % 2 === 1 && bytes[dataEnd] !== 0)) return false
+
+    if (offset === 12 && name === 'VP8X') {
+      if (length !== 10) return false
+      flags = bytes[dataOffset]
+      if ((flags & 0xc1) !== 0 || (flags & 0x0e) !== 0) return false
+      if (bytes[dataOffset + 1] !== 0 || bytes[dataOffset + 2] !== 0 || bytes[dataOffset + 3] !== 0) return false
+      const width = uint24LittleEndian(bytes, dataOffset + 4) + 1
+      const height = uint24LittleEndian(bytes, dataOffset + 7) + 1
+      if (width * height > 0xffffffff) return false
+      canvas = { width, height }
+      extended = true
+    } else if (!extended) {
+      if (offset !== 12 || image) return false
+      const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
+      if (!dimensions || paddedEnd !== bytes.length) return false
+      image = { name, ...dimensions }
+    } else if (name === 'VP8X' || name === 'ANIM' || name === 'ANMF' || name === 'EXIF' || name === 'XMP ') {
+      return false
+    } else if (name === 'ICCP') {
+      if (sawIccProfile || image || length === 0) return false
+      sawIccProfile = true
+    } else if (name === 'ALPH') {
+      if (sawAlpha || image || length === 0 || (bytes[dataOffset] & 0xc0) !== 0) return false
+      sawAlpha = true
+    } else if (name === 'VP8 ' || name === 'VP8L') {
+      if (image || (name === 'VP8L' && sawAlpha)) return false
+      const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
+      if (!dimensions || !canvas || dimensions.width !== canvas.width || dimensions.height !== canvas.height) return false
+      image = { name, ...dimensions }
+    } else {
+      return false
+    }
+
+    offset = paddedEnd
+  }
+
+  if (!image) return false
+  if (!extended) return true
+  if (Boolean(flags & 0x20) !== sawIccProfile) return false
+  if (image.name === 'VP8 ' && Boolean(flags & 0x10) !== sawAlpha) return false
+  return true
+}
+
+function jpegImageDimensions(bytes: Uint8Array) {
+  let offset = 2
+  let markerCount = 0
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1
+    if (offset >= bytes.length) return null
+    const marker = bytes[offset++]
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    markerCount += 1
+    if (markerCount > MAX_IMAGE_CONTAINER_CHUNKS || marker === 0xd8 || marker === 0xd9 || offset + 2 > bytes.length) return null
+    const length = (bytes[offset] << 8) | bytes[offset + 1]
+    if (length < 2 || length > bytes.length - offset) return null
+    const isFrameMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+    if (isFrameMarker) {
+      if (length < 8) return null
+      return {
+        height: (bytes[offset + 3] << 8) | bytes[offset + 4],
+        width: (bytes[offset + 5] << 8) | bytes[offset + 6]
+      }
+    }
+    offset += length
+  }
+  return null
+}
+
+function productImageDimensions(contentType: string, bytes: Uint8Array) {
+  if (contentType === 'image/png') return pngImageDimensions(bytes)
+  if (contentType === 'image/jpeg') return jpegImageDimensions(bytes)
+  if (contentType === 'image/webp') {
+    const name = chunkName(bytes, 12)
+    if (name === 'VP8X') return { width: uint24LittleEndian(bytes, 24) + 1, height: uint24LittleEndian(bytes, 27) + 1 }
+    return webpBitstreamDimensions(bytes, name, 20, uint32LittleEndian(bytes, 16))
+  }
+  return null
+}
+
+function hasSafeProductImageDimensions(contentType: string, bytes: Uint8Array) {
+  const dimensions = productImageDimensions(contentType, bytes)
+  return hasSafeImageDimensions(dimensions)
+}
+
 function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/jpeg') {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return true
     let offset = 2
-    while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
-      const marker = bytes[offset + 1]
-      if (marker === 0xda || marker === 0xd9) break
+    let inScan = false
+    let sawFrame = false
+    let sawScan = false
+    let markerCount = 0
+    while (offset < bytes.length) {
+      const markerWasInScan: boolean = inScan
+      if (bytes[offset] !== 0xff) {
+        if (!inScan) return true
+        offset += 1
+        continue
+      }
+
+      let fillBytes = 0
+      while (offset < bytes.length && bytes[offset] === 0xff) {
+        fillBytes += 1
+        offset += 1
+      }
+      if (offset >= bytes.length) return true
+      const marker = bytes[offset++]
+
+      if (marker === 0x00) {
+        if (!inScan || fillBytes !== 1) return true
+        continue
+      }
+      if (marker >= 0xd0 && marker <= 0xd7) {
+        if (!inScan) return true
+        continue
+      }
+      if (marker === 0x01) continue
+      markerCount += 1
+      if (markerCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
       if (marker === 0xe1 || marker === 0xed || marker === 0xfe) return true
-      const length = (bytes[offset + 2] << 8) | bytes[offset + 3]
-      if (length < 2) break
-      offset += length + 2
+      if (marker === 0xd9) return offset !== bytes.length || !sawFrame || !sawScan
+      if (marker === 0xd8 || marker < 0xc0) return true
+      if (offset + 2 > bytes.length) return true
+
+      const length = (bytes[offset] << 8) | bytes[offset + 1]
+      if (length < 2 || length > bytes.length - offset) return true
+      const isFrameMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+      if (isFrameMarker) {
+        if (sawFrame || length < 8) return true
+        const componentCount = bytes[offset + 7]
+        if (componentCount < 1 || componentCount > 4 || length !== 8 + componentCount * 3) return true
+        sawFrame = true
+      }
+      if (marker === 0xda) {
+        if (!sawFrame || length < 6) return true
+        const componentCount = bytes[offset + 2]
+        if (componentCount < 1 || componentCount > 4 || length !== 6 + componentCount * 2) return true
+        sawScan = true
+      }
+      if (marker === 0xdc && length !== 4) return true
+      offset += length
+      inScan = marker === 0xda || (markerWasInScan && marker === 0xdc)
     }
-    return false
+    return true
   }
   if (contentType === 'image/png') {
-    const metadataChunks = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
-    let offset = 8
-    while (offset + 12 <= bytes.length) {
-      const length = ((bytes[offset] << 24) >>> 0) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]
-      if (metadataChunks.has(chunkName(bytes, offset + 4))) return true
-      offset += 12 + length
-    }
-    return false
+    return hasPrivatePngMetadata(bytes)
   }
   if (contentType === 'image/webp') {
     let offset = 12
+    let chunkCount = 0
     while (offset + 8 <= bytes.length) {
+      chunkCount += 1
+      if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
       const name = chunkName(bytes, offset)
       if (name === 'EXIF' || name === 'XMP ') return true
       const length = bytes[offset + 4] + (bytes[offset + 5] << 8) + (bytes[offset + 6] << 16) + ((bytes[offset + 7] << 24) >>> 0)
@@ -380,13 +743,67 @@ function extensionForContentType(contentType: string) {
   return 'jpg'
 }
 
+function sessionUnavailable() {
+  return json({ error: '未能建立登入工作階段。 Unable to create session.' }, { status: 503 })
+}
+
+function sessionAuthorizationUnavailable(includeAuthenticationState = false) {
+  const error = '登入工作階段暫時無法確認。 Session authorization is temporarily unavailable.'
+  return json(includeAuthenticationState
+    ? { authenticated: false, code: 'unavailable', error }
+    : { code: 'unavailable', error }, { status: 503 })
+}
+
+function workspaceListUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區清單暫時無法讀取。 Workspace list is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function removeUndeliveredSession(env: Env, tokenHash: string) {
+  try {
+    await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
+  } catch {
+    console.error('undelivered-session-cleanup-failed')
+  }
+}
+
 async function sessionResponse(env: Env, request: Request, userId: string, status = 200) {
   const token = base64Url(crypto.getRandomValues(new Uint8Array(32)))
   const tokenHash = await sha256(token)
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString()
-  await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(tokenHash, userId, expiresAt).run()
-  const session = await loadSessionByHash(env, tokenHash)
-  if (!session) return json({ error: 'Unable to create session.' }, { status: 503 })
+  try {
+    await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(tokenHash, userId, expiresAt).run()
+  } catch {
+    try {
+      const stored = await env.DB.prepare(`
+        SELECT user_id AS userId, expires_at AS expiresAt
+        FROM sessions
+        WHERE token_hash = ?
+      `).bind(tokenHash).first<{ userId: string; expiresAt: string }>()
+      if (!stored || stored.userId !== userId || stored.expiresAt !== expiresAt) {
+        if (stored) console.error('session-create-reconciliation-conflict')
+        return sessionUnavailable()
+      }
+    } catch {
+      console.error('session-create-reconciliation-failed')
+      await removeUndeliveredSession(env, tokenHash)
+      return sessionUnavailable()
+    }
+  }
+  let session: SessionContext | null
+  try {
+    session = await loadSessionByHash(env, tokenHash)
+  } catch {
+    console.error('session-authorization-reload-failed')
+    await removeUndeliveredSession(env, tokenHash)
+    return sessionUnavailable()
+  }
+  if (!session) {
+    await removeUndeliveredSession(env, tokenHash)
+    return sessionUnavailable()
+  }
   return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers: { 'set-cookie': sessionCookie(token, request) } })
 }
 
@@ -413,7 +830,11 @@ async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionCo
   if (!user) return null
   const workspaces = await workspacesForUser(env, user.id)
   if (!workspaces[0]) return null
-  await env.DB.prepare('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
+  try {
+    await env.DB.prepare('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
+  } catch {
+    console.error('session-last-seen-update-failed')
+  }
   return { user, currentWorkspace: workspaces[0] }
 }
 
@@ -421,43 +842,71 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
   const identity = await verifyAccessIdentity(request, env)
   if (identity instanceof Response) return identity
   const subjectHash = await sha256(identity.subject)
-  let user = await env.DB.prepare(`
-    SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
-    FROM users
-    WHERE access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
-  `).bind(subjectHash).first<AuthUser>()
+  let user: AuthUser | null
+  try {
+    user = await env.DB.prepare(`
+      SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+      FROM users
+      WHERE access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
+    `).bind(subjectHash).first<AuthUser>()
+  } catch {
+    console.error('access-subject-lookup-failed')
+    return accessError('unavailable', 503, 'Access account lookup is temporarily unavailable.')
+  }
 
   if (user && normalizeEmail(user.email) !== identity.email) {
     return accessError('membership-required', 403, 'The verified identity does not match this workspace account.')
   }
 
   if (!user) {
-    const emailAccount = await env.DB.prepare(`
-      SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
-        auth_mode AS authMode, access_subject_hash AS accessSubjectHash
-      FROM users
-      WHERE email = ?
-    `).bind(identity.email).first<AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }>()
+    let emailAccount: (AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }) | null
+    try {
+      emailAccount = await env.DB.prepare(`
+        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType,
+          auth_mode AS authMode, access_subject_hash AS accessSubjectHash
+        FROM users
+        WHERE email = ?
+      `).bind(identity.email).first<AuthUser & { authMode: 'password' | 'access'; accessSubjectHash: string | null }>()
+    } catch {
+      console.error('access-email-lookup-failed')
+      return accessError('unavailable', 503, 'Access account onboarding is temporarily unavailable.')
+    }
 
     if (emailAccount) {
       if (emailAccount.accountStatus !== 'active' || (emailAccount.accessSubjectHash && emailAccount.accessSubjectHash !== subjectHash)) {
         return accessError('membership-required', 403, 'This identity does not have an active workspace membership.')
       }
-      await env.DB.prepare(`
-        UPDATE users
-        SET access_subject_hash = ?, auth_mode = 'access', name = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ? AND (access_subject_hash IS NULL OR access_subject_hash = ?)
-      `).bind(subjectHash, identity.name, emailAccount.id, subjectHash).run()
-      user = await env.DB.prepare(`
-        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
-        FROM users
-        WHERE id = ? AND email = ? AND access_subject_hash = ? AND auth_mode = 'access' AND account_status = 'active'
-      `).bind(emailAccount.id, identity.email, subjectHash).first<AuthUser>()
+      let subjectUpdateReportedFailure = false
+      try {
+        await env.DB.prepare(`
+          UPDATE users
+          SET access_subject_hash = ?, auth_mode = 'access', name = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND (access_subject_hash IS NULL OR access_subject_hash = ?)
+        `).bind(subjectHash, identity.name, emailAccount.id, subjectHash).run()
+      } catch {
+        subjectUpdateReportedFailure = true
+      }
+      try {
+        user = await env.DB.prepare(`
+          SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+          FROM users
+          WHERE id = ? AND email = ? AND name = ? AND access_subject_hash = ?
+            AND auth_mode = 'access' AND account_status = 'active'
+        `).bind(emailAccount.id, identity.email, identity.name, subjectHash).first<AuthUser>()
+      } catch {
+        console.error('access-subject-reconciliation-failed')
+        return accessError('unavailable', 503, 'Access account binding is temporarily unavailable.')
+      }
+      if (subjectUpdateReportedFailure && !user) {
+        console.error('access-subject-reconciliation-conflict')
+        return accessError('unavailable', 503, 'Access account binding is temporarily unavailable.')
+      }
     } else if (env.ACCESS_AUTO_PROVISION === 'enabled') {
       const userId = crypto.randomUUID()
       const workspaceId = crypto.randomUUID()
       const randomPassword = base64Url(crypto.getRandomValues(new Uint8Array(32)))
       const passwordHash = await hashPassword(randomPassword)
+      let provisionReportedFailure = false
       try {
         await env.DB.batch([
           env.DB.prepare(`
@@ -469,26 +918,46 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
           env.DB.prepare('INSERT INTO output_allowances (workspace_id, available, reserved) VALUES (?, ?, 0)').bind(workspaceId, initialOutputAllowance(env))
         ])
       } catch {
-        // A concurrent first request may have provisioned the same identity.
+        provisionReportedFailure = true
       }
-      user = await env.DB.prepare(`
-        SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
-        FROM users
-        WHERE access_subject_hash = ? AND email = ? AND auth_mode = 'access' AND account_status = 'active'
-      `).bind(subjectHash, identity.email).first<AuthUser>()
+      try {
+        user = await env.DB.prepare(`
+          SELECT id, email, name, account_status AS accountStatus, account_type AS accountType
+          FROM users
+          WHERE access_subject_hash = ? AND email = ? AND auth_mode = 'access' AND account_status = 'active'
+        `).bind(subjectHash, identity.email).first<AuthUser>()
+      } catch {
+        console.error('access-provision-reconciliation-failed')
+        return accessError('unavailable', 503, 'Access workspace provisioning is temporarily unavailable.')
+      }
+      if (!user) {
+        if (provisionReportedFailure) console.error('access-provision-reconciliation-missing')
+        return accessError('unavailable', 503, 'Access workspace provisioning is temporarily unavailable.')
+      }
     }
   }
 
   if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AisleStage workspace.')
-  const workspaces = await workspacesForUser(env, user.id)
+  let workspaces: Workspace[]
+  try {
+    workspaces = await workspacesForUser(env, user.id)
+  } catch {
+    console.error('access-workspace-reconciliation-failed')
+    return accessError('unavailable', 503, 'Access workspace membership is temporarily unavailable.')
+  }
   if (!workspaces[0]) return accessError('membership-required', 403, 'This account has no active workspace membership.')
   return { user, currentWorkspace: workspaces[0] }
 }
 
-async function cleanExpiredSessions(env: Env) {
+async function cleanExpiredAuthState(env: Env) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP'),
-    env.DB.prepare("DELETE FROM auth_attempts WHERE created_at < datetime('now', ?)").bind(`-${MAX_AUTH_ATTEMPT_DAYS} days`)
+    env.DB.prepare("DELETE FROM auth_attempts WHERE created_at < datetime('now', ?)").bind(`-${MAX_AUTH_ATTEMPT_DAYS} days`),
+    env.DB.prepare(`
+      DELETE FROM beta_invites
+      WHERE (status IN ('pending', 'revoked') AND expires_at <= CURRENT_TIMESTAMP)
+        OR (status = 'used' AND used_at IS NOT NULL AND used_at < datetime('now', ?))
+    `).bind(`-${MAX_USED_INVITE_DAYS} days`)
   ])
 }
 
@@ -496,7 +965,13 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
   if (authMode(env) === 'access') return accessSession(request, env)
   const token = parseCookie(request, SESSION_COOKIE)
   if (!token) return json({ error: 'Authentication required.' }, { status: 401 })
-  const session = await loadSessionByHash(env, await sha256(token))
+  let session: SessionContext | null
+  try {
+    session = await loadSessionByHash(env, await sha256(token))
+  } catch {
+    console.error('session-authorization-read-failed')
+    return sessionAuthorizationUnavailable()
+  }
   if (!session) return json({ error: 'Authentication required.' }, { status: 401, headers: { 'set-cookie': expiredSessionCookie(request) } })
   return session
 }
@@ -517,6 +992,11 @@ async function workspaceApp(request: Request, env: Env, activeAuthMode: 'access'
     const assetResponse = await env.ASSETS.fetch(request)
     const headers = new Headers(assetResponse.headers)
     headers.set('cache-control', 'private, no-store')
+    headers.set('content-security-policy', WORKSPACE_SHELL_CONTENT_SECURITY_POLICY)
+    headers.set('cross-origin-resource-policy', 'same-origin')
+    headers.set('permissions-policy', WORKSPACE_SHELL_PERMISSIONS_POLICY)
+    headers.set('referrer-policy', 'no-referrer')
+    headers.set('x-frame-options', 'DENY')
     headers.set('x-content-type-options', 'nosniff')
     return new Response(assetResponse.body, {
       status: assetResponse.status,
@@ -541,39 +1021,41 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
 }
 
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength > MAX_UPLOAD_REQUEST_BYTES) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
-  if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) return json({ error: 'Expected multipart/form-data.' }, { status: 415 })
+  if (!hasMediaType(request, 'multipart/form-data')) return unsupportedMediaType(request, 'multipart/form-data')
+  const assetId = request.headers.get('idempotency-key')?.trim().toLowerCase() || ''
+  if (!UUID_V4_PATTERN.test(assetId)) {
+    await cancelRequestBody(request)
+    return json({ error: '商品圖片 idempotency key 無效。 Product image idempotency key is invalid.' }, { status: 400 })
+  }
 
-  const form = await request.formData().catch(() => null)
+  const bounded = await readBoundedRequestBytes(request, MAX_UPLOAD_REQUEST_BYTES)
+  if (bounded.tooLarge) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
+  if (!bounded.bytes) return json({ error: 'Unable to read multipart upload.' }, { status: 400 })
+  const headers = new Headers({ 'content-type': request.headers.get('content-type')! })
+  const boundedRequest = new Request(request.url, { method: 'POST', headers, body: bounded.bytes as BodyInit })
+  const form = await boundedRequest.formData().catch(() => null)
   const value = form?.get('file')
   if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
-  if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或 WebP 圖片。' }, { status: 415 })
+  if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或靜態 WebP 圖片。' }, { status: 415 })
   if (value.size <= 0 || value.size > MAX_PRODUCT_IMAGE_BYTES) return json({ error: '圖片檔案不可超過 4 MB。' }, { status: 413 })
 
   const bytes = new Uint8Array(await value.arrayBuffer())
   if (!hasValidProductImageSignature(value.type, bytes)) return json({ error: '圖片內容與檔案格式不符。' }, { status: 415 })
-  if (hasPrivateImageMetadata(value.type, bytes)) return json({ error: '圖片含有 EXIF、XMP 或文字 metadata；請先移除隱藏資料再上傳。' }, { status: 400 })
-
-  const assetId = crypto.randomUUID()
-  const storedFilename = `product-image.${extensionForContentType(value.type)}`
-  const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}.${extensionForContentType(value.type)}`
-  await env.MEDIA_BUCKET.put(objectKey, bytes, {
-    httpMetadata: { contentType: value.type },
-    customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id }
-  })
-
-  try {
-    await env.DB.prepare(`
-      INSERT INTO media_assets (id, workspace_id, created_by_user_id, kind, object_key, original_filename, content_type, size_bytes)
-      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?)
-    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size).run()
-  } catch {
-    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
-    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
+  if (hasPrivateImageMetadata(value.type, bytes)) {
+    return json({ error: '圖片含有 EXIF、XMP、文字／自訂 metadata 或過度複雜結構；請重新匯出後再上傳。 Invalid image metadata or structure; export the image again.' }, { status: 400 })
+  }
+  if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
+    return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
+  }
+  if (!hasSafeProductImageDimensions(value.type, bytes)) {
+    return json({ error: '圖片尺寸不可超過 8192 px 單邊或 3,200 萬像素。 Image dimensions must not exceed 8192 px per side or 32 megapixels.' }, { status: 413 })
   }
 
-  return json({
+  const storedFilename = `product-image.${extensionForContentType(value.type)}`
+  const contentDigest = await sha256Bytes(bytes)
+  const contentSha256 = base64Url(new Uint8Array(contentDigest))
+  const objectKey = `workspaces/${session.currentWorkspace.id}/assets/product-source/${assetId}/${contentSha256}.${extensionForContentType(value.type)}`
+  const createdResponse = () => json({
     asset: {
       id: assetId,
       name: storedFilename,
@@ -582,58 +1064,239 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
       previewUrl: `/api/assets/${assetId}`
     }
   }, { status: 201 })
+  const conflictResponse = () => json({
+    error: '這個 idempotency key 已綁定另一張商品圖片。 This idempotency key is already bound to another product image.'
+  }, { status: 409 })
+
+  let existing: StoredProductAsset | null
+  try {
+    existing = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  } catch {
+    console.error('product-asset-upload-preflight-failed')
+    return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+  }
+  if (existing) {
+    if (!matchesProductAssetUpload(existing, objectKey, value.type, value.size, contentSha256)) return conflictResponse()
+    try {
+      const stored = await env.MEDIA_BUCKET.head(existing.objectKey)
+      if (stored && hasCanonicalProductAssetMetadata(existing, stored)) return createdResponse()
+    } catch {
+      console.error('product-asset-upload-replay-read-failed')
+      return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+    }
+  }
+
+  try {
+    const stored = await env.MEDIA_BUCKET.put(objectKey, bytes, {
+      httpMetadata: { contentType: value.type },
+      customMetadata: { kind: 'product-source', workspaceId: session.currentWorkspace.id },
+      sha256: contentDigest
+    })
+    if (!stored || r2Sha256(stored) !== contentSha256) throw new TypeError('Product asset storage integrity verification failed.')
+  } catch {
+    try {
+      const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+      if (!committed || committed.objectKey !== objectKey) await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    } catch {
+      console.error('product-asset-upload-storage-reconciliation-failed')
+    }
+    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
+  }
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO media_assets (
+        id, workspace_id, created_by_user_id, kind, object_key,
+        original_filename, content_type, size_bytes, content_sha256
+      )
+      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?)
+    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size, contentSha256).run()
+  } catch {
+    try {
+      const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+      if (committed) {
+        if (matchesProductAssetUpload(committed, objectKey, value.type, value.size, contentSha256)) return createdResponse()
+        if (committed.objectKey !== objectKey) await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+        return conflictResponse()
+      }
+    } catch {
+      console.error('product-asset-upload-reconciliation-failed')
+      return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
+    }
+    await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
+    return json({ error: '未能儲存商品圖片。' }, { status: 503 })
+  }
+
+  return createdResponse()
+}
+
+type StoredProductAsset = {
+  objectKey: string
+  workspaceId: string
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+  sizeBytes: number
+  contentSha256: string | null
+}
+
+async function productAssetForWorkspace(env: Env, workspaceId: string, assetId: string) {
+  return env.DB.prepare(`
+    SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId,
+      a.content_type AS contentType, a.size_bytes AS sizeBytes,
+      a.content_sha256 AS contentSha256
+    FROM media_assets a
+    JOIN workspaces w ON w.id = a.workspace_id
+    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source'
+      AND w.access_status = 'active'
+  `).bind(assetId, workspaceId).first<StoredProductAsset>()
+}
+
+function matchesProductAssetUpload(
+  asset: StoredProductAsset,
+  objectKey: string,
+  contentType: string,
+  sizeBytes: number,
+  contentSha256: string
+) {
+  return asset.objectKey === objectKey
+    && asset.contentType === contentType
+    && asset.sizeBytes === sizeBytes
+    && asset.contentSha256 === contentSha256
+}
+
+function hasCanonicalProductAssetMetadata(asset: StoredProductAsset, object: R2Object) {
+  const metadata = object.customMetadata
+  return productImageTypes.has(asset.contentType)
+    && Number.isSafeInteger(asset.sizeBytes) && asset.sizeBytes > 0 && object.size === asset.sizeBytes
+    && typeof asset.contentSha256 === 'string' && /^[A-Za-z0-9_-]{43}$/.test(asset.contentSha256)
+    && r2Sha256(object) === asset.contentSha256
+    && object.httpMetadata?.contentType === asset.contentType
+    && metadata?.kind === 'product-source'
+    && metadata?.workspaceId === asset.workspaceId
+}
+
+function invalidProductAsset() {
+  return json({ error: '商品圖片完整性驗證失敗，請重新上傳。 Product image integrity check failed; upload it again.' }, { status: 409 })
+}
+
+function productAssetNotFound() {
+  return json({ error: '找不到這張商品圖片。 Product asset not found.' }, { status: 404 })
+}
+
+function productAssetUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人商品圖片暫時無法讀取。 Private product image is temporarily unavailable.'
+  }, { status: 503 })
 }
 
 async function productAsset(request: Request, env: Env, session: SessionContext, assetId: string) {
-  const asset = await env.DB.prepare(`
-    SELECT a.object_key AS objectKey, a.content_type AS contentType
-    FROM media_assets a
-    JOIN workspaces w ON w.id = a.workspace_id
-    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
-  `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; contentType: string }>()
+  let asset: StoredProductAsset | null
+  try {
+    asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  } catch {
+    console.error('product-asset-metadata-read-failed')
+    return productAssetUnavailable()
+  }
   if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
-  const object = await env.MEDIA_BUCKET.get(asset.objectKey)
+  let object: R2ObjectBody | null
+  try {
+    object = await env.MEDIA_BUCKET.get(asset.objectKey)
+  } catch {
+    console.error('product-asset-object-read-failed')
+    return productAssetUnavailable()
+  }
   if (!object) return json({ error: 'Image not found.' }, { status: 404 })
-  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, max-age=300', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
+  if (!hasCanonicalProductAssetMetadata(asset, object)) {
+    await object.body.cancel().catch(() => undefined)
+    return invalidProductAsset()
+  }
+  return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, no-store', 'cross-origin-resource-policy': 'same-origin', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
 }
 
 async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
-  const asset = await env.DB.prepare(`
-    SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId
-    FROM media_assets a
-    JOIN workspaces w ON w.id = a.workspace_id
-    WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
-  `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; workspaceId: string }>()
-  if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
+  const unavailableResponse = () => json({ error: '未能刪除商品圖片。 Unable to delete product image.' }, { status: 503 })
+  let asset: { objectKey: string; workspaceId: string } | null
   try {
-    const agent = await getAgentByName(env.CAMPAIGN_AGENT, asset.workspaceId)
-    await agent.resetPlan()
-    await env.MEDIA_BUCKET.delete(asset.objectKey)
-    await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(assetId, asset.workspaceId).run()
-    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+    asset = await env.DB.prepare(`
+      SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId
+      FROM media_assets a
+      JOIN workspaces w ON w.id = a.workspace_id
+      WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source' AND w.access_status = 'active'
+    `).bind(assetId, session.currentWorkspace.id).first<{ objectKey: string; workspaceId: string }>()
   } catch {
-    return json({ error: '未能刪除商品圖片。' }, { status: 503 })
+    console.error('product-asset-delete-preflight-read-failed')
+    return unavailableResponse()
+  }
+  if (!asset) return json({ error: 'Image not found.' }, { status: 404 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  try {
+    // Keep the D1 row as the retry anchor until private storage and Agent cleanup succeed.
+    await env.MEDIA_BUCKET.delete(asset.objectKey)
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, asset.workspaceId)
+    await agent.resetPlanForAsset(assetId)
+    await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(assetId, asset.workspaceId).run()
+    return deletedResponse()
+  } catch {
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM media_assets
+        WHERE id = ? AND workspace_id = ? AND kind = 'product-source'
+      `).bind(assetId, asset.workspaceId).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('product-asset-delete-reconciliation-pending')
+    } catch {
+      console.error('product-asset-delete-reconciliation-failed')
+    }
+    return unavailableResponse()
   }
 }
 
 async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve') {
-  const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
   try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
     if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
     if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
-    if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+    if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
     const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
-    if (parsed.tooLarge) return json({ error: 'Campaign brief is too large.' }, { status: 413 })
+    if (parsed.tooLarge) return json({ error: 'Campaign Agent 請求過大。 Campaign Agent payload is too large.' }, { status: 413 })
     const body = parsed.body && typeof parsed.body === 'object' ? parsed.body as Record<string, unknown> : {}
-    if (action === 'plan') return json({ state: await agent.planBrief(body.brief) })
+    if (action === 'plan') {
+      const keys = Object.keys(body)
+      const briefValue = body.brief
+      if (keys.length !== 1 || keys[0] !== 'brief' || !briefValue || typeof briefValue !== 'object' || Array.isArray(briefValue)) {
+        return json({ error: 'Campaign Brief 請求格式無效。 Campaign Brief request must contain exactly one brief object.' }, { status: 400 })
+      }
+      const briefIssues = validateCampaignBrief(briefValue)
+      if (briefIssues.length) return json({ error: briefIssues[0], issues: briefIssues }, { status: 422 })
+      const brief = sanitizeCampaignBrief(briefValue)
+      if (brief.assetId) {
+        const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, brief.assetId)
+        if (!asset) return productAssetNotFound()
+        const object = await env.MEDIA_BUCKET.head(asset.objectKey)
+        if (!object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
+      }
+      return json({ state: await agent.planBrief(brief) })
+    }
     if (action === 'approve') {
-      const result = await agent.approvePlan(Number(body.revision))
-      return result.ok ? json({ state: result.state }) : json({ error: result.error }, { status: 409 })
+      const keys = Object.keys(body)
+      const revision = body.revision
+      if (keys.length !== 1 || keys[0] !== 'revision' || !Number.isSafeInteger(revision) || Number(revision) <= 0) {
+        return json({ error: '批准版本格式無效。 Approval revision must be a positive integer.' }, { status: 400 })
+      }
+      const state = await agent.getPlan()
+      if (state.stage === 'awaiting-approval' && state.brief?.assetId) {
+        const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
+        const object = asset ? await env.MEDIA_BUCKET.head(asset.objectKey) : null
+        if (!asset || !object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
+      }
+      const result = await agent.approvePlan(revision as number)
+      return result.ok ? json({ state: result.state, replayed: result.replayed }) : json({ error: result.error }, { status: 409 })
     }
     return json({ error: 'Not found.' }, { status: 404 })
   } catch {
     console.error('campaign-agent-request-failed', { action })
-    return json({ error: 'Campaign Agent 暫時未能完成這個動作。' }, { status: 503 })
+    return json({ error: 'Campaign Agent 暫時未能完成這個動作。 Campaign Agent is temporarily unavailable.' }, { status: 503 })
   }
 }
 
@@ -661,25 +1324,158 @@ async function approvedGenerationInput(env: Env, input: GenerationInput) {
   return JSON.stringify(submittedBrief) === JSON.stringify(state.brief)
 }
 
+async function requireCurrentGenerationExecution(
+  env: Env,
+  generationId: string,
+  processingAttempt: number,
+  input: GenerationInput
+) {
+  const current = await env.DB.prepare(`
+    SELECT 1 AS current
+    FROM generations g
+    JOIN workspaces w ON w.id = g.workspace_id
+    JOIN media_assets a ON a.workspace_id = w.id
+    WHERE g.id = ? AND g.workspace_id = ?
+      AND g.status = 'processing' AND g.processing_attempt = ?
+      AND w.access_status = 'active'
+      AND a.id = ? AND a.kind = 'product-source'
+  `).bind(generationId, input.workspaceId, processingAttempt, input.referenceAssetIds[0]).first<{ current: number }>()
+  if (!current || !await approvedGenerationInput(env, input)) {
+    throw new TerminalGenerationError('Generation execution approval is stale.')
+  }
+}
+
 async function generationSourceAsset(env: Env, input: GenerationInput) {
-  const asset = await env.DB.prepare(`
-    SELECT object_key AS objectKey, content_type AS contentType
-    FROM media_assets
-    WHERE id = ? AND workspace_id = ? AND kind = 'product-source'
-  `).bind(input.referenceAssetIds[0], input.workspaceId).first<{ objectKey: string; contentType: 'image/png' | 'image/jpeg' | 'image/webp' }>()
-  if (!asset) throw new Error('Approved product asset is unavailable.')
+  const asset = await productAssetForWorkspace(env, input.workspaceId, input.referenceAssetIds[0])
+  if (!asset) throw new TerminalGenerationError('Approved product asset is unavailable.')
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
-  if (!object) throw new Error('Approved product asset is unavailable.')
+  if (!object) throw new TerminalGenerationError('Approved product asset is unavailable.')
+  if (!hasCanonicalProductAssetMetadata(asset, object)) {
+    await object.body.cancel().catch(() => undefined)
+    throw new TerminalGenerationError('Approved product asset integrity check failed.')
+  }
   return {
     base64: bytesToBase64(new Uint8Array(await object.arrayBuffer())),
     contentType: asset.contentType
   }
 }
 
+async function reconcilePasswordRegistration(
+  env: Env,
+  expected: {
+    userId: string
+    email: string
+    name: string
+    passwordHash: string
+    passwordSalt: string
+    accountType: AccountType
+    workspaceId: string
+    workspaceName: string
+    initialAllowance: number
+    invite: { id: string; accountType: 'beta' | 'test' } | null
+  }
+): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const user = await env.DB.prepare(`
+    SELECT email, name, password_hash AS passwordHash, password_salt AS passwordSalt,
+      account_status AS accountStatus, account_type AS accountType,
+      auth_mode AS authMode, access_subject_hash AS accessSubjectHash
+    FROM users
+    WHERE id = ?
+  `).bind(expected.userId).first<{
+    email: string
+    name: string
+    passwordHash: string
+    passwordSalt: string
+    accountStatus: string
+    accountType: string
+    authMode: string
+    accessSubjectHash: string | null
+  }>()
+  if (!user) {
+    const generatedArtifacts = await env.DB.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM workspaces WHERE id = ?) AS workspaces,
+        (SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id = ? OR user_id = ?) AS memberships,
+        (SELECT COUNT(*) FROM output_allowances WHERE workspace_id = ?) AS allowances
+    `).bind(expected.workspaceId, expected.workspaceId, expected.userId, expected.workspaceId).first<{
+      workspaces: number
+      memberships: number
+      allowances: number
+    }>()
+    return generatedArtifacts
+      && generatedArtifacts.workspaces === 0
+      && generatedArtifacts.memberships === 0
+      && generatedArtifacts.allowances === 0
+      ? 'not-committed'
+      : 'conflict'
+  }
+  if (user.email !== expected.email
+    || user.name !== expected.name
+    || user.passwordHash !== expected.passwordHash
+    || user.passwordSalt !== expected.passwordSalt
+    || user.accountStatus !== 'active'
+    || user.accountType !== expected.accountType
+    || user.authMode !== 'password'
+    || user.accessSubjectHash !== null) return 'conflict'
+
+  const [workspace, membership, allowance] = await Promise.all([
+    env.DB.prepare(`
+      SELECT owner_user_id AS ownerUserId, name, plan_status AS planStatus,
+        access_status AS accessStatus
+      FROM workspaces
+      WHERE id = ?
+    `).bind(expected.workspaceId).first<{
+      ownerUserId: string
+      name: string
+      planStatus: string
+      accessStatus: string
+    }>(),
+    env.DB.prepare(`
+      SELECT role
+      FROM workspace_memberships
+      WHERE workspace_id = ? AND user_id = ?
+    `).bind(expected.workspaceId, expected.userId).first<{ role: string }>(),
+    env.DB.prepare(`
+      SELECT available, reserved
+      FROM output_allowances
+      WHERE workspace_id = ?
+    `).bind(expected.workspaceId).first<{ available: number; reserved: number }>()
+  ])
+  if (!workspace
+    || workspace.ownerUserId !== expected.userId
+    || workspace.name !== expected.workspaceName
+    || workspace.planStatus !== 'active'
+    || workspace.accessStatus !== 'active'
+    || membership?.role !== 'owner'
+    || allowance?.available !== expected.initialAllowance
+    || allowance.reserved !== 0) return 'conflict'
+
+  if (expected.invite) {
+    const invite = await env.DB.prepare(`
+      SELECT account_type AS accountType, status, used_by_user_id AS usedByUserId,
+        used_at AS usedAt
+      FROM beta_invites
+      WHERE id = ?
+    `).bind(expected.invite.id).first<{
+      accountType: string
+      status: string
+      usedByUserId: string | null
+      usedAt: string | null
+    }>()
+    if (!invite
+      || invite.accountType !== expected.invite.accountType
+      || invite.status !== 'used'
+      || invite.usedByUserId !== expected.userId
+      || !invite.usedAt) return 'conflict'
+  }
+
+  return 'committed'
+}
+
 async function register(request: Request, env: Env) {
   const mode = registrationMode(env)
   if (mode === 'closed') return json({ error: 'AisleStage 現時只開放已有帳號登入。' }, { status: 403 })
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
   const body = parsed.body as Record<string, unknown> | null
@@ -745,15 +1541,35 @@ async function register(request: Request, env: Env) {
     `).bind(userId, invite.id))
     await env.DB.batch(statements)
   } catch {
-    await recordAuthAttempt(env, request, 'register_failed', email)
-    return json({ error: invite ? '邀請註冊未能完成，請重新取得邀請。' : '這個電郵已經註冊。' }, { status: 409 })
+    try {
+      const reconciliation = await reconcilePasswordRegistration(env, {
+        userId,
+        email,
+        name,
+        passwordHash: passwordHash.hash,
+        passwordSalt: passwordHash.salt,
+        accountType: invite?.accountType || 'standard',
+        workspaceId,
+        workspaceName,
+        initialAllowance: initialOutputAllowance(env),
+        invite
+      })
+      if (reconciliation !== 'committed') {
+        if (reconciliation === 'conflict') console.error('password-registration-reconciliation-conflict')
+        await recordAuthAttempt(env, request, 'register_failed', email)
+        return json({ error: invite ? '邀請註冊未能完成，請重新取得邀請。' : '這個電郵已經註冊。' }, { status: 409 })
+      }
+    } catch {
+      console.error('password-registration-reconciliation-failed')
+      return json({ error: '註冊狀態暫時無法確認。 Registration state is temporarily unavailable.' }, { status: 503 })
+    }
   }
   await recordAuthAttempt(env, request, 'register_success', email)
   return sessionResponse(env, request, userId, 201)
 }
 
 async function login(request: Request, env: Env) {
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_AUTH_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Authentication payload is too large.' }, { status: 413 })
   const body = parsed.body as Record<string, unknown> | null
@@ -785,7 +1601,22 @@ async function login(request: Request, env: Env) {
 
 async function logout(request: Request, env: Env) {
   const token = parseCookie(request, SESSION_COOKIE)
-  if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(await sha256(token)).run()
+  if (token) {
+    const tokenHash = await sha256(token)
+    try {
+      await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
+    } catch {
+      try {
+        const existing = await env.DB.prepare('SELECT 1 AS existing FROM sessions WHERE token_hash = ?')
+          .bind(tokenHash)
+          .first<{ existing: number }>()
+        if (existing) return json({ error: '未能確認登出狀態。 Unable to confirm logout.' }, { status: 503 })
+      } catch {
+        console.error('session-delete-reconciliation-failed')
+        return json({ error: '未能確認登出狀態。 Unable to confirm logout.' }, { status: 503 })
+      }
+    }
+  }
   return json({ ok: true }, { headers: { 'set-cookie': expiredSessionCookie(request) } })
 }
 
@@ -815,6 +1646,22 @@ async function reserveOutput(env: Env, workspaceId: string, generationId: string
   }
 }
 
+async function reconcileGenerationReservation(env: Env, workspaceId: string, generationId: string): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const ledger = await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN event_type = 'reservation' AND amount = ? THEN 1 ELSE 0 END) AS reservations,
+      SUM(CASE WHEN event_type = 'settlement' THEN 1 ELSE 0 END) AS settlements,
+      SUM(CASE WHEN event_type = 'release' THEN 1 ELSE 0 END) AS releases
+    FROM output_ledger
+    WHERE workspace_id = ? AND generation_id = ?
+  `).bind(-OUTPUT_COST, workspaceId, generationId).first<{ total: number; reservations: number; settlements: number; releases: number }>()
+  if (!ledger?.total) return 'not-committed'
+  return ledger.total === 1 && ledger.reservations === 1 && ledger.settlements === 0 && ledger.releases === 0
+    ? 'committed'
+    : 'conflict'
+}
+
 async function releaseOrphanReservation(env: Env, workspaceId: string, generationId: string, reason: string) {
   await env.DB.batch([
     env.DB.prepare(`
@@ -832,13 +1679,30 @@ async function releaseOrphanReservation(env: Env, workspaceId: string, generatio
   ])
 }
 
-async function failGenerationAndRelease(env: Env, workspaceId: string, generationId: string, reason: string) {
+async function failGenerationAndRelease(
+  env: Env,
+  workspaceId: string,
+  generationId: string,
+  reason: string,
+  processingAttempt: number | null = null
+) {
   await env.DB.batch([
     env.DB.prepare(`
       UPDATE generations
       SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND workspace_id = ? AND status IN ('queued', 'processing')
-    `).bind(reason.slice(0, 500), generationId, workspaceId),
+      WHERE id = ? AND workspace_id = ?
+        AND (
+          (? IS NULL AND status = 'queued')
+          OR (? IS NOT NULL AND status = 'processing' AND processing_attempt = ?)
+        )
+    `).bind(
+      reason.slice(0, 500),
+      generationId,
+      workspaceId,
+      processingAttempt,
+      processingAttempt,
+      processingAttempt
+    ),
     env.DB.prepare(`
       INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'release', ?, ?
@@ -853,13 +1717,25 @@ async function failGenerationAndRelease(env: Env, workspaceId: string, generatio
   ])
 }
 
-async function completeGenerationAndSettle(env: Env, workspaceId: string, generationId: string, outputKey: string, outputContentType: string) {
-  await env.DB.batch([
+async function completeGenerationAndSettle(
+  env: Env,
+  workspaceId: string,
+  generationId: string,
+  processingAttempt: number,
+  outputKey: string,
+  outputContentType: string,
+  outputSha256: string,
+  completedMode: CompletedGenerationMode
+) {
+  const [completion] = await env.DB.batch([
     env.DB.prepare(`
       UPDATE generations
-      SET status = 'completed', output_key = ?, output_content_type = ?, error_message = NULL, completed_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND workspace_id = ? AND status = 'processing'
-    `).bind(outputKey, outputContentType, generationId, workspaceId),
+      SET status = 'completed', output_key = ?, output_content_type = ?,
+        review_status = 'draft', reviewed_at = NULL, reviewed_by_user_id = NULL,
+        composition_version = ?, generation_mode = ?, output_sha256 = ?, error_message = NULL,
+        completed_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND workspace_id = ? AND status = 'processing' AND processing_attempt = ?
+    `).bind(outputKey, outputContentType, CAMPAIGN_COMPOSITION_VERSION, completedMode, outputSha256, generationId, workspaceId, processingAttempt),
     env.DB.prepare(`
       INSERT OR IGNORE INTO output_ledger (id, workspace_id, generation_id, event_type, amount, note)
       SELECT ?, ?, ?, 'settlement', 0, 'Generation completed'
@@ -872,6 +1748,56 @@ async function completeGenerationAndSettle(env: Env, workspaceId: string, genera
       WHERE workspace_id = ? AND changes() = 1
     `).bind(OUTPUT_COST, workspaceId)
   ])
+  if (!completion.meta.changes) throw new TerminalGenerationError('Generation processing attempt is stale.')
+}
+
+async function reconcileGenerationCompletion(
+  env: Env,
+  workspaceId: string,
+  generationId: string,
+  input: GenerationInput,
+  outputKey: string,
+  outputSha256: string,
+  completedMode: CompletedGenerationMode
+): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const row = await env.DB.prepare(`
+    SELECT g.id, g.campaign_pack_id AS campaignPackId, g.workflow_id AS workflowId,
+      g.aspect_ratio AS aspectRatio, g.status, g.output_content_type AS contentType,
+      g.output_key AS outputKey, g.approved_revision AS approvedRevision,
+      g.error_message AS errorMessage, g.created_at AS createdAt,
+      g.review_status AS reviewStatus, g.reviewed_at AS reviewedAt,
+      g.composition_version AS compositionVersion, g.generation_mode AS generationMode,
+      g.output_sha256 AS outputSha256
+    FROM generations g
+    WHERE g.id = ? AND g.workspace_id = ?
+  `).bind(generationId, workspaceId).first<StoredGenerationRow>()
+  if (!row || row.status !== 'completed') return 'not-committed'
+  if (row.outputKey !== outputKey
+    || row.contentType !== CAMPAIGN_OUTPUT_CONTENT_TYPE
+    || row.outputSha256 !== outputSha256
+    || row.compositionVersion !== CAMPAIGN_COMPOSITION_VERSION
+    || row.generationMode !== completedMode
+    || row.workflowId !== input.workflowId
+    || row.aspectRatio !== input.aspectRatio
+    || row.approvedRevision !== input.approvedRevision
+    || row.reviewStatus !== 'draft'
+    || row.reviewedAt !== null
+    || row.errorMessage !== null) return 'conflict'
+
+  const [object, ledger] = await Promise.all([
+    env.MEDIA_BUCKET.head(outputKey),
+    env.DB.prepare(`
+      SELECT
+        SUM(CASE WHEN event_type = 'settlement' THEN 1 ELSE 0 END) AS settlements,
+        SUM(CASE WHEN event_type = 'release' THEN 1 ELSE 0 END) AS releases
+      FROM output_ledger
+      WHERE generation_id = ?
+    `).bind(generationId).first<{ settlements: number; releases: number }>()
+  ])
+  return object && hasCanonicalOutputMetadata(row, object)
+    && ledger?.settlements === 1 && ledger.releases === 0
+    ? 'committed'
+    : 'conflict'
 }
 
 type CampaignPackRequest = {
@@ -885,12 +1811,55 @@ type CampaignPackRequest = {
   outputs: Array<Pick<GenerationInput, 'workflowId' | 'aspectRatio'>>
 }
 
+const campaignPackRequestKeys = [
+  'idempotencyKey',
+  'workspaceId',
+  'approvedRevision',
+  'intent',
+  'brand',
+  'product',
+  'referenceAssetIds',
+  'outputs'
+] as const
+const campaignPackOutputKeys = ['workflowId', 'aspectRatio'] as const
+const generationInputRequestKeys = [
+  'workspaceId',
+  'workflowId',
+  'aspectRatio',
+  'approvedRevision',
+  'intent',
+  'brand',
+  'product',
+  'referenceImageUrls',
+  'referenceAssetIds'
+] as const
+
+function hasExactKeys(value: unknown, expectedKeys: readonly string[]) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  return keys.length === expectedKeys.length && keys.every((key) => expectedKeys.includes(key))
+}
+
+function hasKnownCampaignBriefFields(input: GenerationInput) {
+  return validateCampaignBrief({
+    assetId: input.referenceAssetIds[0],
+    intent: input.intent,
+    brand: input.brand,
+    product: input.product
+  }).length === 0
+}
+
+function strictGenerationInput(value: unknown): value is GenerationInput {
+  return hasExactKeys(value, generationInputRequestKeys) && validInput(value) && hasKnownCampaignBriefFields(value)
+}
+
 function campaignPackInputs(value: unknown): { request: CampaignPackRequest; inputs: GenerationInput[] } | null {
-  if (!value || typeof value !== 'object') return null
+  if (!hasExactKeys(value, campaignPackRequestKeys)) return null
   const request = value as Partial<CampaignPackRequest>
   if (!boundedString(request.idempotencyKey, 100) || !/^[a-z0-9_-]{16,100}$/i.test(request.idempotencyKey!)) return null
   if (!boundedString(request.workspaceId, 64) || !Number.isSafeInteger(request.approvedRevision) || Number(request.approvedRevision) <= 0) return null
   if (!Array.isArray(request.outputs) || request.outputs.length < 1 || request.outputs.length > 3) return null
+  if (!request.outputs.every((output) => hasExactKeys(output, campaignPackOutputKeys))) return null
   const inputs = request.outputs.map((output) => ({
     workspaceId: request.workspaceId!,
     workflowId: output?.workflowId,
@@ -902,7 +1871,7 @@ function campaignPackInputs(value: unknown): { request: CampaignPackRequest; inp
     referenceImageUrls: [],
     referenceAssetIds: request.referenceAssetIds
   }))
-  if (!inputs.every(validInput)) return null
+  if (!inputs.every((input) => validInput(input) && hasKnownCampaignBriefFields(input))) return null
   const outputKeys = inputs.map((input) => `${input.workflowId}:${input.aspectRatio}`)
   if (new Set(outputKeys).size !== outputKeys.length) return null
   return { request: request as CampaignPackRequest, inputs: inputs as GenerationInput[] }
@@ -923,43 +1892,225 @@ async function approvedCampaignPackInputs(env: Env, inputs: GenerationInput[]) {
   return inputs.every((input) => state.plan.some((item) => item.selected && item.workflowId === input.workflowId && item.ratio === input.aspectRatio))
 }
 
+function generationPayload(item: GenerationRow) {
+  const completed = item.status === 'completed'
+  return {
+    id: item.id,
+    campaignPackId: item.campaignPackId,
+    workflowId: item.workflowId,
+    aspectRatio: item.aspectRatio,
+    status: item.status,
+    contentType: item.contentType,
+    approvedRevision: item.approvedRevision,
+    errorMessage: item.errorMessage,
+    createdAt: item.createdAt,
+    reviewStatus: item.reviewStatus,
+    reviewedAt: item.reviewedAt,
+    imageUrl: completed ? `/api/generations/${item.id}/image` : null,
+    downloadUrl: completed && item.reviewStatus === 'approved' ? `/api/generations/${item.id}/download` : null,
+    provenance: {
+      approvedRevision: item.approvedRevision,
+      compositionVersion: item.compositionVersion,
+      generationMode: item.generationMode
+    }
+  }
+}
+
+async function generationForWorkspace(env: Env, workspaceId: string, generationId: string) {
+  return env.DB.prepare(`
+    SELECT g.id, g.campaign_pack_id AS campaignPackId, g.workflow_id AS workflowId,
+      g.aspect_ratio AS aspectRatio, g.status, g.output_content_type AS contentType,
+      g.output_key AS outputKey,
+      g.approved_revision AS approvedRevision, g.error_message AS errorMessage,
+      g.created_at AS createdAt, g.review_status AS reviewStatus,
+      g.reviewed_at AS reviewedAt, g.composition_version AS compositionVersion,
+      g.generation_mode AS generationMode, g.output_sha256 AS outputSha256
+    FROM generations g
+    JOIN workspaces w ON w.id = g.workspace_id
+    WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
+  `).bind(generationId, workspaceId).first<StoredGenerationRow>()
+}
+
 async function packGenerations(env: Env, workspaceId: string, campaignPackId: string) {
   const result = await env.DB.prepare(`
     SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio,
       status, output_content_type AS contentType, approved_revision AS approvedRevision,
-      error_message AS errorMessage, created_at AS createdAt
+      error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
+      reviewed_at AS reviewedAt, composition_version AS compositionVersion,
+      generation_mode AS generationMode, output_sha256 AS outputSha256
     FROM generations
     WHERE workspace_id = ? AND campaign_pack_id = ?
     ORDER BY created_at ASC
+  `).bind(workspaceId, campaignPackId).all<GenerationRow>()
+  return result.results.map(generationPayload)
+}
+
+async function campaignPackReplayResponse(env: Env, workspaceId: string, idempotencyKey: string, inputs: GenerationInput[]) {
+  const existing = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
+    .bind(workspaceId, idempotencyKey)
+    .first<{ id: string }>()
+  if (!existing) return null
+
+  const stored = await env.DB.prepare(`
+    SELECT input_json AS inputJson
+    FROM generations
+    WHERE workspace_id = ? AND campaign_pack_id = ?
+  `).bind(workspaceId, existing.id).all<{ inputJson: string }>()
+  const requestedIdentities = inputs.map(generationInputIdentity).sort()
+  const storedIdentities: string[] = []
+  for (const row of stored.results) {
+    if (typeof row.inputJson !== 'string' || row.inputJson.length > MAX_GENERATION_BODY_BYTES) break
+    try {
+      const input = JSON.parse(row.inputJson) as unknown
+      if (!validInput(input)) break
+      storedIdentities.push(generationInputIdentity(input))
+    } catch {
+      break
+    }
+  }
+  storedIdentities.sort()
+  if (storedIdentities.length !== requestedIdentities.length
+    || storedIdentities.some((identity, index) => identity !== requestedIdentities[index])) {
+    return json({ error: '此 idempotency key 已用於不同的 Campaign Pack 請求。 This idempotency key is already bound to a different Campaign Pack request.' }, { status: 409 })
+  }
+  return json({ campaignPackId: existing.id, generations: await packGenerations(env, workspaceId, existing.id), replayed: true })
+}
+
+async function reconcileCampaignPackCreation(
+  env: Env,
+  workspaceId: string,
+  campaignPackId: string,
+  idempotencyKey: string,
+  approvedRevision: number,
+  queued: ReadonlyArray<{ generationId: string; input: GenerationInput }>
+): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const pack = await env.DB.prepare(`
+    SELECT workspace_id AS workspaceId, idempotency_key AS idempotencyKey,
+      approved_revision AS approvedRevision
+    FROM campaign_packs
+    WHERE id = ? AND workspace_id = ?
+  `).bind(campaignPackId, workspaceId).first<{
+    workspaceId: string
+    idempotencyKey: string
+    approvedRevision: number
+  }>()
+  if (!pack) return 'not-committed'
+  if (pack.workspaceId !== workspaceId
+    || pack.idempotencyKey !== idempotencyKey
+    || pack.approvedRevision !== approvedRevision) return 'conflict'
+
+  const generations = await env.DB.prepare(`
+    SELECT id, workspace_id AS workspaceId, campaign_pack_id AS campaignPackId,
+      workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
+      output_cost AS outputCost, credit_cost AS creditCost, input_json AS inputJson,
+      approved_revision AS approvedRevision, output_key AS outputKey,
+      output_content_type AS outputContentType, processing_attempt AS processingAttempt,
+      error_message AS errorMessage, review_status AS reviewStatus,
+      reviewed_at AS reviewedAt, reviewed_by_user_id AS reviewedByUserId,
+      composition_version AS compositionVersion, generation_mode AS generationMode,
+      output_sha256 AS outputSha256, completed_at AS completedAt
+    FROM generations
+    WHERE workspace_id = ? AND campaign_pack_id = ?
   `).bind(workspaceId, campaignPackId).all<{
     id: string
+    workspaceId: string
     campaignPackId: string
-    workflowId: GenerationInput['workflowId']
-    aspectRatio: GenerationInput['aspectRatio']
-    status: 'queued' | 'processing' | 'completed' | 'failed'
-    contentType: 'image/svg+xml' | 'image/png' | null
+    workflowId: string
+    aspectRatio: string
+    status: string
+    outputCost: number
+    creditCost: number
+    inputJson: string
     approvedRevision: number
+    outputKey: string | null
+    outputContentType: string | null
+    processingAttempt: number
     errorMessage: string | null
-    createdAt: string
+    reviewStatus: string
+    reviewedAt: string | null
+    reviewedByUserId: string | null
+    compositionVersion: string | null
+    generationMode: string | null
+    outputSha256: string | null
+    completedAt: string | null
   }>()
-  return result.results.map((item) => ({ ...item, imageUrl: item.status === 'completed' ? `/api/generations/${item.id}/image` : null }))
+  if (generations.results.length !== queued.length) return 'conflict'
+  const rowsById = new Map(generations.results.map((row) => [row.id, row]))
+
+  for (const item of queued) {
+    const row = rowsById.get(item.generationId)
+    if (!row
+      || row.workspaceId !== workspaceId
+      || row.campaignPackId !== campaignPackId
+      || row.workflowId !== item.input.workflowId
+      || row.aspectRatio !== item.input.aspectRatio
+      || row.status !== 'queued'
+      || row.outputCost !== OUTPUT_COST
+      || row.creditCost !== OUTPUT_COST
+      || row.inputJson !== JSON.stringify(item.input)
+      || row.approvedRevision !== item.input.approvedRevision
+      || row.outputKey !== null
+      || row.outputContentType !== null
+      || row.processingAttempt !== 0
+      || row.errorMessage !== null
+      || row.reviewStatus !== 'draft'
+      || row.reviewedAt !== null
+      || row.reviewedByUserId !== null
+      || row.compositionVersion !== null
+      || row.generationMode !== null
+      || row.outputSha256 !== null
+      || row.completedAt !== null) return 'conflict'
+
+    const ledger = await env.DB.prepare(`
+      SELECT event_type AS eventType, amount, provider_event_id AS providerEventId, note
+      FROM output_ledger
+      WHERE workspace_id = ? AND generation_id = ?
+    `).bind(workspaceId, item.generationId).all<{
+      eventType: string
+      amount: number
+      providerEventId: string | null
+      note: string
+    }>()
+    if (ledger.results.length !== 1
+      || ledger.results[0].eventType !== 'reservation'
+      || ledger.results[0].amount !== -OUTPUT_COST
+      || ledger.results[0].providerEventId !== null
+      || ledger.results[0].note !== 'Campaign Pack output reservation') return 'conflict'
+  }
+
+  return 'committed'
+}
+
+function generationPreflightUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '素材建立前置狀態暫時無法讀取。 Generation preflight state is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function campaignPackStateUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: 'Campaign Pack 狀態暫時無法讀取。 Campaign Pack state is temporarily unavailable.'
+  }, { status: 503 })
 }
 
 async function createCampaignPack(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
   const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
   if (parsed.tooLarge) return json({ error: 'Campaign Pack payload is too large.' }, { status: 413 })
   const parsedPack = campaignPackInputs(parsed.body)
   if (!parsedPack) return json({ error: 'Invalid Campaign Pack payload.' }, { status: 400 })
   if (parsedPack.request.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
+  let workspace: Workspace | null
+  try {
+    workspace = await getWorkspace(env, session.user.id, parsedPack.request.workspaceId)
+  } catch {
+    console.error('campaign-pack-workspace-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
-
-  const existing = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
-    .bind(workspace.id, parsedPack.request.idempotencyKey)
-    .first<{ id: string }>()
-  if (existing) return json({ campaignPackId: existing.id, generations: await packGenerations(env, workspace.id, existing.id), replayed: true })
 
   const brief = sanitizeCampaignBrief({
     assetId: parsedPack.request.referenceAssetIds[0],
@@ -976,12 +2127,26 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     referenceImageUrls: [],
     referenceAssetIds: [parsedPack.request.referenceAssetIds[0]]
   }))
+  try {
+    const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
+    if (replay) return replay
+  } catch {
+    console.error('campaign-pack-replay-read-failed')
+    return campaignPackStateUnavailable()
+  }
   for (const input of inputs) {
     const issues = validateCompositionInput(input)
     if (issues.length) return json({ error: issues[0], issues }, { status: 422 })
     if (!workflowById(input.workflowId).ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   }
-  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)) return json({ error: 'Product asset not found.' }, { status: 400 })
+  let ownsReferenceAssets: boolean
+  try {
+    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)
+  } catch {
+    console.error('campaign-pack-asset-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
+  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
   try {
     if (!await approvedCampaignPackInputs(env, inputs)) return json({ error: 'Campaign plan approval is missing, stale, or does not match this pack.' }, { status: 409 })
   } catch {
@@ -992,6 +2157,7 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
   const queued = inputs.map((input) => ({ generationId: crypto.randomUUID(), input }))
   const outputCount = queued.length * OUTPUT_COST
   const activeLimit = maxActiveGenerations(env)
+  let creationReconciliationUnavailable = false
   try {
     const statements = [
       env.DB.prepare(`
@@ -1020,10 +2186,8 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     }
     const results = await env.DB.batch(statements)
     if (!results[0].meta.changes) {
-      const replay = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
-        .bind(workspace.id, parsedPack.request.idempotencyKey)
-        .first<{ id: string }>()
-      if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
+      const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
+      if (replay) return replay
       const current = await env.DB.prepare('SELECT available, reserved FROM output_allowances WHERE workspace_id = ?')
         .bind(workspace.id)
         .first<{ available: number; reserved: number }>()
@@ -1033,11 +2197,28 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
       return json({ error: `至少需要 ${outputCount} 個可用輸出。` }, { status: 409 })
     }
   } catch {
-    const replay = await env.DB.prepare('SELECT id FROM campaign_packs WHERE workspace_id = ? AND idempotency_key = ?')
-      .bind(workspace.id, parsedPack.request.idempotencyKey)
-      .first<{ id: string }>()
-    if (replay) return json({ campaignPackId: replay.id, generations: await packGenerations(env, workspace.id, replay.id), replayed: true })
-    return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+    try {
+      const reconciliation = await reconcileCampaignPackCreation(
+        env,
+        workspace.id,
+        campaignPackId,
+        parsedPack.request.idempotencyKey,
+        parsedPack.request.approvedRevision,
+        queued
+      )
+      if (reconciliation === 'not-committed') {
+        const replay = await campaignPackReplayResponse(env, workspace.id, parsedPack.request.idempotencyKey, inputs)
+        if (replay) return replay
+        return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+      }
+      if (reconciliation === 'conflict') {
+        console.error('campaign-pack-create-reconciliation-conflict')
+        return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+      }
+    } catch {
+      console.error('campaign-pack-create-reconciliation-failed')
+      creationReconciliationUnavailable = true
+    }
   }
 
   try {
@@ -1047,24 +2228,91 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     return json({ error: 'Unable to queue Campaign Pack.' }, { status: 503 })
   }
 
-  return json({ campaignPackId, generations: await packGenerations(env, workspace.id, campaignPackId), reservedOutputs: outputCount }, { status: 202 })
+  if (creationReconciliationUnavailable) return json({ error: 'Unable to create Campaign Pack.' }, { status: 503 })
+
+  let generations: ReturnType<typeof generationPayload>[]
+  try {
+    generations = await packGenerations(env, workspace.id, campaignPackId)
+  } catch {
+    console.error('campaign-pack-result-read-failed')
+    return campaignPackStateUnavailable()
+  }
+  return json({ campaignPackId, generations, reservedOutputs: outputCount }, { status: 202 })
+}
+
+async function reconcileQueuedGeneration(env: Env, workspaceId: string, generationId: string, input: GenerationInput): Promise<'committed' | 'not-committed' | 'conflict'> {
+  const row = await env.DB.prepare(`
+    SELECT workspace_id AS workspaceId, campaign_pack_id AS campaignPackId,
+      workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
+      output_cost AS outputCost, credit_cost AS creditCost, input_json AS inputJson,
+      approved_revision AS approvedRevision, output_key AS outputKey,
+      output_content_type AS outputContentType, processing_attempt AS processingAttempt,
+      error_message AS errorMessage, review_status AS reviewStatus
+    FROM generations
+    WHERE id = ? AND workspace_id = ?
+  `).bind(generationId, workspaceId).first<{
+    workspaceId: string
+    campaignPackId: string | null
+    workflowId: string
+    aspectRatio: string
+    status: string
+    outputCost: number
+    creditCost: number
+    inputJson: string
+    approvedRevision: number
+    outputKey: string | null
+    outputContentType: string | null
+    processingAttempt: number
+    errorMessage: string | null
+    reviewStatus: string
+  }>()
+  if (!row) return 'not-committed'
+  return row.workspaceId === workspaceId
+    && row.campaignPackId === null
+    && row.workflowId === input.workflowId
+    && row.aspectRatio === input.aspectRatio
+    && row.status === 'queued'
+    && row.outputCost === OUTPUT_COST
+    && row.creditCost === OUTPUT_COST
+    && row.inputJson === JSON.stringify(input)
+    && row.approvedRevision === input.approvedRevision
+    && row.outputKey === null
+    && row.outputContentType === null
+    && row.processingAttempt === 0
+    && row.errorMessage === null
+    && row.reviewStatus === 'draft'
+    ? 'committed'
+    : 'conflict'
 }
 
 async function createGeneration(request: Request, env: Env, session: SessionContext) {
   if (generationMode(env) === 'disabled') return json({ error: '素材生成服務目前未開放。' }, { status: 503 })
-  if (!hasJsonContent(request)) return json({ error: 'Expected application/json.' }, { status: 415 })
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength > MAX_GENERATION_BODY_BYTES) return json({ error: 'Generation payload is too large.' }, { status: 413 })
-  const input = await request.json().catch(() => null)
-  if (!validInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_GENERATION_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Generation payload is too large.' }, { status: 413 })
+  const input = parsed.body
+  if (!strictGenerationInput(input)) return json({ error: 'Invalid generation payload.' }, { status: 400 })
   if (input.workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const workspace = await getWorkspace(env, session.user.id, input.workspaceId)
+  let workspace: Workspace | null
+  try {
+    workspace = await getWorkspace(env, session.user.id, input.workspaceId)
+  } catch {
+    console.error('generation-workspace-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
   const brief = sanitizeCampaignBrief({ assetId: input.referenceAssetIds[0], intent: input.intent, brand: input.brand, product: input.product })
   const safeInput: GenerationInput = { ...input, workspaceId: workspace.id, intent: brief.intent, brand: brief.brand, product: brief.product, referenceImageUrls: [], referenceAssetIds: [input.referenceAssetIds[0]] }
   const compositionIssues = validateCompositionInput(safeInput)
   if (compositionIssues.length) return json({ error: compositionIssues[0], issues: compositionIssues }, { status: 422 })
-  if (!await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)) return json({ error: 'Product asset not found.' }, { status: 400 })
+  let ownsReferenceAssets: boolean
+  try {
+    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)
+  } catch {
+    console.error('generation-asset-preflight-read-failed')
+    return generationPreflightUnavailable()
+  }
+  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
   const workflow = workflowById(input.workflowId)
   if (!workflow.ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   try {
@@ -1073,82 +2321,343 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
     return json({ error: 'Campaign approval state is temporarily unavailable.' }, { status: 503 })
   }
   const id = crypto.randomUUID()
-  let reservationCreated = false
-  let generationCreated = false
   try {
     await reserveOutput(env, workspace.id, id)
-    reservationCreated = true
-    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', OUTPUT_COST, OUTPUT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
-    generationCreated = true
-    await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
-    return json({ id, status: 'queued', reservedOutputs: OUTPUT_COST }, { status: 202 })
   } catch (error) {
     if (error instanceof Error && error.message === 'ACTIVE_GENERATION_LIMIT') {
       return json({ error: `同一工作區最多可同時處理 ${maxActiveGenerations(env)} 個輸出。` }, { status: 429 })
     }
     if (error instanceof Error && error.message === 'INSUFFICIENT_OUTPUT_ALLOWANCE') return json({ error: '可用輸出數不足。' }, { status: 409 })
-    if (reservationCreated) {
-      if (generationCreated) await failGenerationAndRelease(env, workspace.id, id, 'Unable to enqueue generation.').catch(() => null)
-      else await releaseOrphanReservation(env, workspace.id, id, 'Unable to create generation record.').catch(() => null)
+    try {
+      const reconciliation = await reconcileGenerationReservation(env, workspace.id, id)
+      if (reconciliation !== 'committed') {
+        if (reconciliation === 'conflict') console.error('generation-reservation-reconciliation-conflict')
+        return json({ error: 'Unable to queue generation.' }, { status: 503 })
+      }
+    } catch {
+      console.error('generation-reservation-reconciliation-failed')
+      return json({ error: 'Unable to queue generation.' }, { status: 503 })
     }
+  }
+
+  try {
+    await env.DB.prepare('INSERT INTO generations (id, workspace_id, workflow_id, aspect_ratio, status, output_cost, credit_cost, input_json, approved_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, workspace.id, safeInput.workflowId, safeInput.aspectRatio, 'queued', OUTPUT_COST, OUTPUT_COST, JSON.stringify(safeInput), safeInput.approvedRevision).run()
+  } catch {
+    try {
+      const reconciliation = await reconcileQueuedGeneration(env, workspace.id, id, safeInput)
+      if (reconciliation !== 'committed') {
+        if (reconciliation === 'not-committed') {
+          await releaseOrphanReservation(env, workspace.id, id, 'Unable to create generation record.').catch(() => null)
+        } else {
+          console.error('generation-create-reconciliation-conflict')
+        }
+        return json({ error: 'Unable to queue generation.' }, { status: 503 })
+      }
+    } catch {
+      console.error('generation-create-reconciliation-failed')
+      return json({ error: 'Unable to queue generation.' }, { status: 503 })
+    }
+  }
+
+  try {
+    await env.GENERATION_QUEUE.send({ generationId: id, input: safeInput })
+    return json({ id, status: 'queued', reservedOutputs: OUTPUT_COST }, { status: 202 })
+  } catch {
+    await failGenerationAndRelease(env, workspace.id, id, 'Unable to enqueue generation.').catch(() => null)
     return json({ error: 'Unable to queue generation.' }, { status: 503 })
   }
+}
+
+function generationListUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '輸出清單暫時無法讀取。 Generation list is temporarily unavailable.'
+  }, { status: 503 })
 }
 
 async function listGenerations(request: Request, env: Env, session: SessionContext) {
   const url = new URL(request.url)
   const workspaceId = url.searchParams.get('workspaceId') || session.currentWorkspace.id
   if (workspaceId !== session.currentWorkspace.id) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const workspace = await getWorkspace(env, session.user.id, workspaceId)
+  let workspace: Workspace | null
+  try {
+    workspace = await getWorkspace(env, session.user.id, workspaceId)
+  } catch {
+    console.error('generation-list-workspace-read-failed')
+    return generationListUnavailable()
+  }
   if (!workspace) return json({ error: 'Workspace not found.' }, { status: 404 })
-  const result = await env.DB.prepare(`
-    SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status, output_key AS outputKey,
-      output_content_type AS contentType, approved_revision AS approvedRevision,
-      error_message AS errorMessage, created_at AS createdAt
-    FROM generations
-    WHERE workspace_id = ?
-    ORDER BY created_at DESC
-    LIMIT 20
-  `).bind(workspace.id).all<{ id: string; campaignPackId: string | null; workflowId: string; aspectRatio: string; status: string; outputKey: string | null; contentType: string | null; approvedRevision: number; errorMessage: string | null; createdAt: string }>()
-  return json({ generations: result.results.map((item) => ({ ...item, imageUrl: item.outputKey ? `/api/generations/${item.id}/image` : null })) })
+  try {
+    const result = await env.DB.prepare(`
+      SELECT id, campaign_pack_id AS campaignPackId, workflow_id AS workflowId, aspect_ratio AS aspectRatio, status,
+        output_content_type AS contentType, approved_revision AS approvedRevision,
+        error_message AS errorMessage, created_at AS createdAt, review_status AS reviewStatus,
+        reviewed_at AS reviewedAt, composition_version AS compositionVersion,
+        generation_mode AS generationMode, output_sha256 AS outputSha256
+      FROM generations
+      WHERE workspace_id = ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).bind(workspace.id).all<GenerationRow>()
+    return json({ generations: result.results.map(generationPayload) })
+  } catch {
+    console.error('generation-list-read-failed')
+    return generationListUnavailable()
+  }
+}
+
+type CanonicalOutputResult =
+  | { state: 'ready'; object: R2ObjectBody }
+  | { state: 'missing' }
+  | { state: 'invalid' }
+  | { state: 'unavailable' }
+
+function hasCanonicalOutputMetadata(row: StoredGenerationRow, object: R2Object) {
+  const metadata = object.customMetadata
+  return row.contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE
+    && Boolean(row.compositionVersion && row.generationMode)
+    && typeof row.outputSha256 === 'string' && /^[A-Za-z0-9_-]{43}$/.test(row.outputSha256)
+    && r2Sha256(object) === row.outputSha256
+    && object.httpMetadata?.contentType === row.contentType
+    && metadata?.workflow === row.workflowId
+    && metadata?.approvedRevision === String(row.approvedRevision)
+    && metadata?.compositionVersion === row.compositionVersion
+    && metadata?.generationMode === row.generationMode
+}
+
+function r2Sha256(object: R2Object) {
+  const checksum = object.checksums.sha256
+  return checksum?.byteLength === 32 ? base64Url(new Uint8Array(checksum)) : null
+}
+
+async function canonicalGenerationOutput(env: Env, row: StoredGenerationRow): Promise<CanonicalOutputResult> {
+  if (!row.outputKey) return { state: 'missing' }
+  let object: R2ObjectBody | null
+  try {
+    object = await env.MEDIA_BUCKET.get(row.outputKey)
+  } catch {
+    console.error('generation-output-object-read-failed')
+    return { state: 'unavailable' }
+  }
+  if (!object) return { state: 'missing' }
+  if (!hasCanonicalOutputMetadata(row, object)) {
+    await object.body.cancel().catch(() => undefined)
+    return { state: 'invalid' }
+  }
+  return { state: 'ready', object }
+}
+
+function invalidOutputFormat() {
+  return json({ error: '輸出格式驗證失敗，請重新建立。 Output format validation failed; recreate this output.' }, { status: 409 })
+}
+
+function privateOutputUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人輸出暫時無法讀取。 Private output is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function outputReviewUnavailable() {
+  return json({ error: '未能確認輸出審核狀態。 Unable to confirm output review.' }, { status: 503 })
 }
 
 async function generationImage(request: Request, env: Env, session: SessionContext, generationId: string) {
-  const row = await env.DB.prepare(`
-    SELECT g.output_key AS outputKey
-    FROM generations g
-    JOIN workspaces w ON w.id = g.workspace_id
-    WHERE g.id = ? AND g.workspace_id = ? AND g.status = 'completed' AND w.access_status = 'active'
-  `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null }>()
-  if (!row?.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
-  const object = await env.MEDIA_BUCKET.get(row.outputKey)
-  if (!object) return json({ error: 'Image not found.' }, { status: 404 })
-  const contentType = object.httpMetadata?.contentType || 'image/png'
+  let row: StoredGenerationRow | null
+  try {
+    row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-output-metadata-read-failed')
+    return privateOutputUnavailable()
+  }
+  if (!row || row.status !== 'completed' || !row.outputKey) return json({ error: 'Image not found.' }, { status: 404 })
+  const output = await canonicalGenerationOutput(env, row)
+  if (output.state === 'unavailable') return privateOutputUnavailable()
+  if (output.state === 'missing') return json({ error: 'Image not found.' }, { status: 404 })
+  if (output.state === 'invalid') return invalidOutputFormat()
   const headers = new Headers({
-    'content-type': contentType,
-    'cache-control': 'private, max-age=300',
+    'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
+    'cache-control': 'private, no-store',
+    'cross-origin-resource-policy': 'same-origin',
+    'content-disposition': 'inline',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer'
   })
-  if (contentType === CAMPAIGN_OUTPUT_CONTENT_TYPE) headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
-  return new Response(object.body, { headers })
+  headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+  return new Response(output.object.body, { headers })
+}
+
+async function generationDownload(env: Env, session: SessionContext, generationId: string) {
+  let row: StoredGenerationRow | null
+  try {
+    row = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-output-metadata-read-failed')
+    return privateOutputUnavailable()
+  }
+  if (!row || row.status !== 'completed' || !row.outputKey) return json({ error: 'Output not found.' }, { status: 404 })
+  if (row.reviewStatus !== 'approved') return json({ error: '輸出需經人工核准後才可下載。' }, { status: 409 })
+  const output = await canonicalGenerationOutput(env, row)
+  if (output.state === 'unavailable') return privateOutputUnavailable()
+  if (output.state === 'missing') return json({ error: 'Output not found.' }, { status: 404 })
+  if (output.state === 'invalid') return invalidOutputFormat()
+  const ratio = row.aspectRatio.replace(':', 'x')
+  const headers = new Headers({
+    'content-type': CAMPAIGN_OUTPUT_CONTENT_TYPE,
+    'cache-control': 'private, no-store',
+    'cross-origin-resource-policy': 'same-origin',
+    'content-disposition': `attachment; filename="aislestage-${ratio}.svg"`,
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer'
+  })
+  headers.set('content-security-policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+  return new Response(output.object.body, { headers })
+}
+
+async function reviewGeneration(request: Request, env: Env, session: SessionContext, generationId: string) {
+  if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
+    return json({ error: '只有 owner 或 admin 可以核准正式下載。' }, { status: 403 })
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_REVIEW_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: 'Review payload is too large.' }, { status: 413 })
+  if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+    return json({ error: 'Invalid review decision.' }, { status: 400 })
+  }
+  const body = parsed.body as Record<string, unknown>
+  const keys = Object.keys(body)
+  const decision = body.decision
+  const expectedApprovedRevision = body.expectedApprovedRevision
+  if (keys.length !== 2 || !keys.every((key) => key === 'decision' || key === 'expectedApprovedRevision')
+    || (decision !== 'approve' && decision !== 'reject')
+    || !Number.isSafeInteger(expectedApprovedRevision) || Number(expectedApprovedRevision) <= 0) {
+    return json({ error: 'Invalid review decision.' }, { status: 400 })
+  }
+
+  let current: StoredGenerationRow | null
+  try {
+    current = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-review-metadata-read-failed')
+    return outputReviewUnavailable()
+  }
+  if (!current) return json({ error: 'Output not found.' }, { status: 404 })
+  if (current.status !== 'completed') return json({ error: '只有已完成的輸出可以審核。' }, { status: 409 })
+  if (current.approvedRevision !== expectedApprovedRevision) {
+    return json({ error: '輸出版本已改變，請重新載入後再審核。' }, { status: 409 })
+  }
+
+  const targetStatus: ReviewStatus = decision === 'approve' ? 'approved' : 'rejected'
+  if (targetStatus === 'approved') {
+    if (!current.outputKey) return json({ error: '輸出檔案不存在，請重新建立。 Output file is missing; recreate this output.' }, { status: 409 })
+    let object: R2Object | null
+    try {
+      object = await env.MEDIA_BUCKET.head(current.outputKey)
+    } catch {
+      console.error('generation-review-object-read-failed')
+      return outputReviewUnavailable()
+    }
+    if (!object) return json({ error: '輸出檔案不存在，請重新建立。 Output file is missing; recreate this output.' }, { status: 409 })
+    if (!hasCanonicalOutputMetadata(current, object)) return invalidOutputFormat()
+  }
+  if (current.reviewStatus === targetStatus) {
+    return json({ generation: generationPayload(current), replayed: true })
+  }
+  if (current.reviewStatus !== 'draft') {
+    return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
+  }
+
+  let updateChanges: number
+  try {
+    const updated = await env.DB.prepare(`
+      UPDATE generations
+      SET review_status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewed_by_user_id = ?
+      WHERE id = ? AND workspace_id = ? AND status = 'completed'
+        AND review_status = 'draft' AND approved_revision = ?
+    `).bind(targetStatus, session.user.id, generationId, session.currentWorkspace.id, expectedApprovedRevision).run()
+    updateChanges = updated.meta.changes
+  } catch {
+    try {
+      const reconciliation = await env.DB.prepare(`
+        SELECT status, review_status AS reviewStatus, reviewed_at AS reviewedAt,
+          approved_revision AS approvedRevision
+        FROM generations
+        WHERE id = ? AND workspace_id = ?
+      `).bind(generationId, session.currentWorkspace.id).first<{
+        status: string
+        reviewStatus: string
+        reviewedAt: string | null
+        approvedRevision: number
+      }>()
+      if (reconciliation?.status === 'completed'
+        && reconciliation.reviewStatus === targetStatus
+        && reconciliation.reviewedAt
+        && reconciliation.approvedRevision === expectedApprovedRevision) {
+        const latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+        if (!latest) return json({ error: 'Output not found.' }, { status: 404 })
+        return json({ generation: generationPayload(latest), replayed: true })
+      }
+      if (reconciliation?.reviewStatus && reconciliation.reviewStatus !== 'draft') {
+        return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
+      }
+      console.error('generation-review-reconciliation-conflict')
+      return outputReviewUnavailable()
+    } catch {
+      console.error('generation-review-reconciliation-failed')
+      return outputReviewUnavailable()
+    }
+  }
+  let latest: StoredGenerationRow | null
+  try {
+    latest = await generationForWorkspace(env, session.currentWorkspace.id, generationId)
+  } catch {
+    console.error('generation-review-reload-failed')
+    return outputReviewUnavailable()
+  }
+  if (!latest) return json({ error: 'Output not found.' }, { status: 404 })
+  if (!updateChanges) {
+    if (latest.reviewStatus === targetStatus) return json({ generation: generationPayload(latest), replayed: true })
+    return json({ error: '這個輸出已有不可變更的審核決定。' }, { status: 409 })
+  }
+  return json({ generation: generationPayload(latest), replayed: false })
 }
 
 async function deleteGeneration(env: Env, session: SessionContext, generationId: string) {
-  const row = await env.DB.prepare(`
-    SELECT g.output_key AS outputKey, g.status
-    FROM generations g
-    JOIN workspaces w ON w.id = g.workspace_id
-    WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
-  `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null; status: string }>()
+  const unavailableResponse = () => json({ error: '未能刪除輸出。 Unable to delete output.' }, { status: 503 })
+  let row: { outputKey: string | null; status: string } | null
+  try {
+    row = await env.DB.prepare(`
+      SELECT g.output_key AS outputKey, g.status
+      FROM generations g
+      JOIN workspaces w ON w.id = g.workspace_id
+      WHERE g.id = ? AND g.workspace_id = ? AND w.access_status = 'active'
+    `).bind(generationId, session.currentWorkspace.id).first<{ outputKey: string | null; status: string }>()
+  } catch {
+    console.error('generation-delete-preflight-read-failed')
+    return unavailableResponse()
+  }
   if (!row) return json({ error: 'Output not found.' }, { status: 404 })
   if (row.status === 'queued' || row.status === 'processing') return json({ error: '仍在處理的輸出不可刪除。' }, { status: 409 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
   try {
     if (row.outputKey) await env.MEDIA_BUCKET.delete(row.outputKey)
-    await env.DB.prepare('DELETE FROM generations WHERE id = ?').bind(generationId).run()
-    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+    await env.DB.prepare('DELETE FROM generations WHERE id = ? AND workspace_id = ?')
+      .bind(generationId, session.currentWorkspace.id)
+      .run()
+    return deletedResponse()
   } catch {
-    return json({ error: '未能刪除輸出。' }, { status: 503 })
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM generations
+        WHERE id = ? AND workspace_id = ?
+      `).bind(generationId, session.currentWorkspace.id).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('generation-delete-reconciliation-pending')
+    } catch {
+      console.error('generation-delete-reconciliation-failed')
+    }
+    return unavailableResponse()
   }
 }
 
@@ -1190,8 +2699,16 @@ export default {
       if (session instanceof Response) return session
       return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
     }
-    if (url.pathname === '/api/auth/register' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password registration is disabled.' }, { status: 404 }) : register(request, env)
-    if (url.pathname === '/api/auth/login' && request.method === 'POST') return activeAuthMode === 'access' ? json({ error: 'Password login is disabled.' }, { status: 404 }) : login(request, env)
+    if (url.pathname === '/api/auth/register' && request.method === 'POST') {
+      return activeAuthMode === 'access'
+        ? json({ error: 'Password registration is disabled.' }, { status: 404 })
+        : guardedPasswordAuth('register', () => register(request, env))
+    }
+    if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+      return activeAuthMode === 'access'
+        ? json({ error: 'Password login is disabled.' }, { status: 404 })
+        : guardedPasswordAuth('login', () => login(request, env))
+    }
     if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
       if (activeAuthMode === 'access') {
         const session = await requireSession(request, env)
@@ -1202,13 +2719,23 @@ export default {
     }
     if (url.pathname === '/api/session' && request.method === 'GET') {
       const session = await requireSession(request, env)
-      if (session instanceof Response) return activeAuthMode === 'access' ? session : json({ authenticated: false }, { headers: session.headers })
+      if (session instanceof Response) {
+        if (activeAuthMode === 'access') return session
+        return session.status === 503
+          ? sessionAuthorizationUnavailable(true)
+          : json({ authenticated: false }, { headers: session.headers })
+      }
       return json({ authenticated: true, user: session.user, currentWorkspace: session.currentWorkspace })
     }
     if (url.pathname === '/api/workspaces' && request.method === 'GET') {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
-      return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+      try {
+        return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+      } catch {
+        console.error('workspace-list-read-failed')
+        return workspaceListUnavailable()
+      }
     }
     if (url.pathname === '/api/assets/product' && request.method === 'POST') {
       const session = await requireSession(request, env)
@@ -1237,6 +2764,18 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       return generationImage(request, env, session, imageMatch[1])
+    }
+    const downloadMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/download$/)
+    if (downloadMatch && request.method === 'GET') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return generationDownload(env, session, downloadMatch[1])
+    }
+    const reviewMatch = url.pathname.match(/^\/api\/generations\/([^/]+)\/review$/)
+    if (reviewMatch && request.method === 'POST') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      return reviewGeneration(request, env, session, reviewMatch[1])
     }
     const generationMatch = url.pathname.match(/^\/api\/generations\/([^/]+)$/)
     if (generationMatch && request.method === 'DELETE') {
@@ -1267,37 +2806,114 @@ export default {
   },
 
   async scheduled(_controller, env, ctx): Promise<void> {
-    ctx.waitUntil(cleanExpiredSessions(env))
+    ctx.waitUntil(cleanExpiredAuthState(env))
   },
 
   async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
-      const { generationId, input } = message.body as GenerationMessage
+      const queuedMessage = message.body && typeof message.body === 'object'
+        ? message.body as Partial<GenerationMessage>
+        : null
+      const generationId = typeof queuedMessage?.generationId === 'string' ? queuedMessage.generationId : ''
+      if (!boundedString(generationId, 64)) {
+        message.ack()
+        continue
+      }
+
+      let workspaceId: string | null = null
       let storedOutputKey: string | null = null
+      let claimEstablished = false
       try {
-        const claim = await env.DB.prepare(`
-          UPDATE generations
-          SET status = 'processing', processing_attempt = ?, error_message = NULL
-          WHERE id = ? AND workspace_id = ?
-            AND (status = 'queued' OR (status = 'processing' AND processing_attempt < ?))
-        `).bind(message.attempts, generationId, input.workspaceId, message.attempts).run()
-        if (!claim.meta.changes) {
+        let claimChanges: number
+        try {
+          const claim = await env.DB.prepare(`
+            UPDATE generations
+            SET status = 'processing', processing_attempt = ?, error_message = NULL
+            WHERE id = ?
+              AND (status = 'queued' OR (status = 'processing' AND processing_attempt < ?))
+          `).bind(message.attempts, generationId, message.attempts).run()
+          claimChanges = claim.meta.changes
+        } catch (error) {
+          if (message.attempts <= 3) {
+            try {
+              const state = await env.DB.prepare(`
+                SELECT status, processing_attempt AS processingAttempt
+                FROM generations
+                WHERE id = ?
+              `).bind(generationId).first<{ status: string; processingAttempt: number }>()
+              if (!state || state.status === 'completed' || state.status === 'failed' || state.status === 'rejected') {
+                message.ack()
+                continue
+              }
+              if (state.status === 'processing' && state.processingAttempt > message.attempts) {
+                message.ack()
+                continue
+              }
+            } catch {
+              console.error('generation-claim-reconciliation-failed')
+            }
+            message.retry({ delaySeconds: 60 })
+            continue
+          }
+          throw error
+        }
+        if (!claimChanges) {
           message.ack()
           continue
         }
-        const mode = generationMode(env)
-        if (mode === 'disabled') throw new Error('Campaign generation is disabled for this deployment.')
+        claimEstablished = true
+
+        const canonical = await env.DB.prepare(`
+          SELECT g.workspace_id AS workspaceId, g.input_json AS inputJson, w.access_status AS accessStatus
+          FROM generations g
+          LEFT JOIN workspaces w ON w.id = g.workspace_id
+          WHERE g.id = ? AND g.status = 'processing' AND g.processing_attempt = ?
+        `).bind(generationId, message.attempts).first<{ workspaceId: string; inputJson: string; accessStatus: string | null }>()
+        if (!canonical) throw new TerminalGenerationError('Canonical generation record is unavailable.')
+        workspaceId = canonical.workspaceId
+        if (canonical.accessStatus !== 'active') throw new TerminalGenerationError('Canonical workspace is inactive.')
+        if (typeof canonical.inputJson !== 'string' || canonical.inputJson.length > MAX_GENERATION_BODY_BYTES) {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+
+        let input: unknown
+        try {
+          input = JSON.parse(canonical.inputJson)
+        } catch {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+        if (!validInput(input) || input.workspaceId !== workspaceId) {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+        if (!validInput(queuedMessage?.input) || generationInputIdentity(queuedMessage.input) !== generationInputIdentity(input)) {
+          throw new TerminalGenerationError('Queue message identity does not match canonical input.')
+        }
+
         const workflow = workflowById(input.workflowId)
+        if (!workflow.ratios.includes(input.aspectRatio) || validateCompositionInput(input).length) {
+          throw new TerminalGenerationError('Canonical generation input is invalid.')
+        }
+        await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
+
+        const mode = generationMode(env)
+        if (mode === 'disabled') throw new TerminalGenerationError('Campaign generation is disabled for this deployment.')
         const source = await generationSourceAsset(env, input)
         let background: { base64: string; contentType: 'image/png' } | undefined
         if (mode === 'assisted' && env.OPENAI_API_KEY) {
+          await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
           const copy = await new OpenAICopyProvider(env.OPENAI_API_KEY).createCopy({ brand: input.brand, product: input.product, workflowTitle: workflow.title, aspectRatio: input.aspectRatio })
+          await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
           const generated = await new OpenAIImageProvider(env.OPENAI_API_KEY).generate({ prompt: `${copy.imagePrompt}\nBackground scene only. Do not render text, logos, prices, claims, or a replacement product.`, aspectRatio: input.aspectRatio, referenceImageUrls: [] })
           background = { base64: generated.imageBase64, contentType: 'image/png' }
         }
         const output = composeCampaignSvg({ input, source, background })
+        const outputBytes = textEncoder.encode(output)
+        const outputDigest = await sha256Bytes(outputBytes)
+        const outputSha256 = base64Url(new Uint8Array(outputDigest))
         const key = `workspaces/${input.workspaceId}/generations/${generationId}.svg`
-        await env.MEDIA_BUCKET.put(key, output, {
+        await requireCurrentGenerationExecution(env, generationId, message.attempts, input)
+        storedOutputKey = key
+        const stored = await env.MEDIA_BUCKET.put(key, outputBytes, {
           httpMetadata: { contentType: CAMPAIGN_OUTPUT_CONTENT_TYPE },
           customMetadata: {
             workflow: input.workflowId,
@@ -1305,32 +2921,74 @@ export default {
             approvedRevision: String(input.approvedRevision),
             compositionVersion: CAMPAIGN_COMPOSITION_VERSION,
             generationMode: mode
-          }
+          },
+          sha256: outputDigest
         })
-        storedOutputKey = key
-        await completeGenerationAndSettle(env, input.workspaceId, generationId, key, CAMPAIGN_OUTPUT_CONTENT_TYPE)
+        if (!stored || r2Sha256(stored) !== outputSha256) throw new TypeError('Output storage integrity verification failed.')
+        try {
+          await completeGenerationAndSettle(env, workspaceId, generationId, message.attempts, key, CAMPAIGN_OUTPUT_CONTENT_TYPE, outputSha256, mode)
+        } catch (error) {
+          try {
+            const reconciliation = await reconcileGenerationCompletion(env, workspaceId, generationId, input, key, outputSha256, mode)
+            if (reconciliation === 'committed') {
+              storedOutputKey = null
+              message.ack()
+              continue
+            }
+            if (reconciliation === 'conflict') {
+              storedOutputKey = null
+              console.error('generation-completion-reconciliation-conflict')
+            }
+          } catch {
+            storedOutputKey = null
+            console.error('generation-completion-reconciliation-failed')
+          }
+          throw error
+        }
         storedOutputKey = null
         message.ack()
       } catch (error) {
         if (storedOutputKey) await env.MEDIA_BUCKET.delete(storedOutputKey).catch(() => null)
+        if (!workspaceId) {
+          workspaceId = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM generations WHERE id = ?')
+            .bind(generationId)
+            .first<{ workspaceId: string }>()
+            .then((row) => row?.workspaceId ?? null)
+            .catch(() => null)
+        }
         const internalReason = error instanceof Error ? error.message : ''
-        const retryable = error instanceof TypeError || /request failed: (408|409|429|5\d\d)/i.test(internalReason)
+        const retryable = !(error instanceof TerminalGenerationError)
+          && (error instanceof TypeError || /request failed: (408|409|429|5\d\d)/i.test(internalReason))
         if (retryable && message.attempts <= 3) {
-          const reset = await env.DB.prepare(`
-            UPDATE generations SET status = 'queued', error_message = ?
-            WHERE id = ? AND workspace_id = ? AND status = 'processing'
-          `).bind(RETRYING_GENERATION_MESSAGE, generationId, input.workspaceId).run()
+          const reset = workspaceId
+            ? await env.DB.prepare(`
+              UPDATE generations SET status = 'queued', error_message = ?
+              WHERE id = ? AND workspace_id = ? AND status = 'processing' AND processing_attempt = ?
+            `).bind(RETRYING_GENERATION_MESSAGE, generationId, workspaceId, message.attempts).run()
+            : await env.DB.prepare(`
+              UPDATE generations SET status = 'queued', error_message = ?
+              WHERE id = ? AND status = 'processing' AND processing_attempt = ?
+            `).bind(RETRYING_GENERATION_MESSAGE, generationId, message.attempts).run()
           if (reset.meta.changes) {
             message.retry({ delaySeconds: 60 })
             continue
           }
         }
         try {
-          await failGenerationAndRelease(env, input.workspaceId, generationId, FAILED_GENERATION_MESSAGE)
+          if (!workspaceId) throw new Error('Generation workspace is unavailable.')
+          await failGenerationAndRelease(
+            env,
+            workspaceId,
+            generationId,
+            FAILED_GENERATION_MESSAGE,
+            claimEstablished ? message.attempts : null
+          )
           message.ack()
         } catch {
           console.error('generation-settlement-failed')
-          const reset = await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing'").bind(generationId, input.workspaceId).run()
+          const reset = workspaceId
+            ? await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND workspace_id = ? AND status = 'processing' AND processing_attempt = ?").bind(generationId, workspaceId, message.attempts).run()
+            : await env.DB.prepare("UPDATE generations SET status = 'queued' WHERE id = ? AND status = 'processing' AND processing_attempt = ?").bind(generationId, message.attempts).run()
           if (reset.meta.changes) message.retry({ delaySeconds: 60 })
           else message.ack()
         }

@@ -1,4 +1,4 @@
-import { ArrowLeft, Box, Image as ImageIcon, Layers3, PackageCheck, Trash2 } from 'lucide-react'
+import { ArrowLeft, Box, Image as ImageIcon, Layers3, PackageCheck, RefreshCw, Trash2 } from 'lucide-react'
 import type { NavigationSection } from './Icon'
 import type { BrandPack, GenerationResult, Product } from '../lib/types'
 
@@ -8,6 +8,11 @@ type Props = {
   product: Product
   results: GenerationResult[]
   imageUrl: string
+  deletingResultId?: string | null
+  isRefreshingResults?: boolean
+  refreshDisabled?: boolean
+  notice?: string
+  onRefreshResults?: () => void
   onBack: () => void
   onDeleteResult: (result: GenerationResult) => void
 }
@@ -19,9 +24,23 @@ const sectionCopy = {
   assets: { icon: ImageIcon, title: '素材庫', description: '集中查看各個比例的私人生成素材。' }
 } as const
 
-export function CollectionView({ section, brand, product, results, imageUrl, onBack, onDeleteResult }: Props) {
+export function CollectionView({
+  section,
+  brand,
+  product,
+  results,
+  imageUrl,
+  deletingResultId = null,
+  isRefreshingResults = false,
+  refreshDisabled = false,
+  notice = '',
+  onRefreshResults,
+  onBack,
+  onDeleteResult
+}: Props) {
   const meta = sectionCopy[section]
   const Icon = meta.icon
+  const resultCollection = section === 'campaigns' || section === 'assets'
   const campaignPacks = Array.from(results.reduce((groups, item) => {
     const key = item.campaignPackId || `legacy-${item.id}`
     const group = groups.get(key) || []
@@ -29,17 +48,23 @@ export function CollectionView({ section, brand, product, results, imageUrl, onB
     groups.set(key, group)
     return groups
   }, new Map<string, GenerationResult[]>()).entries())
-  return <section className="collection-view">
-    <div className="collection-heading"><div><span><Icon size={21} /></span><div><h1>{meta.title}</h1><p>{meta.description}</p></div></div><button className="outline-button" type="button" onClick={onBack}><ArrowLeft size={16} />返回工作台</button></div>
+  return <section className="collection-view" aria-busy={resultCollection ? isRefreshingResults : undefined}>
+    <div className="collection-heading"><div className="collection-heading-main"><span><Icon size={21} /></span><div><h1>{meta.title}</h1><p>{meta.description}</p></div></div><div className="collection-actions">{resultCollection && onRefreshResults ? <button className="outline-button" type="button" onClick={onRefreshResults} disabled={isRefreshingResults || refreshDisabled} aria-label={isRefreshingResults ? '正在重新載入私人輸出 · Reloading private outputs' : '重新載入私人輸出 · Refresh private outputs'}><RefreshCw className={isRefreshingResults ? 'spin' : undefined} size={16} />{isRefreshingResults ? '重新載入中…' : '重新載入'}</button> : null}<button className="outline-button" type="button" onClick={onBack}><ArrowLeft size={16} />返回工作台</button></div></div>
+    {notice ? <p className="workspace-notice collection-notice" role="alert">{notice}</p> : null}
     {section === 'campaigns' ? <div className="data-panel"><div className="data-head"><strong>最近素材包</strong><span>{campaignPacks.length} 套</span></div>{campaignPacks.length ? campaignPacks.map(([packId, items]) => {
       const failed = items.some((item) => item.status === 'failed')
       const completed = items.every((item) => item.status === 'completed')
-      const status = failed ? 'failed' : completed ? 'completed' : 'processing'
+      const rejected = completed && items.some((item) => item.reviewStatus === 'rejected')
+      const approved = completed && items.every((item) => item.reviewStatus === 'approved')
+      const status = failed ? 'failed' : rejected ? 'rejected' : approved ? 'completed' : completed ? 'review' : 'processing'
       const date = items[0]?.createdAt ? new Date(items[0].createdAt).toLocaleString('zh-HK') : '本機預覽'
-      return <div className="data-row" key={packId}><span className="row-icon"><PackageCheck size={17} /></span><div><strong>Campaign Pack · {items.length} 個輸出</strong><small>{items.map((item) => item.aspectRatio).join(' · ')} · {date}</small></div><span className={`status-text ${status}`}>{status === 'completed' ? '已完成' : status === 'failed' ? '部分失敗' : '處理中'}</span></div>
+      return <div className="data-row" key={packId}><span className="row-icon"><PackageCheck size={17} /></span><div><strong>Campaign Pack · {items.length} 個輸出</strong><small>{items.map((item) => item.aspectRatio).join(' · ')} · {date}</small></div><span className={`status-text ${status}`}>{status === 'completed' ? '已核准' : status === 'review' ? '待審核' : status === 'rejected' ? '需要修改' : status === 'failed' ? '部分失敗' : '處理中'}</span></div>
     }) : <div className="empty-library"><PackageCheck size={24} /><strong>尚未建立 Campaign Pack</strong><p>先在工作台由 Agent 規劃第一套素材。</p></div>}</div> : null}
     {section === 'products' ? product.name && imageUrl ? <div className="library-grid"><article className="library-card media-card"><img src={imageUrl} alt={product.name} /><div><span>{product.category}</span><h2>{product.name}</h2><p>{product.benefits.filter(Boolean).join(' · ')}</p><strong>{product.price}</strong></div></article><article className="library-note"><h2>私人來源圖</h2><p>商品原圖只透過授權路徑顯示；Agent 與生成流程只引用工作區內的 asset ID。</p></article></div> : <div className="empty-library"><Box size={24} /><strong>尚未保存商品資料</strong><p>在工作台加入商品原圖並由 Agent 建立計劃後，資料會在這裡顯示。</p></div> : null}
     {section === 'brands' ? brand.name ? <div className="library-grid"><article className="library-card"><span>主要品牌</span><h2>{brand.name}</h2><dl><div><dt>品牌語氣</dt><dd>{brand.tone}</dd></div><div><dt>常用 CTA</dt><dd>{brand.cta}</dd></div><div><dt>限制字詞</dt><dd>{brand.forbiddenWords || '未設定'}</dd></div></dl><div className="color-row">{brand.colors.map((color) => <i style={{ background: color }} title={color} key={color} />)}</div></article><article className="library-note"><h2>確定性文字</h2><p>價格、優惠、CTA 及必要聲明保持為可審核資料，不交由圖片模型自由生成。</p></article></div> : <div className="empty-library"><Layers3 size={24} /><strong>尚未保存品牌資料</strong><p>在工作台完成品牌資料並由 Agent 建立計劃後，資料會在這裡顯示。</p></div> : null}
-    {section === 'assets' ? <div className="asset-library">{results.filter((item) => item.imageUrl).length ? results.filter((item) => item.imageUrl).map((item) => <article key={item.id}><img src={item.imageUrl!} alt={item.title} /><div><strong>{item.aspectRatio}</strong><span>{item.title}</span><button type="button" onClick={() => onDeleteResult(item)} aria-label={`刪除 ${item.title}`}><Trash2 size={15} />刪除</button></div></article>) : <div className="empty-library"><ImageIcon size={24} /><strong>尚未有已生成素材</strong><p>版面預覽不會當作正式素材保存。</p></div>}</div> : null}
+    {section === 'assets' ? <div className="asset-library">{results.filter((item) => item.imageUrl).length ? results.filter((item) => item.imageUrl).map((item) => {
+      const deleting = deletingResultId === item.id
+      return <article key={item.id} aria-busy={deleting}><img src={item.imageUrl!} alt={item.title} /><div><strong>{item.aspectRatio}</strong><span>{item.title}</span><button type="button" onClick={() => onDeleteResult(item)} aria-label={deleting ? `正在刪除 ${item.title} · Deleting ${item.title}` : `刪除 ${item.title}`} disabled={deletingResultId !== null}><Trash2 size={15} />{deleting ? <>刪除中…<span className="visually-hidden"> Deleting…</span></> : '刪除'}</button></div></article>
+    }) : <div className="empty-library"><ImageIcon size={24} /><strong>尚未有已生成素材</strong><p>版面預覽不會當作正式素材保存。</p></div>}</div> : null}
   </section>
 }

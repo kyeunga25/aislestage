@@ -4,16 +4,17 @@ import type { CampaignAgentState } from '../lib/types'
 type Props = {
   state: CampaignAgentState
   busy: boolean
+  generationBusy: boolean
   generationAvailable: boolean
   onPlan: () => void
   onApprove: () => void
   onGenerate: () => void
 }
 
-export function CampaignAgentPanel({ state, busy, generationAvailable, onPlan, onApprove, onGenerate }: Props) {
+export function CampaignAgentPanel({ state, busy, generationBusy, generationAvailable, onPlan, onApprove, onGenerate }: Props) {
   const canApprove = state.stage === 'awaiting-approval'
 
-  return <section className="agent-panel" aria-labelledby="campaign-agent-title">
+  return <section className="agent-panel" aria-labelledby="campaign-agent-title" aria-busy={busy || generationBusy}>
     <div className="agent-heading">
       <span className="agent-mark"><Bot size={19} /></span>
       <div><h2 id="campaign-agent-title">Campaign Agent</h2><p>先核對資料，再等待你批准</p></div>
@@ -41,13 +42,13 @@ export function CampaignAgentPanel({ state, busy, generationAvailable, onPlan, o
     </div> : null}
 
     <div className="agent-actions">
-      {state.stage === 'idle' || state.stage === 'needs-input' ? <button className="primary-button wide" type="button" onClick={onPlan} disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} />正在檢查…</> : <><Bot size={17} />{state.stage === 'needs-input' ? '重新檢查資料' : '由 Agent 建立計劃'}</>}</button> : null}
+      {state.stage === 'idle' || state.stage === 'needs-input' ? <button className="primary-button wide" type="button" onClick={onPlan} disabled={busy || generationBusy}>{busy ? <><LoaderCircle className="spin" size={17} />正在檢查…</> : <><Bot size={17} />{state.stage === 'needs-input' ? '重新檢查資料' : '由 Agent 建立計劃'}</>}</button> : null}
       {canApprove ? <>
-        <button className="primary-button wide" type="button" onClick={onApprove} disabled={busy}>{busy ? <><LoaderCircle className="spin" size={17} />正在批准…</> : <><ShieldCheck size={17} />批准輸出計劃<ArrowRight size={17} /></>}</button>
+        <button className="primary-button wide" type="button" onClick={onApprove} disabled={busy || generationBusy}>{busy ? <><LoaderCircle className="spin" size={17} />正在批准…</> : <><ShieldCheck size={17} />批准輸出計劃<ArrowRight size={17} /></>}</button>
         <p className="edit-guidance">如要調整，直接修改左側資料後重新規劃。</p>
       </> : null}
-      {state.stage === 'approved' ? <button className="primary-button wide" type="button" onClick={onGenerate} disabled={busy || !generationAvailable}>{generationAvailable ? <><Bot size={17} />建立 Campaign Pack<ArrowRight size={17} /></> : <><CheckCircle2 size={17} />計劃已批准，生成未開放</>}</button> : null}
-      {state.stage !== 'idle' ? <button className="agent-refresh" type="button" onClick={onPlan} disabled={busy}><RefreshCw size={14} />依目前資料重新規劃</button> : null}
+      {state.stage === 'approved' ? <button className="primary-button wide" type="button" onClick={onGenerate} disabled={busy || generationBusy || !generationAvailable}>{generationBusy ? <><LoaderCircle className="spin" size={17} />正在建立 Campaign Pack… <span className="visually-hidden">Creating Campaign Pack…</span></> : generationAvailable ? <><Bot size={17} />建立 Campaign Pack<ArrowRight size={17} /></> : <><CheckCircle2 size={17} />計劃已批准，生成未開放</>}</button> : null}
+      {state.stage !== 'idle' ? <button className="agent-refresh" type="button" onClick={onPlan} disabled={busy || generationBusy}><RefreshCw size={14} />依目前資料重新規劃</button> : null}
     </div>
 
     <p className="approval-note"><ShieldCheck size={13} />只有你批准後才會建立輸出</p>
