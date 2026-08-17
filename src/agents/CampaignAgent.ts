@@ -1,4 +1,4 @@
-import { Agent, callable, type Connection } from 'agents'
+import { Agent, type Connection } from 'agents'
 import { buildCampaignPlan, campaignBriefLimits, initialCampaignAgentState, sanitizeCampaignBrief } from '../lib/campaign-agent'
 import { OpenAICampaignPlanningProvider } from '../lib/providers'
 import { agentMode, type RuntimePolicyEnv } from '../lib/runtime-policy'
@@ -25,12 +25,10 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
     if (!validState(nextState)) throw new Error('Invalid Campaign Agent state.')
   }
 
-  @callable()
   getPlan() {
     return this.state
   }
 
-  @callable()
   async planBrief(input: unknown) {
     const brief = sanitizeCampaignBrief(input)
     const revision = this.state.revision + 1
@@ -52,7 +50,6 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
     return next
   }
 
-  @callable()
   approvePlan(revision: number) {
     if (revision !== this.state.revision) return { ok: false as const, error: 'The campaign plan changed. Review the latest revision before approving.' }
     if (this.state.stage === 'approved') return { ok: true as const, state: this.state, replayed: true as const }
@@ -67,14 +64,12 @@ export class CampaignAgent extends Agent<Cloudflare.Env, CampaignAgentState> {
     return { ok: true as const, state: next, replayed: false as const }
   }
 
-  @callable()
   resetPlan() {
     const next = initialCampaignAgentState()
     this.setState(next)
     return next
   }
 
-  @callable()
   resetPlanForAsset(assetId: string) {
     if (typeof assetId !== 'string' || !assetId || assetId.length > campaignBriefLimits.assetId || this.state.brief?.assetId !== assetId) {
       return this.state

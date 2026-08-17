@@ -10,6 +10,13 @@ AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns a
 
 目前預設以確定性 SVG 合成保留商品原圖及準確文字。Campaign Agent 只檢查資料、規劃固定輸出並等待人工批准，不會自行新增產品宣稱、發佈廣告或跳過批准。
 
+Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；repository 不把
+這些方法標記成可由外部 WebSocket client 呼叫的 Agent SDK callable methods。
+
+| 可用性 / Availability | 成熟度 / Maturity | 證據 / Evidence |
+| --- | --- | --- |
+| 邀請制 closed beta；沒有自助註冊 / Invite-only; no self-service signup | Source `v0.6.0`; latest GitHub release `v0.5.1` | [項目入口 / Project portal](https://k-y.cc/#projects) · [產品規格 / Product spec](docs/PRODUCT_SPEC.md) · [安全政策 / Security](SECURITY.md) · [版權 / Copyright](COPYRIGHT.md) |
+
 ## 技術棧 / Technology stack
 
 | 層面 | 使用技術 | 用途 |
@@ -126,6 +133,7 @@ Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 bin
 - [Provider-neutral 付款邊界](docs/PAYMENT_BOUNDARY.md)
 - [公開發佈外流閘門](docs/PUBLIC_RELEASE_GATE.md)
 - [安全與私隱](SECURITY.md)
+- [版權與使用權 / Copyright](COPYRIGHT.md)
 
 所有公開測試、截圖、commit、PR 及文件只可使用合成資料。執行 `npm run release:check` 只是其中一道閘門；發佈前仍需人工檢查 staged diff、commit／PR 文字及擬上傳 artifact。本次文件核對不代表任何實際部署狀態。
 

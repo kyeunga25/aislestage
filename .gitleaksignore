@@ -1,0 +1,9 @@
+# Exact historical false positives only. These fingerprints cover one synthetic
+# UUID idempotency key and explicitly named DUMMY password fixtures. New findings
+# and changed lines remain subject to scanning.
+15a4118df732db2444b13243c12648ad41a9d1bb:tests/campaign-pack-client.test.ts:generic-api-key:17
+ad7a5e0867cea0c8db07c1006911b0c302d96589:src/worker.ts:generic-api-key:41
+99a26d7287786d5c303b08d32665e08279fca6b3:src/worker.ts:generic-api-key:28
+99a26d7287786d5c303b08d32665e08279fca6b3:src/worker.ts:generic-api-key:29
+f8279d6872b89d6fe984a879d014c172bd8e5ee1:src/worker.ts:generic-api-key:32
+f8279d6872b89d6fe984a879d014c172bd8e5ee1:src/worker.ts:generic-api-key:33
