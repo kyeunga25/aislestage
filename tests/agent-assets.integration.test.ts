@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers'
+import { getAgentByName } from 'agents'
 import { describe, expect, it } from 'vitest'
 import { dispatch, registerAccount, validPngBytes, validWebpBytes } from './helpers'
 
@@ -931,6 +932,14 @@ describe('private product assets', () => {
 })
 
 describe('workspace Campaign Agent', () => {
+  it('does not expose internal methods as WebSocket callable RPC', async () => {
+    const owner = await registerAccount('Internal Agent RPC')
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, owner.currentWorkspace.id)
+    const callableMethods = await agent.getCallableMethods()
+
+    expect([...callableMethods.keys()]).toEqual([])
+  })
+
   it('maps Agent binding acquisition failures to a bounded unavailable response', async () => {
     const owner = await registerAccount('Unavailable Agent Binding')
     const unavailableEnv = {
