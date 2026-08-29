@@ -33,6 +33,7 @@ type AccountType = 'standard' | 'beta' | 'test'
 type WorkspaceRole = 'owner' | 'admin' | 'member'
 type ReviewStatus = 'draft' | 'approved' | 'rejected'
 type CompletedGenerationMode = 'deterministic' | 'assisted'
+type WorkspaceActivityEventType = 'product_asset_uploaded' | 'product_asset_deleted' | 'campaign_pack_created' | 'generation_approved' | 'generation_rejected' | 'generation_deleted'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
 type Workspace = { id: string; name: string; role: WorkspaceRole; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
@@ -2166,9 +2167,11 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
         WHERE workspace_id = ? AND available >= ? AND reserved + ? <= ?
       `).bind(outputCount, outputCount, workspace.id, outputCount, outputCount, activeLimit),
       env.DB.prepare(`
-        INSERT INTO campaign_packs (id, workspace_id, idempotency_key, approved_revision)
-        SELECT ?, ?, ?, ? WHERE changes() = 1
-      `).bind(campaignPackId, workspace.id, parsedPack.request.idempotencyKey, parsedPack.request.approvedRevision)
+        INSERT INTO campaign_packs (
+          id, workspace_id, idempotency_key, approved_revision, created_by_user_id
+        )
+        SELECT ?, ?, ?, ?, ? WHERE changes() = 1
+      `).bind(campaignPackId, workspace.id, parsedPack.request.idempotencyKey, parsedPack.request.approvedRevision, session.user.id)
     ]
     for (const item of queued) {
       statements.push(env.DB.prepare(`
@@ -2403,6 +2406,41 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
   } catch {
     console.error('generation-list-read-failed')
     return generationListUnavailable()
+  }
+}
+
+function workspaceActivityUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區活動暫時無法讀取。 Workspace activity is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function listWorkspaceActivity(env: Env, session: SessionContext) {
+  if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
+    return json({
+      error: '只有工作區 owner 或 admin 可以查看活動記錄。 Only workspace owners or admins can view activity.'
+    }, { status: 403 })
+  }
+  try {
+    const result = await env.DB.prepare(`
+      SELECT e.id, e.event_type AS type, u.name AS actorName,
+        strftime('%Y-%m-%dT%H:%M:%SZ', e.created_at) AS createdAt
+      FROM workspace_activity_events e
+      LEFT JOIN users u ON u.id = e.actor_user_id
+      WHERE e.workspace_id = ?
+      ORDER BY e.created_at DESC, e.id DESC
+      LIMIT 50
+    `).bind(session.currentWorkspace.id).all<{
+      id: string
+      type: WorkspaceActivityEventType
+      actorName: string | null
+      createdAt: string
+    }>()
+    return json({ activity: result.results })
+  } catch {
+    console.error('workspace-activity-read-failed')
+    return workspaceActivityUnavailable()
   }
 }
 
@@ -2736,6 +2774,15 @@ export default {
         console.error('workspace-list-read-failed')
         return workspaceListUnavailable()
       }
+    }
+    if (url.pathname === '/api/workspace-activity') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'GET') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
+      }
+      return listWorkspaceActivity(env, session)
     }
     if (url.pathname === '/api/assets/product' && request.method === 'POST') {
       const session = await requireSession(request, env)

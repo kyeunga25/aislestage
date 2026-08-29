@@ -93,6 +93,21 @@ export type WorkspaceSummary = {
   reservedOutputs: number
 }
 
+export type WorkspaceActivityEventType =
+  | 'product_asset_uploaded'
+  | 'product_asset_deleted'
+  | 'campaign_pack_created'
+  | 'generation_approved'
+  | 'generation_rejected'
+  | 'generation_deleted'
+
+export type WorkspaceActivityEvent = {
+  id: string
+  type: WorkspaceActivityEventType
+  actorName: string | null
+  createdAt: string
+}
+
 export type SessionPayload = {
   authenticated: boolean
   user?: AuthUser

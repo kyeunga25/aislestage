@@ -53,16 +53,18 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；
 - 所有受保護操作都採 server-side workspace scope；正式輸出審核另要求 `owner` 或 `admin`；
+- 工作區活動記錄只供目前 workspace 的 `owner`／`admin` 讀取，`member` 固定拒絕。每次最多返回最近 50 項，只包含安全事件 ID、操作類型、UTC 時間及可選的已知操作者名稱；不返回 subject ID、商品／輸出內容、原始檔名、Campaign Brief 或底層錯誤；
 - 已授權的 `/api/workspaces` 清單查詢不可讀時返回雙語 no-store `503 unavailable`，保留 session 並拒絕輸出不完整 workspace 資料；
 - 私人 `/api/generations` 先重核 current workspace 與 active membership，再讀最多 20 個輸出；scope 或清單不可讀時返回雙語 no-store `503 unavailable`，不輸出部分／空白假結果，跨 workspace 維持 `404`；
 - 工作區前端只有收到最多 20 項、ID 唯一、完整且通過 runtime schema 的 `generations` array 才替換目前輸出；workflow、比例、狀態、review／provenance revision 及同網域 preview／download route 必須一致。清單 GET 與 Campaign Pack success response 共用此契約；網絡錯誤、`503`、外部 URL 或 malformed payload 均保留登入狀態與現有結果並顯示雙語提示，只有明確空 array 才顯示真正空清單；
+- 活動記錄不屬於初始 bootstrap；只有 owner／admin 進入或重新整理「活動記錄」時才發出一條 15 秒、64 KiB 有界 GET。前端只接受 exact `200 application/json`、exact `{ activity }` envelope、合法事件類型、唯一 ID 及嚴格 UTC 時間；故障或 malformed 回應保留上一次可信快照並顯示固定雙語提示；
 - 新邀請 workspace 取得六個技術性可用輸出，足以建立兩套 Campaign Pack。
 
 詳情見 [`BETA_ACCESS.md`](BETA_ACCESS.md)。
 
 ## 4. Dashboard 資訊架構
 
-- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫；
+- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫；owner／admin 另可進入活動記錄；
 - 頂部：可用輸出數、目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
@@ -169,6 +171,7 @@ Session、health、generation list 及 Agent state GET 都有 15 秒 browser dea
 Static Assets -> React SPA
 Worker API -> D1 + private R2 + CampaignAgent Durable Object
 Campaign Pack -> Queue batch -> deterministic compositor -> private R2
+D1 mutation triggers -> privacy-minimized workspace activity metadata
 Cron Trigger -> expired session, auth-attempt and invite-retention cleanup
 ```
 
@@ -187,6 +190,7 @@ Cron Trigger -> expired session, auth-attempt and invite-retention cleanup
 - 完成輸出預設為草稿，只有 owner／admin 核准後才返回 download URL；重送及相反決定併發不會覆蓋首個審核結果；
 - D1 與 R2 的 output SHA-256／format／provenance metadata 不一致時，不可核准，preview 與 download 亦不返回私人 object body；
 - D1 與 R2 的來源圖 SHA-256／大小／MIME／provenance metadata 不一致時，不可預覽或批准，Queue 亦不可開始 provider work；
+- owner／admin 可讀的活動快照只限目前 workspace 及最小必要 metadata；member、跨 workspace、內容欄位及原始檔名均不可取得；
 - 匿名及跨 workspace 不可讀取私人資料；
 - deterministic mode 不接觸 provider；
 - desktop、mobile、keyboard focus、無水平溢出及破圖檢查通過；

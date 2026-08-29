@@ -38,6 +38,7 @@ Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；r
 - Session、帳號狀態及 workspace 授權；
 - 公開雙語產品主頁與獨立 `/app` 工作區；
 - Cloudflare Access JWT 驗證及受控 workspace membership；
+- owner／admin 專用的工作區活動記錄；只顯示操作類型、時間及已知操作者，不輸出圖片、原始檔名或 Campaign Brief；
 - 私人 R2 商品圖上傳、4 MB／8192 px／32 MP、格式／有界結構檢查及授權預覽；
 - Workspace-scoped Campaign Agent 與人工批准 revision；
 - 原子、具冪等鍵的三比例 Campaign Pack 建立；

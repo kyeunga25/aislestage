@@ -41,6 +41,9 @@
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
+- [x] 商品圖上載／刪除、Campaign Pack 建立、輸出批准／拒絕／刪除以 D1 trigger 與核心 mutation 原子記錄最小必要活動 metadata；
+- [x] owner／admin 專用活動 API 只返回目前 workspace 最近 50 項操作類型、UTC 時間及可選操作者名稱；member、跨 workspace、subject ID、原始檔名、brief／input JSON 及底層錯誤均不可取得；
+- [x] 活動 view 採 on-demand 15 秒／64 KiB strict loader，故障保留可信快照；desktop 與 390 px 導覽、keyboard-accessible name、無水平溢出及無 console error 已完成 browser QA；
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
 - [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
 - [x] Pack 建立後的 poll 綁定 exact 三個 generation IDs 與 16 個固定 interval；成功讀取重設 failure count，最多容許兩次連續暫時 GET 故障並保留最後可信快照，第三次才以雙語 queued-but-unavailable 狀態解除鎖，不誤報建立失敗；

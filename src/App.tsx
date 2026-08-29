@@ -11,6 +11,7 @@ import type { NavigationSection } from './components/Icon'
 import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
+import { WorkspaceActivityView } from './components/WorkspaceActivityView'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
 import { submitCampaignAgentAction } from './lib/campaign-agent-client'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
@@ -29,8 +30,9 @@ import {
 } from './lib/product-asset-client'
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
-import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, WorkspaceActivityEvent } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
+import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 
 const demoSession: AuthedSession = {
@@ -41,6 +43,10 @@ const demoSession: AuthedSession = {
 const restrictedPlatformStatus: PlatformStatus = { status: 'ok', service: 'campaign-asset-worker', releaseMode: 'restricted', authMode: 'access', registrationMode: 'closed', registrationOpen: false, generationEnabled: false, generationMode: 'disabled', agentMode: 'deterministic' }
 const localPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', registrationMode: 'open', registrationOpen: true, generationEnabled: true, generationMode: 'deterministic' }
 const demoPlatformStatus: PlatformStatus = { ...restrictedPlatformStatus, authMode: 'password', generationEnabled: true, generationMode: 'deterministic' }
+const demoActivity: WorkspaceActivityEvent[] = [
+  { id: 'demo-activity-pack', type: 'campaign_pack_created', actorName: 'Demo User', createdAt: '2026-08-30T04:00:00Z' },
+  { id: 'demo-activity-review', type: 'generation_approved', actorName: 'Demo User', createdAt: '2026-08-30T04:05:00Z' }
+]
 
 function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const previewMode = import.meta.env.DEV || demoMode
@@ -65,6 +71,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [reviewingDecision, setReviewingDecision] = useState<'approve' | 'reject' | null>(null)
   const [isRefreshingResults, setIsRefreshingResults] = useState(false)
   const [serverResults, setServerResults] = useState<GenerationResult[]>([])
+  const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivityEvent[]>(demoMode ? demoActivity : [])
+  const [activityNotice, setActivityNotice] = useState('')
+  const [isRefreshingActivity, setIsRefreshingActivity] = useState(false)
   const [notice, setNotice] = useState('')
   const generationRequestKey = useRef<string | null>(null)
   const productImageDeleteLock = useRef(false)
@@ -72,6 +81,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationReviewLock = useRef(false)
   const generationRefreshLock = useRef(false)
   const generationRefreshEpoch = useRef(0)
+  const activityRefreshLock = useRef(false)
+  const activityRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
   const campaignPackLock = useRef(false)
   const campaignAgentLock = useRef(false)
@@ -160,11 +171,34 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshWorkspaceActivity() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin')
+      || activityRefreshLock.current) return
+    activityRefreshLock.current = true
+    const refreshEpoch = ++activityRefreshEpoch.current
+    setIsRefreshingActivity(true)
+    setActivityNotice('')
+    try {
+      const snapshot = await loadWorkspaceActivitySnapshot()
+      if (refreshEpoch !== activityRefreshEpoch.current) return
+      if (snapshot.activity !== null) setWorkspaceActivity(snapshot.activity)
+      if (snapshot.error) setActivityNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === activityRefreshEpoch.current) {
+        activityRefreshLock.current = false
+        setIsRefreshingActivity(false)
+      }
+    }
+  }
+
   function navigateToSection(nextSection: NavigationSection) {
     setActiveSection(nextSection)
     if (nextSection === 'campaigns' || nextSection === 'assets') {
       void refreshGenerationResults()
     }
+    if (nextSection === 'activity') void refreshWorkspaceActivity()
   }
 
   useEffect(() => {
@@ -524,12 +558,17 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
     workspaceHydrationEpoch.current += 1
     generationRefreshEpoch.current += 1
+    activityRefreshEpoch.current += 1
     generationRefreshLock.current = false
+    activityRefreshLock.current = false
     setIsRefreshingResults(false)
+    setIsRefreshingActivity(false)
     setSession(null)
     setReviewingId(null)
     setReviewingDecision(null)
     setServerResults([])
+    setWorkspaceActivity([])
+    setActivityNotice('')
     setAgentState(initialCampaignAgentState())
     setBrand(emptyBrand)
     setProduct(emptyProduct)
@@ -573,7 +612,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             <div><CircleHelp size={20} /><div><h2 id="support-title">使用指引</h2><p>先填妥繁中與英文商業資料，再上傳有權使用的商品原圖。Agent 只會建立計劃；你批准後，系統才會一次建立三個私人輸出。</p></div></div>
             <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>建立私人草稿，逐一核准後才下載。</li></ol>
           </section>
-        </> : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} deletingResultId={deletingGenerationId} isRefreshingResults={isRefreshingResults} refreshDisabled={deletingGenerationId !== null || reviewingId !== null} notice={activeSection === 'campaigns' || activeSection === 'assets' ? notice : ''} onRefreshResults={session.user.id === 'demo-user' ? undefined : () => void refreshGenerationResults()} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
+        </> : activeSection === 'activity'
+          ? <WorkspaceActivityView activity={workspaceActivity} isRefreshing={isRefreshingActivity} notice={activityNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceActivity()} onBack={() => setActiveSection('workspace')} />
+          : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} deletingResultId={deletingGenerationId} isRefreshingResults={isRefreshingResults} refreshDisabled={deletingGenerationId !== null || reviewingId !== null} notice={activeSection === 'campaigns' || activeSection === 'assets' ? notice : ''} onRefreshResults={session.user.id === 'demo-user' ? undefined : () => void refreshGenerationResults()} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
       </main>
     </div>
   </div>
