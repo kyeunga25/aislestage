@@ -1021,6 +1021,47 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
   `).bind(userId, workspaceId).first<Workspace>()
 }
 
+type ProductAssetListRow = {
+  id: string
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+  sizeBytes: number
+  createdAt: string
+}
+
+function productAssetListUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人商品來源圖暫時無法讀取。 Private product sources are temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function listProductAssets(env: Env, session: SessionContext) {
+  try {
+    const result = await env.DB.prepare(`
+      SELECT a.id, a.content_type AS contentType, a.size_bytes AS sizeBytes,
+        strftime('%Y-%m-%dT%H:%M:%SZ', a.created_at) AS createdAt
+      FROM media_assets a
+      WHERE a.workspace_id = ? AND a.kind = 'product-source'
+        AND a.content_sha256 IS NOT NULL AND a.size_bytes <= ?
+      ORDER BY a.created_at DESC, a.id DESC
+      LIMIT 20
+    `).bind(session.currentWorkspace.id, MAX_PRODUCT_IMAGE_BYTES).all<ProductAssetListRow>()
+    return json({
+      assets: result.results.map((asset) => ({
+        id: asset.id,
+        name: `product-image.${extensionForContentType(asset.contentType)}`,
+        contentType: asset.contentType,
+        sizeBytes: asset.sizeBytes,
+        previewUrl: `/api/assets/${asset.id}`,
+        createdAt: asset.createdAt
+      }))
+    })
+  } catch {
+    console.error('product-asset-list-read-failed')
+    return productAssetListUnavailable()
+  }
+}
+
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
   if (!hasMediaType(request, 'multipart/form-data')) return unsupportedMediaType(request, 'multipart/form-data')
   const assetId = request.headers.get('idempotency-key')?.trim().toLowerCase() || ''
@@ -2784,10 +2825,13 @@ export default {
       }
       return listWorkspaceActivity(env, session)
     }
-    if (url.pathname === '/api/assets/product' && request.method === 'POST') {
+    if (url.pathname === '/api/assets/product') {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
-      return uploadProductAsset(request, env, session)
+      if (request.method === 'GET') return listProductAssets(env, session)
+      if (request.method === 'POST') return uploadProductAsset(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
     }
     const assetMatch = url.pathname.match(/^\/api\/assets\/([^/]+)$/)
     if (assetMatch && request.method === 'GET') {

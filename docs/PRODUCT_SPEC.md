@@ -116,6 +116,8 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 - browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；PNG 必須具有效 critical chunk 次序、CRC、IDAT、IEND、indexed-color palette 容量，以及按 color type 對應長度、palette、唯一性與次序都合法的 `tRNS`；private PNG chunk 及未識別 WebP chunk 會被視為不可保留的自訂 payload；WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
 - browser 建立 multipart request 時已按 MIME 換成 generic 檔名，不傳送本機原始檔名；成功後只接受精確的 `201 application/json` asset envelope，UUID、canonical 名稱、MIME、位元組數及同源 preview path 必須與本次檔案一致，否則 fail closed，亦不向 workspace 顯示 server error detail；
+- 私人來源圖庫 GET 只返回目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP；每項只包含 UUID、canonical generic 名稱、MIME、大小、同源 preview route 及 UTC 建立時間，不返回原始檔名、workspace／user、object identity 或 checksum。Browser 只在進入或重新整理商品庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ assets }` envelope；malformed 或暫時故障保留上一次可信清單；
+- 使用者可從私人來源圖庫把單一已保存圖片選回工作台；這個 client 動作會清除本機 Campaign Pack idempotency key、令現有 Agent 批准失效並要求重新規劃。圖片實際 preview、Agent plan 及 Queue 仍各自重新核對 workspace 與 D1／R2 完整性；
 - source object 存於 workspace-scoped private R2 key；
 - 私人商品圖讀取先核對 workspace-scoped D1 metadata，再讀取 R2 object；成功 body 使用 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin`，不能由同一 browser 在登出／換帳號後沿用，亦不可作為跨來源子資源嵌入。不存在或跨 workspace 維持 `404`，任一儲存層不可讀則回雙語 no-store `503 unavailable`，不輸出 object key、workspace ID 或底層錯誤；
 - Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；
@@ -190,6 +192,7 @@ Cron Trigger -> expired session, auth-attempt and invite-retention cleanup
 - 完成輸出預設為草稿，只有 owner／admin 核准後才返回 download URL；重送及相反決定併發不會覆蓋首個審核結果；
 - D1 與 R2 的 output SHA-256／format／provenance metadata 不一致時，不可核准，preview 與 download 亦不返回私人 object body；
 - D1 與 R2 的來源圖 SHA-256／大小／MIME／provenance metadata 不一致時，不可預覽或批准，Queue 亦不可開始 provider work；
+- 私人來源圖庫只列目前 workspace 的有界安全 metadata；選用其他來源圖後不可沿用舊 Agent 批准，跨 workspace、原始檔名及 R2 identity 不可取得；
 - owner／admin 可讀的活動快照只限目前 workspace 及最小必要 metadata；member、跨 workspace、內容欄位及原始檔名均不可取得；
 - 匿名及跨 workspace 不可讀取私人資料；
 - deterministic mode 不接觸 provider；

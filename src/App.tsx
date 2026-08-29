@@ -28,9 +28,10 @@ import {
   productAssetUploadUnavailableMessage,
   uploadProductAsset
 } from './lib/product-asset-client'
+import { loadProductAssetListSnapshot } from './lib/product-asset-list-loader'
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
-import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, WorkspaceActivityEvent } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAssetListItem, WorkspaceActivityEvent } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
@@ -47,6 +48,14 @@ const demoActivity: WorkspaceActivityEvent[] = [
   { id: 'demo-activity-pack', type: 'campaign_pack_created', actorName: 'Demo User', createdAt: '2026-08-30T04:00:00Z' },
   { id: 'demo-activity-review', type: 'generation_approved', actorName: 'Demo User', createdAt: '2026-08-30T04:05:00Z' }
 ]
+const demoProductAssets: ProductAssetListItem[] = [{
+  id: '123e4567-e89b-42d3-a456-426614174100',
+  name: 'product-image.png',
+  contentType: 'image/png',
+  sizeBytes: 1_000_640,
+  previewUrl: demoSpeaker,
+  createdAt: '2026-08-30T03:55:00Z'
+}]
 
 function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const previewMode = import.meta.env.DEV || demoMode
@@ -71,6 +80,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [reviewingDecision, setReviewingDecision] = useState<'approve' | 'reject' | null>(null)
   const [isRefreshingResults, setIsRefreshingResults] = useState(false)
   const [serverResults, setServerResults] = useState<GenerationResult[]>([])
+  const [productAssets, setProductAssets] = useState<ProductAssetListItem[]>(demoMode ? demoProductAssets : [])
+  const [productAssetNotice, setProductAssetNotice] = useState('')
+  const [isRefreshingProductAssets, setIsRefreshingProductAssets] = useState(false)
+  const [deletingProductAssetId, setDeletingProductAssetId] = useState<string | null>(null)
   const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivityEvent[]>(demoMode ? demoActivity : [])
   const [activityNotice, setActivityNotice] = useState('')
   const [isRefreshingActivity, setIsRefreshingActivity] = useState(false)
@@ -81,6 +94,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationReviewLock = useRef(false)
   const generationRefreshLock = useRef(false)
   const generationRefreshEpoch = useRef(0)
+  const productAssetRefreshLock = useRef(false)
+  const productAssetRefreshEpoch = useRef(0)
   const activityRefreshLock = useRef(false)
   const activityRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
@@ -171,6 +186,36 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshProductAssets() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || productAssetRefreshLock.current
+      || productImageDeleteLock.current) return
+    productAssetRefreshLock.current = true
+    const refreshEpoch = ++productAssetRefreshEpoch.current
+    setIsRefreshingProductAssets(true)
+    setProductAssetNotice('')
+    try {
+      const snapshot = await loadProductAssetListSnapshot()
+      if (refreshEpoch !== productAssetRefreshEpoch.current) return
+      if (snapshot.assets !== null) {
+        setProductAssets(snapshot.assets)
+        setImage((current) => {
+          const canonicalAsset = snapshot.assets?.find((asset) => asset.id === current.asset?.id)
+          return canonicalAsset
+            ? { ...current, name: canonicalAsset.name, url: canonicalAsset.previewUrl, asset: canonicalAsset }
+            : current
+        })
+      }
+      if (snapshot.error) setProductAssetNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === productAssetRefreshEpoch.current) {
+        productAssetRefreshLock.current = false
+        setIsRefreshingProductAssets(false)
+      }
+    }
+  }
+
   async function refreshWorkspaceActivity() {
     if (!session
       || session.user.id === 'demo-user'
@@ -198,6 +243,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (nextSection === 'campaigns' || nextSection === 'assets') {
       void refreshGenerationResults()
     }
+    if (nextSection === 'products') void refreshProductAssets()
     if (nextSection === 'activity') void refreshWorkspaceActivity()
   }
 
@@ -347,18 +393,40 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  function selectProductAssetFromLibrary(asset: ProductAssetListItem) {
+    if (campaignIdentityLocked()
+      || productImageDeleteLock.current
+      || productAssetRefreshLock.current
+      || image.status === 'uploading') return
+    generationRequestKey.current = null
+    if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
+    setImage({
+      name: asset.name,
+      url: asset.previewUrl,
+      asset,
+      status: session?.user.id === 'demo-user' ? 'demo' : 'ready',
+      error: ''
+    })
+    invalidatePlan()
+    setProductAssetNotice('')
+    setNotice('')
+    setActiveSection('workspace')
+  }
+
   async function deleteProductImage() {
-    if (campaignIdentityLocked() || productImageDeleteLock.current) return
+    if (campaignIdentityLocked() || productImageDeleteLock.current || productAssetRefreshLock.current) return
     const confirmation = demoMode
       ? '移除這張本機 Demo 圖片？引用此圖的 Agent 計劃亦會重設。 Remove this local demo image? A plan using it will also reset.'
       : '刪除這張私人商品圖片？只有引用此圖的 Agent 計劃會重設。 Delete this private product image? Only a plan using it will reset.'
     if (!window.confirm(confirmation)) return
     productImageDeleteLock.current = true
+    setDeletingProductAssetId(image.asset?.id || null)
     setIsDeletingProductImage(true)
     setNotice('')
+    setProductAssetNotice('')
     try {
       const deletedAssetId = image.asset?.id || null
-      if (image.asset) {
+      if (image.asset && session?.user.id !== 'demo-user') {
         await deletePrivateResource('product-asset', image.asset.id)
       }
       if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
@@ -373,6 +441,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       if (!nextAgentState.brief || nextAgentState.brief.assetId === deletedAssetId) {
         generationRequestKey.current = null
       }
+      if (deletedAssetId) setProductAssets((current) => current.filter((asset) => asset.id !== deletedAssetId))
       if (planReloadFailed) {
         setNotice('圖片已刪除，但暫時未能重新載入 Agent 計劃。 Image deleted, but the Agent plan could not be reloaded.')
       }
@@ -381,6 +450,28 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     } finally {
       productImageDeleteLock.current = false
       setIsDeletingProductImage(false)
+      setDeletingProductAssetId(null)
+    }
+  }
+
+  async function deleteProductAssetFromLibrary(asset: ProductAssetListItem) {
+    if (asset.id === image.asset?.id) {
+      await deleteProductImage()
+      return
+    }
+    if (campaignIdentityLocked() || productImageDeleteLock.current || productAssetRefreshLock.current) return
+    if (!window.confirm('刪除這張已保存的私人商品來源圖？ Delete this saved private product source?')) return
+    productImageDeleteLock.current = true
+    setDeletingProductAssetId(asset.id)
+    setProductAssetNotice('')
+    try {
+      if (session?.user.id !== 'demo-user') await deletePrivateResource('product-asset', asset.id)
+      setProductAssets((current) => current.filter((item) => item.id !== asset.id))
+    } catch (error) {
+      setProductAssetNotice(error instanceof Error ? error.message : '未能刪除商品圖片。 Unable to delete product image.')
+    } finally {
+      productImageDeleteLock.current = false
+      setDeletingProductAssetId(null)
     }
   }
 
@@ -558,15 +649,21 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
     workspaceHydrationEpoch.current += 1
     generationRefreshEpoch.current += 1
+    productAssetRefreshEpoch.current += 1
     activityRefreshEpoch.current += 1
     generationRefreshLock.current = false
+    productAssetRefreshLock.current = false
     activityRefreshLock.current = false
     setIsRefreshingResults(false)
+    setIsRefreshingProductAssets(false)
     setIsRefreshingActivity(false)
     setSession(null)
     setReviewingId(null)
     setReviewingDecision(null)
     setServerResults([])
+    setProductAssets([])
+    setProductAssetNotice('')
+    setDeletingProductAssetId(null)
     setWorkspaceActivity([])
     setActivityNotice('')
     setAgentState(initialCampaignAgentState())
@@ -614,7 +711,28 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           </section>
         </> : activeSection === 'activity'
           ? <WorkspaceActivityView activity={workspaceActivity} isRefreshing={isRefreshingActivity} notice={activityNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceActivity()} onBack={() => setActiveSection('workspace')} />
-          : <CollectionView section={activeSection} brand={agentState.brief?.brand || emptyBrand} product={agentState.brief?.product || emptyProduct} results={serverResults} imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''} deletingResultId={deletingGenerationId} isRefreshingResults={isRefreshingResults} refreshDisabled={deletingGenerationId !== null || reviewingId !== null} notice={activeSection === 'campaigns' || activeSection === 'assets' ? notice : ''} onRefreshResults={session.user.id === 'demo-user' ? undefined : () => void refreshGenerationResults()} onBack={() => setActiveSection('workspace')} onDeleteResult={(result) => void deleteGeneration(result)} />}
+          : <CollectionView
+            section={activeSection}
+            brand={agentState.brief?.brand || emptyBrand}
+            product={agentState.brief?.product || emptyProduct}
+            results={serverResults}
+            imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''}
+            deletingResultId={deletingGenerationId}
+            isRefreshingResults={isRefreshingResults}
+            refreshDisabled={deletingGenerationId !== null || reviewingId !== null}
+            notice={activeSection === 'campaigns' || activeSection === 'assets' || activeSection === 'products' ? notice : ''}
+            onRefreshResults={session.user.id === 'demo-user' ? undefined : () => void refreshGenerationResults()}
+            productAssets={productAssets}
+            selectedProductAssetId={image.asset?.id || null}
+            deletingProductAssetId={deletingProductAssetId}
+            isRefreshingProductAssets={isRefreshingProductAssets}
+            productAssetNotice={productAssetNotice}
+            onRefreshProductAssets={session.user.id === 'demo-user' ? undefined : () => void refreshProductAssets()}
+            onSelectProductAsset={selectProductAssetFromLibrary}
+            onDeleteProductAsset={(asset) => void deleteProductAssetFromLibrary(asset)}
+            onBack={() => setActiveSection('workspace')}
+            onDeleteResult={(result) => void deleteGeneration(result)}
+          />}
       </main>
     </div>
   </div>

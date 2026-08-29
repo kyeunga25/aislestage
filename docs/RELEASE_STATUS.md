@@ -41,6 +41,9 @@
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
+- [x] 私人 product-source GET 只列目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP，並只返回 UUID、canonical generic 名稱、MIME、大小、同源 preview route 及 UTC 時間；原始檔名、object／workspace／user identity 與 checksum 不進入清單；
+- [x] product-source client 採 on-demand 15 秒／64 KiB exact envelope 與逐項 schema；malformed、跨 workspace 或暫時故障保留可信清單，選用另一張來源圖會失效舊 Agent 計劃並返回工作台；
+- [x] 商品庫的 strict refresh 與序列化單項刪除已通過 component／integration tests；列表、選用、返回工作台、目前使用及私隱提示另通過 1440 px／390 px browser QA，沒有水平溢出或 app console warning／error；
 - [x] 商品圖上載／刪除、Campaign Pack 建立、輸出批准／拒絕／刪除以 D1 trigger 與核心 mutation 原子記錄最小必要活動 metadata；
 - [x] owner／admin 專用活動 API 只返回目前 workspace 最近 50 項操作類型、UTC 時間及可選操作者名稱；member、跨 workspace、subject ID、原始檔名、brief／input JSON 及底層錯誤均不可取得；
 - [x] 活動 view 採 on-demand 15 秒／64 KiB strict loader，故障保留可信快照；desktop 與 390 px 導覽、keyboard-accessible name、無水平溢出及無 console error 已完成 browser QA；

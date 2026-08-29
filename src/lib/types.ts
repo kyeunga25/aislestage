@@ -136,6 +136,10 @@ export type ProductAsset = {
   previewUrl: string
 }
 
+export type ProductAssetListItem = ProductAsset & {
+  createdAt: string
+}
+
 export type CampaignAgentStage = 'idle' | 'needs-input' | 'awaiting-approval' | 'approved'
 
 export type CampaignBrief = {
