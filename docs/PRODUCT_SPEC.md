@@ -84,6 +84,8 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
 - 成果區：三比例私人草稿、雙語文案、provenance、逐一審核、受控下載及重新建立；
+- Campaign Packs：最新素材包預設展開，其他素材包按需展開；每個歷史輸出保持排隊、處理、草稿、已核准、需要修改或失敗狀態及 provenance；
+- 素材庫：集中顯示可授權預覽的歷史輸出；owner／admin 可審批草稿，全成員只可下載已核准輸出，並可逐項刪除明確檔案；
 - 使用指引：完整三步流程與私隱提示。
 
 所有導覽都有實際 workspace view。workspace 選單只顯示由受保護 API 核實的真實 active memberships；仍未提供通知或帳號選單時不顯示假按鈕。示範預覽、排隊中、草稿待審核、已核准、需要修改及失敗狀態必須清楚區分。
@@ -150,7 +152,7 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 
 若 pack commit 與 Queue send 已成功，但最終 generation snapshot 暫時不可讀，API 返回固定雙語 no-store `503`，保留 queued rows 與 reservation 且不重送 Queue。正式 UI 保留原 idempotency key；相同請求重試會以 canonical replay 返回原 pack／generation IDs。Replay 可能已 queued、processing、completed 或 failed，browser 必須先重新讀取 authoritative session allowance，不可再次一律扣減／reserve 三個輸出；terminal replay 會立即套用並完成額度刷新，不需多等一次 generation poll。
 
-建立成功後的 browser poll 只綁定該 pack 的 exact 三個 generation IDs，最多執行 16 個固定 interval。暫時讀取失敗會保留最後可信快照；任何成功讀取都會重設連續失敗計數，第三次連續失敗才解除鎖並顯示「已排隊、狀態暫不可讀」的雙語恢復提示，同時盡量刷新 authoritative allowance。只有三個目標 ID 全部 terminal 才宣告完成；到達 bounded window 而仍在 queued／processing，會引導使用者稍後從 Campaign Packs 再讀取，不會把 Queue 中工作誤畫成建立失敗。進入 Campaign Packs／素材庫或明確按「重新載入」時會序列化執行一個 15 秒 bounded generation-list GET；審核／刪除期間停用，較舊 hydration／refresh 亦不能覆蓋較新 snapshot 或登出狀態。失敗保留現有 rows 並在 collection view 顯示固定雙語錯誤，公開 Demo 不發私人 request。
+建立成功後的 browser poll 只綁定該 pack 的 exact 三個 generation IDs，最多執行 16 個固定 interval。暫時讀取失敗會保留最後可信快照；任何成功讀取都會重設連續失敗計數，第三次連續失敗才解除鎖並顯示「已排隊、狀態暫不可讀」的雙語恢復提示，同時盡量刷新 authoritative allowance。只有三個目標 ID 全部 terminal 才宣告完成；到達 bounded window 而仍在 queued／processing，會引導使用者稍後從 Campaign Packs 再讀取，不會把 Queue 中工作誤畫成建立失敗。進入 Campaign Packs／素材庫或明確按「重新載入」時會序列化執行一個 15 秒 bounded generation-list GET；審核／刪除期間停用，較舊 hydration／refresh 亦不能覆蓋較新 snapshot 或登出狀態。失敗保留現有 rows 並在 collection view 顯示固定雙語錯誤，公開 Demo 不發私人 request。Campaign Packs 會把最新一套預設展開，素材庫則直接列出具預覽的輸出；兩個 view 共用同一審核、下載及刪除狀態，任何 review／delete mutation 進行期間會鎖定其他輸出 mutation。只有 response 已核實為 `approved` 且帶 canonical same-origin download route 的項目才顯示下載入口。
 
 在上述 reservation 之前，Campaign Pack 與單輸出 route 均會重新確認 active workspace scope 及商品 asset ownership。Workspace／asset D1 preflight 不可讀時返回固定雙語 no-store `503 unavailable`，而不是 `400`／`404`；不建立 Campaign Pack、generation、ledger、reservation 或 Queue message。
 

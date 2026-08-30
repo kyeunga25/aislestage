@@ -21,7 +21,11 @@ const results: GenerationResult[] = [
     approvedRevision: 1,
     createdAt: '2026-08-10T00:00:00.000Z',
     errorMessage: null,
-    provenance: null
+    provenance: {
+      approvedRevision: 1,
+      compositionVersion: 'deterministic-svg-v1',
+      generationMode: 'deterministic'
+    }
   },
   {
     id: '123e4567-e89b-42d3-a456-426614174003',
@@ -42,6 +46,32 @@ const results: GenerationResult[] = [
     provenance: null
   }
 ]
+
+const approvedResult: GenerationResult = {
+  ...results[1],
+  id: '123e4567-e89b-42d3-a456-426614174004',
+  title: 'Synthetic portrait approved',
+  reviewStatus: 'approved',
+  reviewedAt: '2026-08-10T00:05:00.000Z',
+  imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174004/preview',
+  downloadUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174004/download',
+  provenance: {
+    approvedRevision: 1,
+    compositionVersion: 'deterministic-svg-v1',
+    generationMode: 'deterministic'
+  }
+}
+
+const historicalApprovedResult: GenerationResult = {
+  ...approvedResult,
+  id: '123e4567-e89b-42d3-a456-426614174005',
+  campaignPackId: '123e4567-e89b-42d3-a456-426614174006',
+  title: 'Historical approved output',
+  aspectRatio: '9:16',
+  imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174005/preview',
+  downloadUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174005/download',
+  createdAt: '2026-08-09T00:00:00.000Z'
+}
 
 const productAssets: ProductAssetListItem[] = [
   {
@@ -90,6 +120,104 @@ const productProfiles: SavedProductProfile[] = [{
 }]
 
 describe('Collection View private output deletion state', () => {
+  it('opens the latest Campaign Pack and exposes its authorized review workflow', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="campaigns"
+      brand={starterBrand}
+      product={starterProduct}
+      results={[...results, historicalApprovedResult]}
+      imageUrl=""
+      canReview
+      onReviewResult={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup.match(/aria-expanded="true"/g)).toHaveLength(1)
+    expect(markup.match(/aria-expanded="false"/g)).toHaveLength(1)
+    expect(markup).toContain('Campaign Pack · 2 個輸出')
+    expect(markup).toContain('Campaign Pack · 1 個輸出')
+    expect(markup).toContain('核准 1:1 Synthetic square draft')
+    expect(markup).toContain('標記 4:5 Synthetic portrait draft需要修改')
+    expect(markup).toContain('deterministic-svg-v1 · deterministic · plan v1')
+    expect(markup).not.toContain('Historical approved output')
+  })
+
+  it('makes saved assets reviewable and exposes controlled downloads only after approval', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="assets"
+      brand={starterBrand}
+      product={starterProduct}
+      results={[results[0], approvedResult]}
+      imageUrl=""
+      canReview
+      onReviewResult={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('草稿待審核')
+    expect(markup).toContain('核准 1:1 Synthetic square draft')
+    expect(markup).toContain('已核准')
+    expect(markup).toContain('href="/api/generations/123e4567-e89b-42d3-a456-426614174004/download"')
+    expect(markup).toContain('download="aislestage-4x5.svg"')
+    expect(markup).toContain('下載已核准素材')
+  })
+
+  it('serializes historical review and delete mutations across all visible outputs', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="assets"
+      brand={starterBrand}
+      product={starterProduct}
+      results={[results[0], approvedResult]}
+      imageUrl=""
+      canReview
+      reviewingId={results[0].id}
+      reviewingDecision="approve"
+      onReviewResult={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('aria-busy="true"')
+    expect(markup.match(/disabled=""/g)).toHaveLength(4)
+    expect(markup).toContain('處理中…<span class="visually-hidden"> Processing…</span>')
+  })
+
+  it('keeps historical draft review unavailable to a member role', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="assets"
+      brand={starterBrand}
+      product={starterProduct}
+      results={[results[0]]}
+      imageUrl=""
+      canReview={false}
+      onReviewResult={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('等待 owner 或 admin 核准')
+    expect(markup).not.toContain('核准 1:1 Synthetic square draft')
+  })
+
+  it('labels local demo outputs as previews instead of private review drafts', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="campaigns"
+      brand={starterBrand}
+      product={starterProduct}
+      results={results}
+      imageUrl=""
+      demoMode
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('示範預覽')
+    expect(markup).not.toContain('草稿待審核')
+    expect(markup).not.toContain('>待審核<')
+  })
+
   it('serializes delete controls and identifies the output being deleted', () => {
     const markup = renderToStaticMarkup(<CollectionView
       section="assets"

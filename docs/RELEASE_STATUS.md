@@ -62,6 +62,7 @@
 - [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
 - [x] Pack 建立後的 poll 綁定 exact 三個 generation IDs 與 16 個固定 interval；成功讀取重設 failure count，最多容許兩次連續暫時 GET 故障並保留最後可信快照，第三次才以雙語 queued-but-unavailable 狀態解除鎖，不誤報建立失敗；
 - [x] 進入／手動重新載入 Campaign Packs 或素材庫會序列化執行單一 15 秒 bounded generation-list GET；審核／刪除期間停用，request epoch 阻止舊 hydration／refresh 覆蓋新 snapshot 或登出狀態，故障保留 rows 並在 collection view 顯示雙語錯誤；Demo 不發私人 request；
+- [x] Campaign Packs 最新一套預設展開、其他套可按需展開；Campaign Packs 與素材庫共用歷史輸出卡片，保留狀態／provenance，owner／admin 可審批草稿，member 只見等待提示，只有已核准 canonical download route 顯示下載，review／delete mutation 全域序列化；公開 Demo 固定顯示「示範預覽」且不出現正式審核入口。component tests 及 1280×720／390×844 browser QA 已覆蓋展開／收合、狀態、單欄 responsive、無水平 overflow 及 console health；
 - [x] session `last_seen_at` 保持不延長 expiry 的 best-effort telemetry；寫入失敗不會推翻已核實的 active user／workspace authorization；
 - [x] logout DELETE ambiguous commit 只在同一 token-hash row 已不存在時清除 cookie；未提交或不可讀保留 retry anchor 並返回 `503`；
 - [x] password browser logout 只在 exact `200 application/json { "ok": true }` 後清空私人 state，故障時保持登入並可重試；Access logout 使用固定同源 path，不接受 response-controlled redirect；

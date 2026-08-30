@@ -1,5 +1,7 @@
-import { ArrowLeft, Box, Check, Image as ImageIcon, Layers3, PackageCheck, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
+import { ArrowLeft, Box, Check, ChevronDown, Image as ImageIcon, Layers3, PackageCheck, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import type { NavigationSection } from './Icon'
+import { GenerationLibraryCard } from './GenerationLibraryCard'
 import type { BrandPack, GenerationResult, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile } from '../lib/types'
 
 type Props = {
@@ -8,11 +10,16 @@ type Props = {
   product: Product
   results: GenerationResult[]
   imageUrl: string
+  demoMode?: boolean
   deletingResultId?: string | null
   isRefreshingResults?: boolean
   refreshDisabled?: boolean
   notice?: string
   onRefreshResults?: () => void
+  canReview?: boolean
+  reviewingId?: string | null
+  reviewingDecision?: 'approve' | 'reject' | null
+  onReviewResult?: (result: GenerationResult, decision: 'approve' | 'reject') => void
   productAssets?: ProductAssetListItem[]
   selectedProductAssetId?: string | null
   deletingProductAssetId?: string | null
@@ -80,11 +87,16 @@ export function CollectionView({
   product,
   results,
   imageUrl,
+  demoMode = false,
   deletingResultId = null,
   isRefreshingResults = false,
   refreshDisabled = false,
   notice = '',
   onRefreshResults,
+  canReview = false,
+  reviewingId = null,
+  reviewingDecision = null,
+  onReviewResult,
   productAssets = [],
   selectedProductAssetId = null,
   deletingProductAssetId = null,
@@ -119,6 +131,7 @@ export function CollectionView({
   onBack,
   onDeleteResult
 }: Props) {
+  const [expandedPackSelection, setExpandedPackSelection] = useState<string | null | undefined>(undefined)
   const meta = sectionCopy[section]
   const Icon = meta.icon
   const resultCollection = section === 'campaigns' || section === 'assets'
@@ -129,6 +142,13 @@ export function CollectionView({
     groups.set(key, group)
     return groups
   }, new Map<string, GenerationResult[]>()).entries())
+  const defaultExpandedPackId = campaignPacks[0]?.[0] || null
+  const selectedPackExists = expandedPackSelection !== null
+    && expandedPackSelection !== undefined
+    && campaignPacks.some(([packId]) => packId === expandedPackSelection)
+  const expandedPackId = expandedPackSelection === undefined || (expandedPackSelection !== null && !selectedPackExists)
+    ? defaultExpandedPackId
+    : expandedPackSelection
   const productProfileBusy = isRefreshingProductProfiles || isSavingProductProfile || deletingProductProfileId !== null
   const productSourceBusy = isRefreshingProductAssets || deletingProductAssetId !== null
   const productLibraryBusy = productProfileBusy || productSourceBusy
@@ -155,9 +175,30 @@ export function CollectionView({
       const completed = items.every((item) => item.status === 'completed')
       const rejected = completed && items.some((item) => item.reviewStatus === 'rejected')
       const approved = completed && items.every((item) => item.reviewStatus === 'approved')
-      const status = failed ? 'failed' : rejected ? 'rejected' : approved ? 'completed' : completed ? 'review' : 'processing'
-      const date = items[0]?.createdAt ? new Date(items[0].createdAt).toLocaleString('zh-HK') : '本機預覽'
-      return <div className="data-row" key={packId}><span className="row-icon"><PackageCheck size={17} /></span><div><strong>Campaign Pack · {items.length} 個輸出</strong><small>{items.map((item) => item.aspectRatio).join(' · ')} · {date}</small></div><span className={`status-text ${status}`}>{status === 'completed' ? '已核准' : status === 'review' ? '待審核' : status === 'rejected' ? '需要修改' : status === 'failed' ? '部分失敗' : '處理中'}</span></div>
+      const status = demoMode && completed ? 'demo' : failed ? 'failed' : rejected ? 'rejected' : approved ? 'completed' : completed ? 'review' : 'processing'
+      const date = items[0]?.createdAt ? productAssetTime.format(new Date(items[0].createdAt)) : '本機預覽'
+      const expanded = expandedPackId === packId
+      const panelId = `campaign-pack-${packId}`
+      return <article className="campaign-pack" key={packId}>
+        <button className="campaign-pack-toggle" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpandedPackSelection(expanded ? null : packId)}>
+          <span className="row-icon"><PackageCheck size={17} /></span>
+          <span className="campaign-pack-copy"><strong>Campaign Pack · {items.length} 個輸出</strong><small>{items.map((item) => item.aspectRatio).join(' · ')} · {date}</small></span>
+          <span className={`status-text ${status}`}>{status === 'demo' ? '示範預覽' : status === 'completed' ? '已核准' : status === 'review' ? '待審核' : status === 'rejected' ? '需要修改' : status === 'failed' ? '部分失敗' : '處理中'}</span>
+          <ChevronDown className="campaign-pack-chevron" size={17} />
+        </button>
+        {expanded ? <div className="campaign-pack-output-grid" id={panelId}>{items.map((item) => <GenerationLibraryCard
+          key={item.id}
+          result={item}
+          demoMode={demoMode}
+          canReview={canReview}
+          reviewingId={reviewingId}
+          reviewingDecision={reviewingDecision}
+          deletingResultId={deletingResultId}
+          controlsDisabled={isRefreshingResults}
+          onReviewResult={onReviewResult}
+          onDeleteResult={onDeleteResult}
+        />)}</div> : null}
+      </article>
     }) : <div className="empty-library"><PackageCheck size={24} /><strong>尚未建立 Campaign Pack</strong><p>先在工作台由 Agent 規劃第一套素材。</p></div>}</div> : null}
     {section === 'products' ? <>
       {product.name && imageUrl ? <div className="library-grid"><article className="library-card media-card"><img src={imageUrl} alt={product.name} /><div><span>{product.category}</span><h2>{product.name}</h2><p>{product.benefits.filter(Boolean).join(' · ')}</p><strong>{product.price}</strong></div></article><article className="library-note"><h2>已核實商品快照</h2><p>Agent 計劃保存的商品資料會在此顯示；選用另一張來源圖後必須重新規劃及批准。</p></article></div> : <div className="empty-library compact"><Box size={24} /><strong>尚未保存商品資料</strong><p>可先從下方選用已保存來源圖，再回工作台完成商業資料。</p></div>}
@@ -230,9 +271,17 @@ export function CollectionView({
         })}</div> : <div className="empty-library compact"><Layers3 size={24} /><strong>{isRefreshingBrandPacks ? '正在載入品牌快照…' : '尚未保存品牌快照'}</strong><p>{isRefreshingBrandPacks ? 'Loading approved brand snapshots…' : '批准目前 Campaign 計劃後，可在此保存第一個可重用品牌快照。'}</p></div>}
       </section>
     </> : null}
-    {section === 'assets' ? <div className="asset-library">{results.filter((item) => item.imageUrl).length ? results.filter((item) => item.imageUrl).map((item) => {
-      const deleting = deletingResultId === item.id
-      return <article key={item.id} aria-busy={deleting}><img src={item.imageUrl!} alt={item.title} /><div><strong>{item.aspectRatio}</strong><span>{item.title}</span><button type="button" onClick={() => onDeleteResult(item)} aria-label={deleting ? `正在刪除 ${item.title} · Deleting ${item.title}` : `刪除 ${item.title}`} disabled={deletingResultId !== null}><Trash2 size={15} />{deleting ? <>刪除中…<span className="visually-hidden"> Deleting…</span></> : '刪除'}</button></div></article>
-    }) : <div className="empty-library"><ImageIcon size={24} /><strong>尚未有已生成素材</strong><p>版面預覽不會當作正式素材保存。</p></div>}</div> : null}
+    {section === 'assets' ? <div className="asset-library">{results.filter((item) => item.imageUrl).length ? results.filter((item) => item.imageUrl).map((item) => <GenerationLibraryCard
+      key={item.id}
+      result={item}
+      demoMode={demoMode}
+      canReview={canReview}
+      reviewingId={reviewingId}
+      reviewingDecision={reviewingDecision}
+      deletingResultId={deletingResultId}
+      controlsDisabled={isRefreshingResults}
+      onReviewResult={onReviewResult}
+      onDeleteResult={onDeleteResult}
+    />) : <div className="empty-library"><ImageIcon size={24} /><strong>尚未有已生成素材</strong><p>版面預覽不會當作正式素材保存。</p></div>}</div> : null}
   </section>
 }

@@ -1349,6 +1349,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
 
   const userInitial = session.user.name.trim().charAt(0).toUpperCase() || session.user.email.charAt(0).toUpperCase()
   const workspaceSwitchDisabled = workspaceMutationPending()
+  const canReviewOutputs = session.user.id !== 'demo-user' && (session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin')
 
   return <div className="app-shell" id="workspace">
     <Sidebar workspace={session.currentWorkspace} active={activeSection} onNavigate={navigateToSection} />
@@ -1379,7 +1380,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
           <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} generationBusy={isGenerating} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
-          {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'} reviewingId={reviewingId} reviewingDecision={reviewingDecision} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
+          {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={canReviewOutputs} reviewingId={reviewingId} reviewingDecision={reviewingDecision} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
           <section className="support-panel" id="support" aria-labelledby="support-title">
             <div><CircleHelp size={20} /><div><h2 id="support-title">使用指引</h2><p>先填妥繁中與英文商業資料，再上傳有權使用的商品原圖。Agent 只會建立計劃；你批准後，系統才會一次建立三個私人輸出。</p></div></div>
             <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>建立私人草稿，逐一核准後才下載。</li></ol>
@@ -1413,11 +1414,16 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             product={product}
             results={serverResults}
             imageUrl={image.url}
+            demoMode={session.user.id === 'demo-user'}
             deletingResultId={deletingGenerationId}
             isRefreshingResults={isRefreshingResults}
             refreshDisabled={deletingGenerationId !== null || reviewingId !== null}
             notice={activeSection === 'campaigns' || activeSection === 'assets' || activeSection === 'products' ? notice : ''}
             onRefreshResults={session.user.id === 'demo-user' ? undefined : () => void refreshGenerationResults()}
+            canReview={canReviewOutputs}
+            reviewingId={reviewingId}
+            reviewingDecision={reviewingDecision}
+            onReviewResult={session.user.id === 'demo-user' ? undefined : (result, decision) => void reviewGeneration(result, decision)}
             productAssets={productAssets}
             selectedProductAssetId={image.asset?.id || null}
             deletingProductAssetId={deletingProductAssetId}
