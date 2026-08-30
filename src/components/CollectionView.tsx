@@ -3,7 +3,7 @@ import type { NavigationSection } from './Icon'
 import type { BrandPack, GenerationResult, Product, ProductAssetListItem, SavedBrandPack } from '../lib/types'
 
 type Props = {
-  section: Exclude<NavigationSection, 'workspace' | 'activity'>
+  section: Exclude<NavigationSection, 'workspace' | 'usage' | 'activity'>
   brand: BrandPack
   product: Product
   results: GenerationResult[]

@@ -7,9 +7,9 @@
 | 身分 | 可用範圍 | 目前限制 |
 | --- | --- | --- |
 | 未登入訪客 | 公開產品主頁；健康狀態及 workflow 清單可按部署 policy 保持公開 | 不可讀取 workspace、Agent、圖片或生成記錄 |
-| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准、生成及正式輸出審核 | 只限內容操作，沒有帳號管理 API |
-| `admin` | 與 `owner` 相同的內容操作及正式輸出審核 | 角色已保留，但尚未有獨立帳號管理權限 |
-| `member` | 所屬 workspace 的內容操作與私人草稿預覽 | 不可作出不可變更的正式下載審核決定 |
+| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准、生成、技術用量及正式輸出審核 | 只限內容操作，沒有帳號管理 API |
+| `admin` | 與 `owner` 相同的內容操作、技術用量及正式輸出審核 | 角色已保留，但尚未有獨立帳號管理權限 |
+| `member` | 所屬 workspace 的內容操作、私人草稿預覽與技術用量 | 不可作出不可變更的正式下載審核決定 |
 
 正式環境的每個受保護請求都要先通過 Cloudflare Access，再由 Worker 驗證 JWT，最後以 `workspace_memberships` 驗證 workspace。一般內容操作仍使用相同 workspace scope；正式輸出審核則額外要求 `owner` 或 `admin`。這是窄範圍的 delivery gate，不代表已提供完整帳號管理 RBAC。
 

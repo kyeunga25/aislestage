@@ -82,6 +82,27 @@ export type OutputAllowance = {
   reserved: number
 }
 
+export type OutputUsageEventType = 'reservation' | 'settlement' | 'release'
+
+export type OutputUsageEvent = {
+  type: OutputUsageEventType
+  amount: -1 | 0 | 1
+  createdAt: string
+}
+
+export type OutputUsageSnapshot = {
+  allowance: {
+    availableOutputs: number
+    reservedOutputs: number
+    updatedAt: string
+  }
+  summary: {
+    completedOutputs: number
+    releasedOutputs: number
+  }
+  events: OutputUsageEvent[]
+}
+
 export type AuthUser = {
   id: string
   email: string

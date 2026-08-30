@@ -268,6 +268,7 @@ The protected onboarding command requires an explicit local or remote target. It
 | 匿名 `/app/campaign-packs` | 與 `/app` 一樣受保護，不能因 SPA fallback 而匿名 200 |
 | 匿名受保護 API | Access 或 Worker 拒絕，不返回資料庫／資源細節 |
 | 已受邀 `/api/session` | JWT 與 active membership 都通過後才成功 |
+| 已受邀 `/api/output-usage` | 只返回目前 workspace 的技術 allowance／事件摘要；沒有 identity、note、provider 或付款資料 |
 | 私人 R2 內容 | 只經授權 Worker route 返回，帶 private／no-store 等 headers |
 | Generation | 初次部署保持 disabled；不能排隊或扣用量 |
 | Static assets | 公開 hashed assets 可讀，私人 workspace shell 保持 Worker-first |

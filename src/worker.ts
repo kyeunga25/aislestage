@@ -34,6 +34,7 @@ type WorkspaceRole = 'owner' | 'admin' | 'member'
 type ReviewStatus = 'draft' | 'approved' | 'rejected'
 type CompletedGenerationMode = 'deterministic' | 'assisted'
 type WorkspaceActivityEventType = 'product_asset_uploaded' | 'product_asset_deleted' | 'campaign_pack_created' | 'generation_approved' | 'generation_rejected' | 'generation_deleted'
+type OutputUsageEventType = 'reservation' | 'settlement' | 'release'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
 type Workspace = { id: string; name: string; role: WorkspaceRole; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
@@ -2710,6 +2711,110 @@ async function listWorkspaceActivity(env: Env, session: SessionContext) {
   }
 }
 
+type OutputUsageEventRow = {
+  type: OutputUsageEventType
+  amount: number
+  createdAt: string
+}
+
+const outputUsageAmounts: Record<OutputUsageEventType, number> = {
+  reservation: -OUTPUT_COST,
+  settlement: 0,
+  release: OUTPUT_COST
+}
+
+function outputUsageUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區用量暫時無法讀取。 Workspace usage is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function canonicalUtcSecond(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value.replace(/Z$/, '.000Z')
+}
+
+function canonicalOutputUsageEvent(row: OutputUsageEventRow) {
+  return (row.type === 'reservation' || row.type === 'settlement' || row.type === 'release')
+    && row.amount === outputUsageAmounts[row.type]
+    && canonicalUtcSecond(row.createdAt)
+}
+
+async function listOutputUsage(env: Env, session: SessionContext) {
+  try {
+    const [allowanceResult, summaryResult, eventResult] = await env.DB.batch([
+      env.DB.prepare(`
+        SELECT available AS availableOutputs, reserved AS reservedOutputs,
+          strftime('%Y-%m-%dT%H:%M:%SZ', updated_at) AS updatedAt
+        FROM output_allowances
+        WHERE workspace_id = ?
+        LIMIT 1
+      `).bind(session.currentWorkspace.id),
+      env.DB.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN event_type = 'settlement' AND amount = 0 THEN 1 ELSE 0 END), 0) AS completedOutputs,
+          COALESCE(SUM(CASE WHEN event_type = 'release' AND amount = ? THEN 1 ELSE 0 END), 0) AS releasedOutputs,
+          COALESCE(SUM(CASE
+            WHEN event_type = 'reservation' AND amount <> ? THEN 1
+            WHEN event_type = 'settlement' AND amount <> 0 THEN 1
+            WHEN event_type = 'release' AND amount <> ? THEN 1
+            ELSE 0
+          END), 0) AS invalidEvents
+        FROM output_ledger
+        WHERE workspace_id = ?
+      `).bind(OUTPUT_COST, -OUTPUT_COST, OUTPUT_COST, session.currentWorkspace.id),
+      env.DB.prepare(`
+        SELECT event_type AS type, amount,
+          strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt
+        FROM output_ledger
+        WHERE workspace_id = ?
+          AND event_type IN ('reservation', 'settlement', 'release')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 50
+      `).bind(session.currentWorkspace.id)
+    ])
+    const allowance = allowanceResult.results[0] as {
+      availableOutputs: number
+      reservedOutputs: number
+      updatedAt: string
+    } | undefined
+    if (!allowance
+      || !Number.isSafeInteger(allowance.availableOutputs)
+      || allowance.availableOutputs < 0
+      || !Number.isSafeInteger(allowance.reservedOutputs)
+      || allowance.reservedOutputs < 0
+      || !canonicalUtcSecond(allowance.updatedAt)) throw new TypeError('Invalid allowance snapshot')
+
+    const summary = summaryResult.results[0] as {
+      completedOutputs: number
+      releasedOutputs: number
+      invalidEvents: number
+    } | undefined
+    if (!summary
+      || !Number.isSafeInteger(summary.completedOutputs)
+      || summary.completedOutputs < 0
+      || !Number.isSafeInteger(summary.releasedOutputs)
+      || summary.releasedOutputs < 0
+      || summary.invalidEvents !== 0) throw new TypeError('Invalid usage summary')
+
+    const events = eventResult.results as unknown as OutputUsageEventRow[]
+    if (!events.every(canonicalOutputUsageEvent)) throw new TypeError('Invalid usage event')
+    return json({
+      allowance,
+      summary: {
+        completedOutputs: summary.completedOutputs,
+        releasedOutputs: summary.releasedOutputs
+      },
+      events
+    })
+  } catch {
+    console.error('output-usage-read-failed')
+    return outputUsageUnavailable()
+  }
+}
+
 type CanonicalOutputResult =
   | { state: 'ready'; object: R2ObjectBody }
   | { state: 'missing' }
@@ -3049,6 +3154,15 @@ export default {
         return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
       }
       return listWorkspaceActivity(env, session)
+    }
+    if (url.pathname === '/api/output-usage') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'GET') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
+      }
+      return listOutputUsage(env, session)
     }
     if (url.pathname === '/api/brand-packs') {
       const session = await requireSession(request, env)

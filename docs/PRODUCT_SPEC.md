@@ -54,10 +54,12 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - membership 角色為 `owner`、`admin` 或 `member`；
 - 所有受保護操作都採 server-side workspace scope；正式輸出審核另要求 `owner` 或 `admin`；
 - 工作區活動記錄只供目前 workspace 的 `owner`／`admin` 讀取，`member` 固定拒絕。每次最多返回最近 50 項，只包含安全事件 ID、操作類型、UTC 時間及可選的已知操作者名稱；不返回 subject ID、商品／輸出內容、原始檔名、Campaign Brief 或底層錯誤；
+- 工作區用量供目前 active membership 讀取；API 只返回 authoritative available／reserved output allowance、完成／退回總數，以及最多 50 項 `reservation`／`settlement`／`release` 類型、固定單位與 UTC 時間。不返回 workspace、user、generation、ledger、provider identity、note、失敗原因、付款資料或底層錯誤；任何 allowance、summary、event amount 或時間失配會整個 snapshot fail closed；
 - 已授權的 `/api/workspaces` 清單查詢不可讀時返回雙語 no-store `503 unavailable`，保留 session 並拒絕輸出不完整 workspace 資料；
 - 私人 `/api/generations` 先重核 current workspace 與 active membership，再讀最多 20 個輸出；scope 或清單不可讀時返回雙語 no-store `503 unavailable`，不輸出部分／空白假結果，跨 workspace 維持 `404`；
 - 工作區前端只有收到最多 20 項、ID 唯一、完整且通過 runtime schema 的 `generations` array 才替換目前輸出；workflow、比例、狀態、review／provenance revision 及同網域 preview／download route 必須一致。清單 GET 與 Campaign Pack success response 共用此契約；網絡錯誤、`503`、外部 URL 或 malformed payload 均保留登入狀態與現有結果並顯示雙語提示，只有明確空 array 才顯示真正空清單；
 - 活動記錄不屬於初始 bootstrap；只有 owner／admin 進入或重新整理「活動記錄」時才發出一條 15 秒、64 KiB 有界 GET。前端只接受 exact `200 application/json`、exact `{ activity }` envelope、合法事件類型、唯一 ID 及嚴格 UTC 時間；故障或 malformed 回應保留上一次可信快照並顯示固定雙語提示；
+- 用量 dashboard 同樣不屬於初始 bootstrap；只有 active member 進入或重新整理「用量」時才發出一條 15 秒、64 KiB 有界 GET。Browser 只接受 exact allowance／summary／events envelope、非負整數統計、固定事件 amount 及嚴格 UTC 時間；故障或 malformed 回應保留上一次可信 snapshot，成功則同步頂部 available／reserved 顯示；
 - 私人品牌庫只列出目前 workspace 最近 20 個具 canonical digest 及正整數批准 revision 的品牌快照；每項只返回 UUID、七個已核准品牌欄位、批准 revision 及 UTC 建立時間，不返回 workspace／user identity、digest 或 Agent 其他 brief。Browser 只在進入或重新整理品牌庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ brandPacks }` envelope；malformed、重複 ID 或暫時故障保留上一次可信清單；
 - 品牌快照 POST 只接受 exact `{ approvedRevision }`，Worker 必須重新讀取目前 workspace 的 Agent state，並只保存與該 revision 完全相符的 `approved` canonical brand。相同品牌欄位由 digest-backed unique identity 去重；首次確認建立返回 `201`，相同內容或不確定寫入後的 reconciliation 返回 exact `200` replay。Browser 對 transport／stream／deadline／`408`／`5xx` 最多以同一 revision 重試一次，其他狀態及 non-canonical success 不重送；
 - 使用者可把單一品牌快照套用回工作台，這只帶回品牌欄位並立即令本機 Agent 批准及 Campaign Pack idempotency key 失效，必須配合目前商品及來源圖重新規劃。單筆 DELETE 維持 workspace-scoped `404`、`204` 及不確定結果 reconciliation；刪除品牌庫記錄不會改寫目前 Campaign Brief；
@@ -67,7 +69,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 ## 4. Dashboard 資訊架構
 
-- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫；owner／admin 另可進入活動記錄；
+- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入活動記錄；
 - 頂部：可用輸出數、目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
@@ -160,9 +162,9 @@ Preview／已批准 download 的成功 SVG body 使用 `private, no-store` 及 `
 
 Browser generation list 在任何 JSON parse 前要求 exact `200 application/json`，成功亦只接受 exact `{ generations }` envelope，再套用最多 20 項、唯一 ID、完整 review／provenance 與同源 route normalizer；額外 outer fields 不會進入 workspace。
 
-Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate、輸出或 Agent 計劃。
+Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、workspace activity／output usage／product-source／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate 或任何既有可信 snapshot。
 
-Session、health、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading，已登入 workspace 則保留現有輸出與 Agent 計劃並顯示固定雙語錯誤；不以 GET timeout 猜測任何 mutation 是否已提交。
+Session、health、workspace activity、output usage、product-source list、brand snapshot list、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading；on-demand view 則保留上一次可信 snapshot 並顯示固定雙語錯誤，不以 GET timeout 猜測任何 mutation 是否已提交。
 
 同一個 mounted workspace 的並行初始 bootstrap 會共用一個 in-flight request coordinator：session／health 各一次，只有確認登入後才讀 generation list／Agent state。完成或失敗後立即清除 promise，不跨 reload 保留私人 cache；effect teardown、登出及較新 session hydration 會使舊 epoch 失效，舊輸出或 Agent 快照不可重新進入畫面。
 

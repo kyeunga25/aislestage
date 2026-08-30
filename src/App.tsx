@@ -12,6 +12,7 @@ import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { WorkspaceActivityView } from './components/WorkspaceActivityView'
+import { WorkspaceUsageView } from './components/WorkspaceUsageView'
 import { loadBrandPackListSnapshot, saveApprovedBrandPack } from './lib/brand-pack-client'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
 import { submitCampaignAgentAction } from './lib/campaign-agent-client'
@@ -32,7 +33,8 @@ import {
 import { loadProductAssetListSnapshot } from './lib/product-asset-list-loader'
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
-import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, WorkspaceActivityEvent } from './lib/types'
+import { loadOutputUsageSnapshot } from './lib/output-usage-loader'
+import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, WorkspaceActivityEvent } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
@@ -49,6 +51,15 @@ const demoActivity: WorkspaceActivityEvent[] = [
   { id: 'demo-activity-pack', type: 'campaign_pack_created', actorName: 'Demo User', createdAt: '2026-08-30T04:00:00Z' },
   { id: 'demo-activity-review', type: 'generation_approved', actorName: 'Demo User', createdAt: '2026-08-30T04:05:00Z' }
 ]
+const demoOutputUsage: OutputUsageSnapshot = {
+  allowance: { availableOutputs: 6, reservedOutputs: 0, updatedAt: '2026-08-30T04:05:00Z' },
+  summary: { completedOutputs: 3, releasedOutputs: 1 },
+  events: [
+    { type: 'settlement', amount: 0, createdAt: '2026-08-30T04:05:00Z' },
+    { type: 'release', amount: 1, createdAt: '2026-08-30T04:03:00Z' },
+    { type: 'reservation', amount: -1, createdAt: '2026-08-30T04:00:00Z' }
+  ]
+}
 const demoProductAssets: ProductAssetListItem[] = [{
   id: '123e4567-e89b-42d3-a456-426614174100',
   name: 'product-image.png',
@@ -108,6 +119,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivityEvent[]>(demoMode ? demoActivity : [])
   const [activityNotice, setActivityNotice] = useState('')
   const [isRefreshingActivity, setIsRefreshingActivity] = useState(false)
+  const [outputUsage, setOutputUsage] = useState<OutputUsageSnapshot | null>(demoMode ? demoOutputUsage : null)
+  const [outputUsageNotice, setOutputUsageNotice] = useState('')
+  const [isRefreshingOutputUsage, setIsRefreshingOutputUsage] = useState(false)
   const [notice, setNotice] = useState('')
   const generationRequestKey = useRef<string | null>(null)
   const productImageDeleteLock = useRef(false)
@@ -122,6 +136,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const brandPackRefreshEpoch = useRef(0)
   const activityRefreshLock = useRef(false)
   const activityRefreshEpoch = useRef(0)
+  const outputUsageRefreshLock = useRef(false)
+  const outputUsageRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
   const campaignPackLock = useRef(false)
   const campaignAgentLock = useRef(false)
@@ -292,6 +308,37 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshOutputUsage() {
+    if (!session || session.user.id === 'demo-user' || outputUsageRefreshLock.current) return
+    outputUsageRefreshLock.current = true
+    const refreshEpoch = ++outputUsageRefreshEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    const workspaceId = session.currentWorkspace.id
+    setIsRefreshingOutputUsage(true)
+    setOutputUsageNotice('')
+    try {
+      const snapshot = await loadOutputUsageSnapshot()
+      if (refreshEpoch !== outputUsageRefreshEpoch.current || hydrationEpoch !== workspaceHydrationEpoch.current) return
+      if (snapshot.usage !== null) {
+        setOutputUsage(snapshot.usage)
+        setSession((current) => current?.currentWorkspace.id === workspaceId ? {
+          ...current,
+          currentWorkspace: {
+            ...current.currentWorkspace,
+            availableOutputs: snapshot.usage!.allowance.availableOutputs,
+            reservedOutputs: snapshot.usage!.allowance.reservedOutputs
+          }
+        } : current)
+      }
+      if (snapshot.error) setOutputUsageNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === outputUsageRefreshEpoch.current) {
+        outputUsageRefreshLock.current = false
+        setIsRefreshingOutputUsage(false)
+      }
+    }
+  }
+
   function navigateToSection(nextSection: NavigationSection) {
     setActiveSection(nextSection)
     if (nextSection === 'campaigns' || nextSection === 'assets') {
@@ -299,6 +346,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
     if (nextSection === 'products') void refreshProductAssets()
     if (nextSection === 'brands') void refreshBrandPacks()
+    if (nextSection === 'usage') void refreshOutputUsage()
     if (nextSection === 'activity') void refreshWorkspaceActivity()
   }
 
@@ -779,16 +827,19 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     productAssetRefreshEpoch.current += 1
     brandPackRefreshEpoch.current += 1
     activityRefreshEpoch.current += 1
+    outputUsageRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
     brandPackRefreshLock.current = false
     brandPackMutationLock.current = false
     activityRefreshLock.current = false
+    outputUsageRefreshLock.current = false
     setIsRefreshingResults(false)
     setIsRefreshingProductAssets(false)
     setIsRefreshingBrandPacks(false)
     setIsSavingBrandPack(false)
     setIsRefreshingActivity(false)
+    setIsRefreshingOutputUsage(false)
     setSession(null)
     setReviewingId(null)
     setReviewingDecision(null)
@@ -802,6 +853,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setDeletingBrandPackId(null)
     setWorkspaceActivity([])
     setActivityNotice('')
+    setOutputUsage(null)
+    setOutputUsageNotice('')
     setAgentState(initialCampaignAgentState())
     setBrand(emptyBrand)
     setProduct(emptyProduct)
@@ -845,7 +898,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             <div><CircleHelp size={20} /><div><h2 id="support-title">使用指引</h2><p>先填妥繁中與英文商業資料，再上傳有權使用的商品原圖。Agent 只會建立計劃；你批准後，系統才會一次建立三個私人輸出。</p></div></div>
             <ol><li>核對價格、優惠、賣點及雙語 CTA。</li><li>檢查三個版型與 Agent 建議。</li><li>建立私人草稿，逐一核准後才下載。</li></ol>
           </section>
-        </> : activeSection === 'activity'
+        </> : activeSection === 'usage'
+          ? <WorkspaceUsageView usage={outputUsage} isRefreshing={isRefreshingOutputUsage} notice={outputUsageNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshOutputUsage()} onBack={() => setActiveSection('workspace')} />
+          : activeSection === 'activity'
           ? <WorkspaceActivityView activity={workspaceActivity} isRefreshing={isRefreshingActivity} notice={activityNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceActivity()} onBack={() => setActiveSection('workspace')} />
           : <CollectionView
             section={activeSection}
