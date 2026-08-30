@@ -41,6 +41,7 @@ import { loadProductProfileListSnapshot, saveApprovedProductProfile } from './li
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import { loadOutputUsageSnapshot } from './lib/output-usage-loader'
+import { preflightProductImage } from './lib/product-image-preflight'
 import type { BrandPack, CampaignAgentState, GenerationResult, IntegrationReadinessSnapshot, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent, WorkspaceMember, WorkspaceSummary } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
@@ -940,23 +941,19 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       if (current.url.startsWith('blob:')) URL.revokeObjectURL(current.url)
       return { name: file.name, url: localUrl, asset: null, status: 'uploading', error: '' }
     })
-    if (session?.user.id === 'demo-user') {
-      setImage({ name: file.name, url: localUrl, asset: null, status: 'demo', error: '' })
-      setAgentState(initialCampaignAgentState())
-      return
-    }
     try {
+      if (session?.user.id === 'demo-user') {
+        await preflightProductImage(file)
+        setImage({ name: file.name, url: localUrl, asset: null, status: 'demo', error: '' })
+        setAgentState(initialCampaignAgentState())
+        return
+      }
       const asset = await uploadProductAsset(file, rightsAttestation)
       setImage({ name: asset.name, url: asset.previewUrl, asset, status: 'ready', error: '' })
       setAgentState(initialCampaignAgentState())
       URL.revokeObjectURL(localUrl)
     } catch (error) {
-      if (session?.user.id === 'demo-user') {
-        setImage({ name: file.name, url: localUrl, asset: null, status: 'demo', error: '' })
-        setAgentState(initialCampaignAgentState())
-      } else {
-        setImage({ name: file.name, url: localUrl, asset: null, status: 'error', error: error instanceof Error ? error.message : productAssetUploadUnavailableMessage })
-      }
+      setImage({ name: file.name, url: localUrl, asset: null, status: 'error', error: error instanceof Error ? error.message : productAssetUploadUnavailableMessage })
     }
   }
 

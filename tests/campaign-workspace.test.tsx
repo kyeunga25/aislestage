@@ -29,6 +29,7 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toContain(`maxLength="${campaignBriefLimits.product.category}" value="synthetic-category"`)
     expect(markup).toContain('我確認擁有或已取得必要權利')
     expect(markup).toContain('I have the necessary rights')
+    expect(markup).toContain('先在本機預檢 · Local preflight first')
     expect(markup).toMatch(/<input[^>]+type="checkbox"/)
     expect(markup).toMatch(/<button[^>]+class="upload-zone"[^>]+disabled=""/)
   })
@@ -52,6 +53,7 @@ describe('Campaign Workspace product contract', () => {
       onGenerate={vi.fn()}
     />)
 
+    expect(markup).toContain('正在檢查並安全上載… · Checking and uploading securely…')
     expect(markup.match(/disabled=""/g)).toHaveLength(5)
     expect(markup).toMatch(/<input[^>]+type="file"[^>]+disabled=""/)
     expect(markup).toMatch(/<button[^>]+aria-label="更換圖片"[^>]+disabled=""/)

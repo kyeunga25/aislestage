@@ -27,6 +27,7 @@
 - [x] PNG critical chunk／CRC／結尾、indexed-color PLTE bit-depth 容量、`tRNS` 色彩類型／長度／palette／唯一性／次序，以及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；private PNG 與 unknown WebP 自訂 payload 會拒絕，而 public PNG color chunk、合法透明度及標準 extended WebP fixture 保持可用；signature-only、truncated、checksum／length 失配、超額 palette、無效透明度與無 image data 上傳均在 D1／R2 前 fail closed；
 - [x] PNG IHDR、JPEG frame、WebP VP8X／VP8／VP8L header 尺寸在解碼前限制為單邊 8192 px 及 32 MP；三種 oversized fixture 均不建立 D1／R2 asset；
 - [x] PNG chunk、JPEG structural marker 與 WebP chunk 掃描均採固定 4,096 traversal-count 上限；過度分段 JPEG 在寫入 D1／R2 前 fail closed；
+- [x] browser 商品圖 client 在建立 UUID／multipart／request 前，以 10 秒有界本機讀取共用 Worker 的 signature、container、metadata 與尺寸 validator；malformed、私密 metadata、超限尺寸、讀取逾時或 byte-length 失配均不發出 request，成功回應寬高亦須與本機解析一致。公開 demo 使用相同預檢而不接觸私人 API；50-file／618-test 完整套件及 1280×720／390×844 `/demo` browser QA 已核對雙語提示、權利 gate、無水平 overflow、framework overlay 或 console warning／error；
 - [x] scheduled auth cleanup 刪除過期 session、7 日前 auth attempt、過期 pending／revoked invite hash、30 日前 used invite linkage 及 180 日前 workspace access audit event，同時保留仍有效／近期記錄；
 - [x] password／invite registration batch ambiguous commit 以 server-generated user／workspace IDs、canonical account fields、owner membership、初始 allowance 及 invite linkage reconciliation；已提交可建立 session，其他同 email 帳號不可冒充本次成功；
 - [x] session INSERT ambiguous commit 以本次 token hash、user ID 與 exact expiry reconciliation；完整相符才發出原 hardened cookie，其他狀態不回傳 token 識別資料；

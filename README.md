@@ -43,7 +43,7 @@ Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；r
 - owner／admin 專用的工作區活動記錄；只顯示操作類型、時間及已知操作者，不輸出圖片、原始檔名或 Campaign Brief；
 - 全成員可讀的 workspace-scoped 用量 dashboard；只顯示目前可用／預留數、完成／退回總數及近期技術事件，不輸出 ledger、generation 或 provider identity；
 - owner／admin 專用的整合就緒度 dashboard；按需核對 Access、requested／effective Generation 與 Agent mode、workspace 併發、五個 assisted gate、server credential 是否存在，以及付款仍停用的固定邊界，不返回 secret、provider identity、workspace identity 或部署 mapping；
-- 私人 R2 商品圖上傳、4 MB／8192 px／32 MP、格式／有界結構檢查、已驗證尺寸保存、顯式商業使用權確認及授權預覽；
+- 私人 R2 商品圖上傳；browser 先以 10 秒有界本機預檢核對 4 MB／8192 px／32 MP、格式、結構、metadata 與尺寸，通過後才建立 request，Worker 再獨立重驗並保存已驗證尺寸；另包括顯式商業使用權確認及授權預覽；
 - workspace-scoped 私人來源圖庫；可重用最近 20 張已驗收圖片並查看已驗證寬高及權利確認狀態，原始本機檔名、儲存 identity 與確認操作者不會進入列表；migration 前的舊資料會明確標示尺寸或使用權未確認；
 - workspace-scoped 核准商品資料庫；只保存 Agent 已批准的雙語商業欄位，相同內容去重，不連帶圖片或品牌；
 - workspace-scoped 品牌快照庫；只保存目前已由 Agent 核准的品牌欄位，相同內容會去重，選用後必須重新規劃；

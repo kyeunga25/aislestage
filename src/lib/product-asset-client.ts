@@ -1,6 +1,7 @@
 import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 import { hasSafeImageDimensions } from './image-validation'
+import { preflightProductImage } from './product-image-preflight'
 import type { ProductAsset } from './types'
 
 export const productAssetTypeMessage = '只支援 PNG、JPEG 或靜態 WebP 圖片。 Only PNG, JPEG, or static WebP images are supported.'
@@ -55,7 +56,12 @@ function uploadFailureMessage(status: number) {
   return productAssetUploadUnavailableMessage
 }
 
-function normalizeProductAsset(value: unknown, file: File, idempotencyKey: string): ProductAsset | null {
+function normalizeProductAsset(
+  value: unknown,
+  file: File,
+  idempotencyKey: string,
+  expectedDimensions: { widthPx: number; heightPx: number }
+): ProductAsset | null {
   if (!isRecord(value)
     || !hasExactKeys(value, assetKeys)
     || !uuidV4.test(String(value.id))
@@ -70,6 +76,8 @@ function normalizeProductAsset(value: unknown, file: File, idempotencyKey: strin
     || !Number.isSafeInteger(value.sizeBytes)
     || Number(value.sizeBytes) <= 0
     || !hasSafeImageDimensions({ width: value.widthPx as number, height: value.heightPx as number })
+    || value.widthPx !== expectedDimensions.widthPx
+    || value.heightPx !== expectedDimensions.heightPx
     || value.rightsStatus !== 'confirmed'
     || value.previewUrl !== `/api/assets/${encodeURIComponent(String(value.id))}`) return null
   return {
@@ -84,7 +92,12 @@ function normalizeProductAsset(value: unknown, file: File, idempotencyKey: strin
   }
 }
 
-async function uploadProductAssetAttempt(file: File, form: FormData, idempotencyKey: string) {
+async function uploadProductAssetAttempt(
+  file: File,
+  form: FormData,
+  idempotencyKey: string,
+  expectedDimensions: { widthPx: number; heightPx: number }
+) {
   return fetchWithTimeout(
     '/api/assets/product',
     {
@@ -119,7 +132,7 @@ async function uploadProductAssetAttempt(file: File, form: FormData, idempotency
       if (!isRecord(data) || !hasExactKeys(data, responseKeys)) {
         throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
       }
-      const asset = normalizeProductAsset(data.asset, file, idempotencyKey)
+      const asset = normalizeProductAsset(data.asset, file, idempotencyKey, expectedDimensions)
       if (!asset) throw new ProductAssetUploadAttemptError(productAssetResponseInvalidMessage, false)
       return asset
     }
@@ -136,6 +149,7 @@ export async function uploadProductAsset(file: File, rightsAttestation: Commerci
   if (rightsAttestation !== commercialUseRightsAttestation) {
     throw new Error(productAssetRightsRequiredMessage)
   }
+  const expectedDimensions = await preflightProductImage(file)
 
   const canonicalFilename = imageNames.get(file.type as ProductAsset['contentType'])!
   const idempotencyKey = crypto.randomUUID()
@@ -144,7 +158,7 @@ export async function uploadProductAsset(file: File, rightsAttestation: Commerci
   form.set('rightsAttestation', rightsAttestation)
   for (let attempt = 0; attempt < PRODUCT_UPLOAD_ATTEMPTS; attempt += 1) {
     try {
-      return await uploadProductAssetAttempt(file, form, idempotencyKey)
+      return await uploadProductAssetAttempt(file, form, idempotencyKey, expectedDimensions)
     } catch (error) {
       const retryable = !(error instanceof ProductAssetUploadAttemptError) || error.retryable
       if (retryable && attempt + 1 < PRODUCT_UPLOAD_ATTEMPTS) continue

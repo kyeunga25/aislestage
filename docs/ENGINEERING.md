@@ -163,10 +163,10 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 ## Product fidelity
 
 - 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB、單邊 8192 px 及 32 MP；
-- MIME type 與檔案 signature 必須相符；
+- browser 在建立 UUID、multipart 或 network request 前，以 10 秒 deadline 讀取不超過 4 MB 的 exact local bytes；MIME、signature、container、metadata 與尺寸任一失配或逾時都不發出 request。公開 demo 採相同本機預檢且不接觸私人 API；Worker 在 D1／R2 mutation 前使用同一 validator 再次獨立重驗；
 - PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC、完整結尾、indexed-color PLTE 容量，以及 `tRNS` 按 color type 的 2／6／palette-bound 長度、唯一性與 IDAT／PLTE 次序；private PNG chunk 及未識別 WebP chunk 會在儲存前拒絕，已知公開 PNG color data、合法透明度及標準 extended WebP 結構仍可使用。WebP parser 另核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
-- upload client 只有在使用者勾選雙語商業使用權聲明後才開放 file chooser；multipart 邊界把本機檔名改成 MIME-derived generic 名稱，只傳 exact `file`／`rightsAttestation`，並附上 client-generated UUID v4 idempotency key。Client 只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size、有效正整數寬高、`confirmed` 權利狀態及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、缺少／超限尺寸、未知權利狀態、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，權利 checkbox、hidden file input、主要上載、更換與刪除控制會一併鎖定；
+- upload client 只有在使用者勾選雙語商業使用權聲明後才開放 file chooser；預檢通過後，multipart 邊界把本機檔名改成 MIME-derived generic 名稱，只傳 exact `file`／`rightsAttestation`，並附上 client-generated UUID v4 idempotency key。Client 只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size、與本機解析一致的有效正整數寬高、`confirmed` 權利狀態及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、缺少／超限尺寸、未知權利狀態、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，權利 checkbox、hidden file input、主要上載、更換與刪除控制會一併鎖定；
 - R2 object key 只由 server 生成；
 - 私人商品圖 GET 先做 workspace-scoped D1 metadata 查詢，再讀取私人 R2 object；成功 body 使用 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin`，避免 browser 在登出或換帳號後沿用快取或被跨來源頁面作為子資源嵌入。真正不存在或跨 workspace 保持 `404`，D1 或 R2 暫時不可讀則回雙語 no-store `503 unavailable`，固定 log 不包含 object key、workspace ID 或原始錯誤；
 - 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；同一次已驗證 header 讀取所得寬高會寫入 D1，毋須重新解碼 bitmap；

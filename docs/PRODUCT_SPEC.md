@@ -131,10 +131,10 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 
 - 只接受 PNG、JPEG、靜態 WebP；
 - 最大 4 MB、單邊 8192 px，總像素不超過 32 MP；
-- browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；PNG 必須具有效 critical chunk 次序、CRC、IDAT、IEND、indexed-color palette 容量，以及按 color type 對應長度、palette、唯一性與次序都合法的 `tRNS`；private PNG chunk 及未識別 WebP chunk 會被視為不可保留的自訂 payload；WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
+- browser 在建立 UUID、multipart 或發出 request 前，以 10 秒有界本機讀取取得不超過 4 MB 的 exact file bytes，並與 Worker 共用 signature、metadata、container 與尺寸 validator；不通過、讀取逾時或大小失配都不發出網絡 request。公開 demo 亦使用相同預檢但不建立私人 request；Worker 仍是 authoritative boundary，會在任何 D1／R2 mutation 前獨立重驗；PNG 必須具有效 critical chunk 次序、CRC、IDAT、IEND、indexed-color palette 容量，以及按 color type 對應長度、palette、唯一性與次序都合法的 `tRNS`；private PNG chunk 及未識別 WebP chunk 會被視為不可保留的自訂 payload；WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
 - 選檔前必須由使用者勾選雙語聲明，確認其擁有或已取得把該圖片用於預計商業素材的必要權利；這是版本化的使用者確認，不代表平台作出法律判定或轉移任何權利；
-- browser 建立 multipart request 時已按 MIME 換成 generic 檔名，不傳送本機原始檔名，並只加入 exact `file`／`rightsAttestation` 兩個欄位；成功後只接受精確的 `201 application/json` asset envelope，UUID、canonical 名稱、MIME、位元組數、Worker 已驗證寬高、`confirmed` 權利狀態及同源 preview path 必須與本次檔案契約一致，否則 fail closed，亦不向 workspace 顯示 server error detail；
+- browser 建立 multipart request 時已按 MIME 換成 generic 檔名，不傳送本機原始檔名，並只加入 exact `file`／`rightsAttestation` 兩個欄位；成功後只接受精確的 `201 application/json` asset envelope，UUID、canonical 名稱、MIME、位元組數、與本機預檢一致的 Worker 已驗證寬高、`confirmed` 權利狀態及同源 preview path 必須與本次檔案契約一致，否則 fail closed，亦不向 workspace 顯示 server error detail；
 - Worker 由已驗證的 PNG IHDR、JPEG frame 或 WebP bitstream header 取得寬高，D1 同時保存完整 pair；欄位只可同時為有效正整數或同時為 `NULL`，並由 schema 保持 8192 px／32 MP 上限。`NULL/NULL` 只供 migration 前舊資料及滾動部署相容，新上傳固定寫入兩個值；
 - 私人來源圖庫 GET 只返回目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP；每項只包含 UUID、canonical generic 名稱、MIME、大小、已驗證寬高（舊資料為明確 `null/null`）、`confirmed`／`unconfirmed` 權利狀態、同源 preview route 及 UTC 建立時間，不返回原始檔名、workspace／user、確認操作者、object identity、確認版本或 checksum。Browser 在初始 workspace bootstrap、進入或重新整理商品庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ assets }` envelope；它會以 authoritative rights status 恢復 Agent 現用圖片。Agent state GET 同時清除缺圖或未確認權利的舊 plan，不從歷史批准推斷權利。Malformed、半套／超限尺寸、未知權利狀態或暫時故障保留上一次可信清單；
 - migration 前及 migration-first rolling deploy 期間缺少確認記錄的既有圖片保持可授權預覽及刪除，但清楚標示 `unconfirmed`，不能選回工作台、規劃、批准、預留輸出或交給 Queue。工作區成員可由商品庫對一張明確圖片提交 exact 512-byte-bounded、workspace-scoped `commercial-use-v1` 確認；唯一 immutable 記錄保存 workspace、操作者及時間，並以 post-read 對帳並發重送或不確定 D1 回應。API 只返回 asset ID、`confirmed` 及 replay 狀態；
