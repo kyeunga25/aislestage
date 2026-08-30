@@ -41,6 +41,7 @@ async function uploadImage(
 ) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: contentType }))
+  form.set('rightsAttestation', 'commercial-use-v1')
   return dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie, origin: 'https://app.test', 'idempotency-key': idempotencyKey },
@@ -242,6 +243,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Asset Idempotency Required')
     const form = new FormData()
     form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
@@ -382,20 +384,10 @@ describe('private product assets', () => {
   it('reconciles an asset insert that commits before D1 reports failure', async () => {
     const owner = await registerAccount('Ambiguous Asset Commit')
     const ambiguousDb = {
-      prepare(query: string) {
-        const statement = env.DB.prepare(query)
-        if (!query.includes('INSERT INTO media_assets')) return statement
-        return {
-          bind: (...values: unknown[]) => {
-            const bound = statement.bind(...values)
-            return {
-              run: async () => {
-                await bound.run()
-                throw new Error('synthetic response failure after commit')
-              }
-            }
-          }
-        }
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch(statements: D1PreparedStatement[]) {
+        await env.DB.batch(statements)
+        throw new Error('synthetic response failure after commit')
       }
     } as unknown as typeof env.DB
 
@@ -410,15 +402,8 @@ describe('private product assets', () => {
   it('removes the private object when an asset insert definitely does not commit', async () => {
     const owner = await registerAccount('Rejected Asset Insert')
     const rejectingDb = {
-      prepare(query: string) {
-        const statement = env.DB.prepare(query)
-        if (!query.includes('INSERT INTO media_assets')) return statement
-        return {
-          bind: () => ({
-            run: async () => { throw new Error('synthetic failure before commit') }
-          })
-        }
-      }
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: async () => { throw new Error('synthetic failure before commit') }
     } as unknown as typeof env.DB
 
     const uploaded = await uploadPng(owner.cookie, 'rejected-insert.png', { ...env, DB: rejectingDb })
@@ -467,6 +452,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Invalid Asset')
     const form = new FormData()
     form.set('file', new File(['not-a-png'], 'fake.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
     expect(response.status).toBe(415)
   })
@@ -497,6 +483,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Invalid PNG Structure')
     const form = new FormData()
     form.set('file', new File([bytes], 'invalid.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
@@ -637,6 +624,7 @@ describe('private product assets', () => {
     ])
     const form = new FormData()
     form.set('file', new File([bytes], 'private-details.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
 
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
     expect(response.status).toBe(400)

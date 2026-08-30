@@ -1,6 +1,7 @@
 import { Check, FileImage, ImagePlus, LoaderCircle, Plus, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
-import { useRef, type ChangeEvent } from 'react'
+import { useRef, useState, type ChangeEvent } from 'react'
 import { campaignBriefLimits } from '../lib/campaign-agent'
+import { commercialUseRightsAttestation, type CommercialUseRightsAttestation } from '../lib/product-asset-client'
 import type { BrandPack, CampaignAgentState, Product, ProductAsset } from '../lib/types'
 import { CampaignAgentPanel } from './CampaignAgentPanel'
 
@@ -25,7 +26,7 @@ type Props = {
   onBrandChange: (next: BrandPack) => void
   onProductChange: (next: Product) => void
   onIntentChange: (next: string) => void
-  onImageSelected: (file: File) => void
+  onImageSelected: (file: File, rightsAttestation: CommercialUseRightsAttestation) => void
   onImageDelete: () => void
   onPlan: () => void
   onApprove: () => void
@@ -37,6 +38,7 @@ export type { ImageState }
 export function CampaignWorkspace(props: Props) {
   const { brand, product, intent, image, imageDeleteBusy = false, generationBusy = false, agentState, agentBusy, generationAvailable, onBrandChange, onProductChange, onIntentChange, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
   const inputRef = useRef<HTMLInputElement>(null)
+  const [rightsConfirmed, setRightsConfirmed] = useState(false)
   const englishReady = Boolean(
     product.nameEn
     && product.promotionEn
@@ -52,9 +54,11 @@ export function CampaignWorkspace(props: Props) {
     && product.benefits.filter(Boolean).length >= 2
     && englishReady
   )
-  const imageReady = image.status === 'ready' || image.status === 'demo'
+  const imageReady = image.status === 'demo'
+    || (image.status === 'ready' && image.asset?.rightsStatus === 'confirmed')
   const campaignIdentityBusy = agentBusy || generationBusy
   const imageMutationBusy = image.status === 'uploading' || imageDeleteBusy || campaignIdentityBusy
+  const imageSelectionDisabled = imageMutationBusy || !rightsConfirmed
   const agentReady = agentState.stage === 'awaiting-approval' || agentState.stage === 'approved'
 
   const setProduct = (key: keyof Product, value: string | string[]) => onProductChange({ ...product, [key]: value })
@@ -73,12 +77,15 @@ export function CampaignWorkspace(props: Props) {
   }
 
   function chooseImage(event: ChangeEvent<HTMLInputElement>) {
-    if (imageMutationBusy) {
+    if (imageSelectionDisabled) {
       event.target.value = ''
       return
     }
     const file = event.target.files?.[0]
-    if (file) onImageSelected(file)
+    if (file) {
+      onImageSelected(file, commercialUseRightsAttestation)
+      setRightsConfirmed(false)
+    }
     event.target.value = ''
   }
 
@@ -125,12 +132,16 @@ export function CampaignWorkspace(props: Props) {
           ? <img src={image.url} alt={`${product.name || '商品'} 商品原圖`} />
           : <div><ImagePlus size={28} /><strong>加入商品原圖</strong><span>圖片只會透過已授權的工作區路徑顯示</span></div>}
         </div>
-        <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={imageMutationBusy}>
+        <label className="product-rights-confirmation">
+          <input type="checkbox" checked={rightsConfirmed} onChange={(event) => setRightsConfirmed(event.target.checked)} disabled={imageMutationBusy} />
+          <span><strong>我確認擁有或已取得必要權利，可將此圖片用於預計的商業素材。</strong><small>I have the necessary rights to use this image in the intended commercial assets.</small></span>
+        </label>
+        <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={imageSelectionDisabled}>
           {image.status === 'uploading' || imageDeleteBusy || campaignIdentityBusy ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
-          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : imageDeleteBusy ? '正在安全刪除… Deleting securely…' : generationBusy ? '素材包建立中… Pack creation in progress…' : agentBusy ? 'Agent 正在處理… Agent action in progress…' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
+          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : imageDeleteBusy ? '正在安全刪除… Deleting securely…' : generationBusy ? '素材包建立中… Pack creation in progress…' : agentBusy ? 'Agent 正在處理… Agent action in progress…' : !rightsConfirmed ? '先確認圖片使用權 · Confirm image rights' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
         </button>
-        <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} disabled={imageMutationBusy} />
-        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{imageDeleteBusy ? '正在刪除這張私人商品圖片 · Deleting this private product image' : generationBusy ? '商品圖片已鎖定至正在建立的素材包 · Product image locked to the Campaign Pack in progress' : agentBusy ? '商品圖片已鎖定至 Agent 動作 · Product image locked to the Agent action' : image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageMutationBusy}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label={imageDeleteBusy ? '正在刪除圖片 · Deleting image' : '刪除圖片'} disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
+        <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} disabled={imageSelectionDisabled} />
+        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{imageDeleteBusy ? '正在刪除這張私人商品圖片 · Deleting this private product image' : generationBusy ? '商品圖片已鎖定至正在建立的素材包 · Product image locked to the Campaign Pack in progress' : agentBusy ? '商品圖片已鎖定至 Agent 動作 · Product image locked to the Agent action' : image.status === 'ready' ? image.asset?.rightsStatus === 'confirmed' ? '已私人保存 · 商業使用權已確認' : '已私人保存 · 使用權未確認' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageSelectionDisabled}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label={imageDeleteBusy ? '正在刪除圖片 · Deleting image' : '刪除圖片'} disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
       </section>
 
       <CampaignAgentPanel state={agentState} busy={agentBusy} generationBusy={generationBusy} generationAvailable={generationAvailable} onPlan={onPlan} onApprove={onApprove} onGenerate={onGenerate} />

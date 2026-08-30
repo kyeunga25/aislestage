@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { uploadProductAsset } from '../src/lib/product-asset-client'
+import {
+  commercialUseRightsAttestation,
+  confirmProductAssetRights,
+  uploadProductAsset
+} from '../src/lib/product-asset-client'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -16,6 +20,7 @@ describe('product asset upload client', () => {
     sizeBytes: 4,
     widthPx: 1024,
     heightPx: 1024,
+    rightsStatus: 'confirmed',
     previewUrl: `/api/assets/${assetId}`
   }
 
@@ -28,11 +33,12 @@ describe('product asset upload client', () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json({ asset: canonicalAsset }, { status: 201 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(uploadProductAsset(file)).resolves.toEqual(canonicalAsset)
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).resolves.toEqual(canonicalAsset)
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/assets/product')
     const body = fetchMock.mock.calls[0]?.[1]?.body
     expect(body).toBeInstanceOf(FormData)
-    expect([...((body as FormData).keys())]).toEqual(['file'])
+    expect([...((body as FormData).keys())]).toEqual(['file', 'rightsAttestation'])
+    expect((body as FormData).get('rightsAttestation')).toBe('commercial-use-v1')
     const transmitted = (body as FormData).get('file')
     expect(transmitted).toBeInstanceOf(File)
     expect((transmitted as File).name).toBe('product-image.png')
@@ -47,7 +53,7 @@ describe('product asset upload client', () => {
       asset: { ...canonicalAsset, id: '223e4567-e89b-42d3-a456-426614174000', previewUrl: '/api/assets/223e4567-e89b-42d3-a456-426614174000' }
     }, { status: 201 })))
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
   })
@@ -58,7 +64,7 @@ describe('product asset upload client', () => {
       asset: { ...canonicalAsset, previewUrl: 'https://example.invalid/private-image.png' }
     }, { status: 201 })))
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
   })
@@ -69,7 +75,7 @@ describe('product asset upload client', () => {
       asset: { ...canonicalAsset, contentType: 'image/jpeg' }
     }, { status: 201 })))
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
   })
@@ -87,7 +93,7 @@ describe('product asset upload client', () => {
       asset: { ...canonicalAsset, ...dimensions }
     }, { status: 201 })))
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
   })
@@ -96,7 +102,7 @@ describe('product asset upload client', () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ asset: canonicalAsset })))
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
   })
@@ -109,7 +115,7 @@ describe('product asset upload client', () => {
     ))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
     )
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -121,7 +127,7 @@ describe('product asset upload client', () => {
       error: 'synthetic private object storage detail'
     }, { status: 503 })))
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '商品圖片上載暫時無法使用。 Product image upload is temporarily unavailable.'
     )
   })
@@ -133,7 +139,7 @@ describe('product asset upload client', () => {
     }, { status: 409 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '商品圖片上載識別資料已被使用，請重新選擇圖片。 Product image upload identity was already used; select the image again.'
     )
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -154,7 +160,7 @@ describe('product asset upload client', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const upload = uploadProductAsset(file)
+    const upload = uploadProductAsset(file, commercialUseRightsAttestation)
     const assertion = expect(upload).resolves.toEqual(canonicalAsset)
     await vi.advanceTimersByTimeAsync(90_000)
     await assertion
@@ -180,7 +186,7 @@ describe('product asset upload client', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const upload = uploadProductAsset(file)
+    const upload = uploadProductAsset(file, commercialUseRightsAttestation)
     const assertion = expect(upload).resolves.toEqual(canonicalAsset)
     await vi.advanceTimersByTimeAsync(45_000)
     await assertion
@@ -202,7 +208,7 @@ describe('product asset upload client', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(uploadProductAsset(file)).resolves.toEqual(canonicalAsset)
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).resolves.toEqual(canonicalAsset)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
   })
@@ -214,7 +220,7 @@ describe('product asset upload client', () => {
       : Response.json({ asset: canonicalAsset }, { status: 201 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(uploadProductAsset(file)).resolves.toEqual(canonicalAsset)
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).resolves.toEqual(canonicalAsset)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers).get('idempotency-key'))).toEqual([assetId, assetId])
   })
@@ -227,7 +233,7 @@ describe('product asset upload client', () => {
     }))
     vi.stubGlobal('fetch', fetchMock)
 
-    const upload = uploadProductAsset(file)
+    const upload = uploadProductAsset(file, commercialUseRightsAttestation)
     const assertion = expect(upload).rejects.toThrow(
       '商品圖片上載暫時無法使用。 Product image upload is temporarily unavailable.'
     )
@@ -243,9 +249,53 @@ describe('product asset upload client', () => {
     vi.stubGlobal('fetch', fetchMock)
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.gif', { type: 'image/gif' })
 
-    await expect(uploadProductAsset(file)).rejects.toThrow(
+    await expect(uploadProductAsset(file, commercialUseRightsAttestation)).rejects.toThrow(
       '只支援 PNG、JPEG 或靜態 WebP 圖片。 Only PNG, JPEG, or static WebP images are supported.'
     )
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-canonical rights attestation before making an upload request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+
+    await expect(uploadProductAsset(file, 'commercial-use-v2' as never)).rejects.toThrow(
+      '請先確認你有權將商品圖片用於商業素材。 Confirm commercial-use rights before uploading.'
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('confirms a saved product source with one exact same-origin mutation', async () => {
+    const fetchMock = vi.fn(async () => Response.json({
+      asset: { id: assetId, rightsStatus: 'confirmed' },
+      replayed: false
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(confirmProductAssetRights(assetId)).resolves.toEqual({
+      id: assetId,
+      rightsStatus: 'confirmed'
+    })
+    expect(fetchMock).toHaveBeenCalledWith(`/api/assets/${assetId}/rights`, expect.objectContaining({
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ attestation: 'commercial-use-v1' }),
+      signal: expect.any(AbortSignal)
+    }))
+  })
+
+  it('rejects expanded or mismatched rights confirmation responses', async () => {
+    for (const payload of [
+      { asset: { id: assetId, rightsStatus: 'confirmed' }, replayed: false, actorId: 'private-user' },
+      { asset: { id: '223e4567-e89b-42d3-a456-426614174000', rightsStatus: 'confirmed' }, replayed: false },
+      { asset: { id: assetId, rightsStatus: 'unconfirmed' }, replayed: false }
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json(payload)))
+      await expect(confirmProductAssetRights(assetId)).rejects.toThrow(
+        '未能確認商品圖片使用權狀態。 Unable to verify product image rights status.'
+      )
+    }
   })
 })

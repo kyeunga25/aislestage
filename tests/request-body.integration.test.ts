@@ -175,6 +175,9 @@ describe('bounded request body consumption', () => {
       disposition: 'form-data; name="file"; filename="product.png"',
       contentType: 'image/png',
       bytes: png
+    }, {
+      disposition: 'form-data; name="rightsAttestation"',
+      bytes: encoder.encode('commercial-use-v1')
     }])
     const upload = await dispatch('/api/assets/product', {
       method: 'POST',

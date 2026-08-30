@@ -27,6 +27,10 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toContain('商品類別')
     expect(markup).toContain('value="synthetic-category"')
     expect(markup).toContain(`maxLength="${campaignBriefLimits.product.category}" value="synthetic-category"`)
+    expect(markup).toContain('我確認擁有或已取得必要權利')
+    expect(markup).toContain('I have the necessary rights')
+    expect(markup).toMatch(/<input[^>]+type="checkbox"/)
+    expect(markup).toMatch(/<button[^>]+class="upload-zone"[^>]+disabled=""/)
   })
 
   it('locks every product-image mutation control while an upload is in progress', () => {
@@ -48,7 +52,7 @@ describe('Campaign Workspace product contract', () => {
       onGenerate={vi.fn()}
     />)
 
-    expect(markup.match(/disabled=""/g)).toHaveLength(4)
+    expect(markup.match(/disabled=""/g)).toHaveLength(5)
     expect(markup).toMatch(/<input[^>]+type="file"[^>]+disabled=""/)
     expect(markup).toMatch(/<button[^>]+aria-label="更換圖片"[^>]+disabled=""/)
     expect(markup).toMatch(/<button[^>]+aria-label="刪除圖片"[^>]+disabled=""/)
@@ -77,7 +81,7 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toContain('aria-busy="true"')
     expect(markup).toContain('正在安全刪除… Deleting securely…')
     expect(markup).toContain('正在刪除這張私人商品圖片 · Deleting this private product image')
-    expect(markup.match(/disabled=""/g)).toHaveLength(4)
+    expect(markup.match(/disabled=""/g)).toHaveLength(5)
     expect(markup).toMatch(/<button[^>]+aria-label="正在刪除圖片 · Deleting image"[^>]+disabled=""/)
   })
 

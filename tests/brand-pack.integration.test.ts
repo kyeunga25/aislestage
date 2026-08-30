@@ -37,6 +37,7 @@ function approvedBrief(assetId: string) {
 async function approveBrand(account: RegisteredAccount) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array(validPngBytes()).buffer], 'private-brand-source.png', { type: 'image/png' }))
+  form.set('rightsAttestation', 'commercial-use-v1')
   const uploaded = await dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie: account.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() },

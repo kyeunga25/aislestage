@@ -23,10 +23,12 @@ type Props = {
   productAssets?: ProductAssetListItem[]
   selectedProductAssetId?: string | null
   deletingProductAssetId?: string | null
+  confirmingProductAssetRightsId?: string | null
   isRefreshingProductAssets?: boolean
   productAssetNotice?: string
   onRefreshProductAssets?: () => void
   onSelectProductAsset?: (asset: ProductAssetListItem) => void
+  onConfirmProductAssetRights?: (asset: ProductAssetListItem) => void
   onDeleteProductAsset?: (asset: ProductAssetListItem) => void
   productProfiles?: SavedProductProfile[]
   selectedProductProfileId?: string | null
@@ -100,10 +102,12 @@ export function CollectionView({
   productAssets = [],
   selectedProductAssetId = null,
   deletingProductAssetId = null,
+  confirmingProductAssetRightsId = null,
   isRefreshingProductAssets = false,
   productAssetNotice = '',
   onRefreshProductAssets,
   onSelectProductAsset,
+  onConfirmProductAssetRights,
   onDeleteProductAsset,
   productProfiles = [],
   selectedProductProfileId = null,
@@ -150,7 +154,9 @@ export function CollectionView({
     ? defaultExpandedPackId
     : expandedPackSelection
   const productProfileBusy = isRefreshingProductProfiles || isSavingProductProfile || deletingProductProfileId !== null
-  const productSourceBusy = isRefreshingProductAssets || deletingProductAssetId !== null
+  const productSourceBusy = isRefreshingProductAssets
+    || deletingProductAssetId !== null
+    || confirmingProductAssetRightsId !== null
   const productLibraryBusy = productProfileBusy || productSourceBusy
   const collectionBusy = resultCollection
     ? isRefreshingResults
@@ -227,18 +233,21 @@ export function CollectionView({
       </section>
       <section className="product-source-library" aria-labelledby="product-source-library-title">
         <div className="data-head"><div><strong id="product-source-library-title">已保存來源圖</strong><small>Private source images · 只經授權 Worker route 顯示</small></div><span>{productAssets.length} 張</span></div>
-        <p className="product-source-privacy"><ShieldCheck size={17} /><span>原始本機檔名及儲存位置不會顯示；重用圖片仍會令舊 Agent 批准失效。</span></p>
+        <p className="product-source-privacy"><ShieldCheck size={17} /><span>原始本機檔名及儲存位置不會顯示；只有已確認商業使用權的圖片才可交給 Agent 或生成。</span></p>
         {productAssetNotice ? <p className="workspace-notice collection-notice" role="alert">{productAssetNotice}</p> : null}
         {productAssets.length ? <div className="product-source-grid">{productAssets.map((asset, index) => {
           const itemNumber = index + 1
           const selected = asset.id === selectedProductAssetId
           const deleting = asset.id === deletingProductAssetId
+          const confirmingRights = asset.id === confirmingProductAssetRightsId
+          const rightsConfirmed = asset.rightsStatus === 'confirmed'
           const controlsLocked = productInteractionDisabled || productLibraryBusy
-          return <article className={`product-source-card ${selected ? 'selected' : ''}`} aria-busy={deleting} key={asset.id}>
+          return <article className={`product-source-card ${selected ? 'selected' : ''}`} aria-busy={deleting || confirmingRights} key={asset.id}>
             <div className="product-source-preview"><img src={asset.previewUrl} alt={`私人商品來源圖 ${itemNumber}`} loading="lazy" />{selected ? <span><Check size={13} />使用中</span> : null}</div>
-            <div className="product-source-meta"><strong>{productAssetFormats[asset.contentType]} · {asset.widthPx !== null && asset.heightPx !== null ? `${asset.widthPx} × ${asset.heightPx} px` : '尺寸未記錄 · Dimensions unavailable'}</strong><small>{productAssetSize(asset.sizeBytes)} · {productAssetTime.format(new Date(asset.createdAt))}</small></div>
+            <div className="product-source-meta"><strong>{productAssetFormats[asset.contentType]} · {asset.widthPx !== null && asset.heightPx !== null ? `${asset.widthPx} × ${asset.heightPx} px` : '尺寸未記錄 · Dimensions unavailable'}</strong><small>{productAssetSize(asset.sizeBytes)} · {productAssetTime.format(new Date(asset.createdAt))}</small><span className={`product-rights-status ${rightsConfirmed ? 'confirmed' : 'unconfirmed'}`}><ShieldCheck size={13} />{rightsConfirmed ? '商業使用權已確認' : '使用權未確認 · Rights not confirmed'}</span></div>
             <div className="product-source-actions">
-              {onSelectProductAsset ? <button type="button" onClick={() => onSelectProductAsset(asset)} disabled={selected || controlsLocked} aria-label={selected ? `目前使用第 ${itemNumber} 張私人商品圖` : `使用第 ${itemNumber} 張私人商品圖`}>{selected ? '目前使用' : '使用此圖片'}</button> : null}
+              {rightsConfirmed && onSelectProductAsset ? <button type="button" onClick={() => onSelectProductAsset(asset)} disabled={selected || controlsLocked} aria-label={selected ? `目前使用第 ${itemNumber} 張私人商品圖` : `使用第 ${itemNumber} 張私人商品圖`}>{selected ? '目前使用' : '使用此圖片'}</button> : null}
+              {!rightsConfirmed && onConfirmProductAssetRights ? <button type="button" onClick={() => onConfirmProductAssetRights(asset)} disabled={controlsLocked} aria-label={confirmingRights ? `正在確認第 ${itemNumber} 張商品圖使用權 · Confirming product image rights ${itemNumber}` : `確認第 ${itemNumber} 張商品圖商業使用權`}>{confirmingRights ? '確認中…' : '確認商業使用權'}</button> : null}
               {onDeleteProductAsset ? <button className="danger" type="button" onClick={() => onDeleteProductAsset(asset)} disabled={controlsLocked} aria-label={deleting ? `正在刪除第 ${itemNumber} 張私人商品圖 · Deleting private product source ${itemNumber}` : `刪除第 ${itemNumber} 張私人商品圖`}><Trash2 size={14} />{deleting ? '刪除中…' : '刪除'}</button> : null}
             </div>
           </article>

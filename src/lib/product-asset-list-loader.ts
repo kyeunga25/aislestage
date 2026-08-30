@@ -9,7 +9,7 @@ const MAX_PRODUCT_ASSET_LIST_BYTES = 64 * 1024
 const PRODUCT_ASSET_LIST_TIMEOUT_MS = 15_000
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const responseKeys = new Set(['assets'])
-const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'widthPx', 'heightPx', 'previewUrl', 'createdAt'])
+const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'widthPx', 'heightPx', 'rightsStatus', 'previewUrl', 'createdAt'])
 const canonicalNames = new Map<ProductAssetListItem['contentType'], string>([
   ['image/png', 'product-image.png'],
   ['image/jpeg', 'product-image.jpg'],
@@ -47,6 +47,7 @@ function normalizeProductAsset(value: unknown): ProductAssetListItem | null {
     || Number(value.sizeBytes) <= 0
     || Number(value.sizeBytes) > MAX_PRODUCT_IMAGE_BYTES
     || (!hasUnknownDimensions && !hasVerifiedDimensions)
+    || (value.rightsStatus !== 'confirmed' && value.rightsStatus !== 'unconfirmed')
     || value.previewUrl !== `/api/assets/${encodeURIComponent(id)}`
     || !isCanonicalUtcTimestamp(value.createdAt)) return null
   return {
@@ -56,6 +57,7 @@ function normalizeProductAsset(value: unknown): ProductAssetListItem | null {
     sizeBytes: value.sizeBytes as number,
     widthPx: value.widthPx as number | null,
     heightPx: value.heightPx as number | null,
+    rightsStatus: value.rightsStatus,
     previewUrl: value.previewUrl,
     createdAt: value.createdAt
   }

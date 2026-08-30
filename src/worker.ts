@@ -83,11 +83,13 @@ const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_BRAND_PACK_BODY_BYTES = 1_024
 const MAX_PRODUCT_PROFILE_BODY_BYTES = 1_024
+const MAX_PRODUCT_RIGHTS_BODY_BYTES = 512
 const MAX_WORKSPACE_MEMBER_BODY_BYTES = 2_048
 const MAX_WORKSPACE_SELECTION_BODY_BYTES = 1_024
 const MAX_WORKSPACE_MEMBERS = 50
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
+const COMMERCIAL_USE_RIGHTS_ATTESTATION = 'commercial-use-v1'
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const WORKSPACE_SHELL_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 const WORKSPACE_SHELL_PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()'
@@ -1497,6 +1499,7 @@ type ProductAssetListRow = {
   sizeBytes: number
   widthPx: number | null
   heightPx: number | null
+  rightsStatus: 'confirmed' | 'unconfirmed'
   createdAt: string
 }
 
@@ -2003,13 +2006,21 @@ async function listProductAssets(env: Env, session: SessionContext) {
     const result = await env.DB.prepare(`
       SELECT a.id, a.content_type AS contentType, a.size_bytes AS sizeBytes,
         a.width_px AS widthPx, a.height_px AS heightPx,
+        CASE WHEN r.asset_id IS NULL THEN 'unconfirmed' ELSE 'confirmed' END AS rightsStatus,
         strftime('%Y-%m-%dT%H:%M:%SZ', a.created_at) AS createdAt
       FROM media_assets a
+      LEFT JOIN product_asset_rights_attestations r
+        ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
+        AND r.attestation_version = ?
       WHERE a.workspace_id = ? AND a.kind = 'product-source'
         AND a.content_sha256 IS NOT NULL AND a.size_bytes <= ?
       ORDER BY a.created_at DESC, a.id DESC
       LIMIT 20
-    `).bind(session.currentWorkspace.id, MAX_PRODUCT_IMAGE_BYTES).all<ProductAssetListRow>()
+    `).bind(
+      COMMERCIAL_USE_RIGHTS_ATTESTATION,
+      session.currentWorkspace.id,
+      MAX_PRODUCT_IMAGE_BYTES
+    ).all<ProductAssetListRow>()
     return json({
       assets: result.results.map((asset) => {
         const dimensions = storedProductAssetDimensions(asset.widthPx, asset.heightPx)
@@ -2021,6 +2032,7 @@ async function listProductAssets(env: Env, session: SessionContext) {
           sizeBytes: asset.sizeBytes,
           widthPx: dimensions?.width ?? null,
           heightPx: dimensions?.height ?? null,
+          rightsStatus: asset.rightsStatus,
           previewUrl: `/api/assets/${asset.id}`,
           createdAt: asset.createdAt
         }
@@ -2046,6 +2058,18 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const headers = new Headers({ 'content-type': request.headers.get('content-type')! })
   const boundedRequest = new Request(request.url, { method: 'POST', headers, body: bounded.bytes as BodyInit })
   const form = await boundedRequest.formData().catch(() => null)
+  const formEntries = form ? [...form.entries()] : []
+  const rightsValues = form?.getAll('rightsAttestation') || []
+  const hasExactUploadFields = formEntries.length === 2
+    && formEntries.every(([key]) => key === 'file' || key === 'rightsAttestation')
+    && (form?.getAll('file').length || 0) === 1
+    && rightsValues.length === 1
+    && rightsValues[0] === COMMERCIAL_USE_RIGHTS_ATTESTATION
+  if (!hasExactUploadFields) {
+    return json({
+      error: '請先確認你有權將商品圖片用於商業素材。 Confirm commercial-use rights before uploading.'
+    }, { status: 400 })
+  }
   const value = form?.get('file')
   if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
   if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或靜態 WebP 圖片。' }, { status: 415 })
@@ -2076,6 +2100,7 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
       sizeBytes: value.size,
       widthPx: dimensions.width,
       heightPx: dimensions.height,
+      rightsStatus: 'confirmed',
       previewUrl: `/api/assets/${assetId}`
     }
   }, { status: 201 })
@@ -2094,7 +2119,12 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     if (!matchesProductAssetUpload(existing, objectKey, value.type, value.size, contentSha256)) return conflictResponse()
     try {
       const stored = await env.MEDIA_BUCKET.head(existing.objectKey)
-      if (stored && hasCanonicalProductAssetMetadata(existing, stored)) return createdResponse()
+      if (stored && hasCanonicalProductAssetMetadata(existing, stored)) {
+        if (!hasConfirmedProductAssetRights(existing)) {
+          await confirmProductAssetRightsRecord(env, session.currentWorkspace.id, assetId, session.user.id)
+        }
+        return createdResponse()
+      }
     } catch {
       console.error('product-asset-upload-replay-read-failed')
       return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
@@ -2119,30 +2149,47 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   }
 
   try {
-    await env.DB.prepare(`
-      INSERT INTO media_assets (
-        id, workspace_id, created_by_user_id, kind, object_key,
-        original_filename, content_type, size_bytes, content_sha256,
-        width_px, height_px
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO media_assets (
+          id, workspace_id, created_by_user_id, kind, object_key,
+          original_filename, content_type, size_bytes, content_sha256,
+          width_px, height_px
+        )
+        VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        assetId,
+        session.currentWorkspace.id,
+        session.user.id,
+        objectKey,
+        storedFilename,
+        value.type,
+        value.size,
+        contentSha256,
+        dimensions.width,
+        dimensions.height
+      ),
+      env.DB.prepare(`
+        INSERT INTO product_asset_rights_attestations (
+          asset_id, workspace_id, confirmed_by_user_id, attestation_version
+        ) VALUES (?, ?, ?, ?)
+      `).bind(
+        assetId,
+        session.currentWorkspace.id,
+        session.user.id,
+        COMMERCIAL_USE_RIGHTS_ATTESTATION
       )
-      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      assetId,
-      session.currentWorkspace.id,
-      session.user.id,
-      objectKey,
-      storedFilename,
-      value.type,
-      value.size,
-      contentSha256,
-      dimensions.width,
-      dimensions.height
-    ).run()
+    ])
   } catch {
     try {
       const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
       if (committed) {
-        if (matchesProductAssetUpload(committed, objectKey, value.type, value.size, contentSha256)) return createdResponse()
+        if (matchesProductAssetUpload(committed, objectKey, value.type, value.size, contentSha256)) {
+          if (!hasConfirmedProductAssetRights(committed)) {
+            await confirmProductAssetRightsRecord(env, session.currentWorkspace.id, assetId, session.user.id)
+          }
+          return createdResponse()
+        }
         if (committed.objectKey !== objectKey) await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
         return conflictResponse()
       }
@@ -2163,18 +2210,57 @@ type StoredProductAsset = {
   contentType: 'image/png' | 'image/jpeg' | 'image/webp'
   sizeBytes: number
   contentSha256: string | null
+  rightsAttestationVersion: string | null
 }
 
 async function productAssetForWorkspace(env: Env, workspaceId: string, assetId: string) {
   return env.DB.prepare(`
     SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId,
       a.content_type AS contentType, a.size_bytes AS sizeBytes,
-      a.content_sha256 AS contentSha256
+      a.content_sha256 AS contentSha256,
+      r.attestation_version AS rightsAttestationVersion
     FROM media_assets a
     JOIN workspaces w ON w.id = a.workspace_id
+    LEFT JOIN product_asset_rights_attestations r
+      ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
     WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source'
       AND w.access_status = 'active'
   `).bind(assetId, workspaceId).first<StoredProductAsset>()
+}
+
+function hasConfirmedProductAssetRights(asset: StoredProductAsset) {
+  return asset.rightsAttestationVersion === COMMERCIAL_USE_RIGHTS_ATTESTATION
+}
+
+async function productAssetRightsVersion(env: Env, workspaceId: string, assetId: string) {
+  return env.DB.prepare(`
+    SELECT attestation_version AS attestationVersion
+    FROM product_asset_rights_attestations
+    WHERE asset_id = ? AND workspace_id = ?
+  `).bind(assetId, workspaceId).first<{ attestationVersion: string }>()
+}
+
+async function confirmProductAssetRightsRecord(
+  env: Env,
+  workspaceId: string,
+  assetId: string,
+  userId: string
+): Promise<'created' | 'replayed'> {
+  const existing = await productAssetRightsVersion(env, workspaceId, assetId)
+  if (existing?.attestationVersion === COMMERCIAL_USE_RIGHTS_ATTESTATION) return 'replayed'
+  if (existing) throw new TypeError('Unsupported stored product asset rights version.')
+  try {
+    await env.DB.prepare(`
+      INSERT INTO product_asset_rights_attestations (
+        asset_id, workspace_id, confirmed_by_user_id, attestation_version
+      ) VALUES (?, ?, ?, ?)
+    `).bind(assetId, workspaceId, userId, COMMERCIAL_USE_RIGHTS_ATTESTATION).run()
+    return 'created'
+  } catch (error) {
+    const committed = await productAssetRightsVersion(env, workspaceId, assetId)
+    if (committed?.attestationVersion === COMMERCIAL_USE_RIGHTS_ATTESTATION) return 'replayed'
+    throw error
+  }
 }
 
 function matchesProductAssetUpload(
@@ -2209,6 +2295,12 @@ function productAssetNotFound() {
   return json({ error: '找不到這張商品圖片。 Product asset not found.' }, { status: 404 })
 }
 
+function productAssetRightsRequired() {
+  return json({
+    error: '請先確認這張商品圖片的商業使用權。 Confirm commercial-use rights for this product image first.'
+  }, { status: 409 })
+}
+
 function productAssetUnavailable() {
   return json({
     code: 'unavailable',
@@ -2238,6 +2330,63 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
     return invalidProductAsset()
   }
   return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, no-store', 'cross-origin-resource-policy': 'same-origin', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
+}
+
+async function confirmProductAssetRights(
+  request: Request,
+  env: Env,
+  session: SessionContext,
+  assetId: string
+) {
+  if (!UUID_V4_PATTERN.test(assetId)) {
+    await cancelRequestBody(request)
+    return json({ error: '商品圖片識別資料無效。 Product asset identifier is invalid.' }, { status: 400 })
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_PRODUCT_RIGHTS_BODY_BYTES)
+  if (parsed.tooLarge) {
+    return json({ error: '商品圖片使用權確認內容過大。 Product image rights payload is too large.' }, { status: 413 })
+  }
+  const body = parsed.body && typeof parsed.body === 'object' && !Array.isArray(parsed.body)
+    ? parsed.body as Record<string, unknown>
+    : null
+  const keys = body ? Object.keys(body) : []
+  if (!body
+    || keys.length !== 1
+    || keys[0] !== 'attestation'
+    || body.attestation !== COMMERCIAL_USE_RIGHTS_ATTESTATION) {
+    return json({
+      error: '商品圖片使用權確認格式無效。 Product image rights confirmation is invalid.'
+    }, { status: 400 })
+  }
+
+  let asset: StoredProductAsset | null
+  try {
+    asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  } catch {
+    console.error('product-asset-rights-preflight-read-failed')
+    return json({ error: '商品圖片使用權確認暫時無法使用。 Product image rights confirmation is temporarily unavailable.' }, { status: 503 })
+  }
+  if (!asset) return productAssetNotFound()
+  if (typeof asset.contentSha256 !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(asset.contentSha256)) {
+    return invalidProductAsset()
+  }
+
+  try {
+    const result = await confirmProductAssetRightsRecord(
+      env,
+      session.currentWorkspace.id,
+      assetId,
+      session.user.id
+    )
+    return json({
+      asset: { id: assetId, rightsStatus: 'confirmed' },
+      replayed: result === 'replayed'
+    })
+  } catch {
+    console.error('product-asset-rights-confirmation-failed')
+    return json({ error: '商品圖片使用權確認暫時無法使用。 Product image rights confirmation is temporarily unavailable.' }, { status: 503 })
+  }
 }
 
 async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
@@ -2282,7 +2431,16 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
 async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve') {
   try {
     const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
-    if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
+    if (request.method === 'GET' && action === 'state') {
+      const state = await agent.getPlan()
+      if (state.brief?.assetId) {
+        const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
+        if (!asset || !hasConfirmedProductAssetRights(asset)) {
+          return json({ state: await agent.resetPlanForAsset(state.brief.assetId) })
+        }
+      }
+      return json({ state })
+    }
     if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
     if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
     const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
@@ -2300,6 +2458,7 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
       if (brief.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, brief.assetId)
         if (!asset) return productAssetNotFound()
+        if (!hasConfirmedProductAssetRights(asset)) return productAssetRightsRequired()
         const object = await env.MEDIA_BUCKET.head(asset.objectKey)
         if (!object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
       }
@@ -2312,8 +2471,9 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
         return json({ error: '批准版本格式無效。 Approval revision must be a positive integer.' }, { status: 400 })
       }
       const state = await agent.getPlan()
-      if (state.stage === 'awaiting-approval' && state.brief?.assetId) {
+      if ((state.stage === 'awaiting-approval' || state.stage === 'approved') && state.brief?.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
+        if (asset && !hasConfirmedProductAssetRights(asset)) return productAssetRightsRequired()
         const object = asset ? await env.MEDIA_BUCKET.head(asset.objectKey) : null
         if (!asset || !object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
       }
@@ -2327,13 +2487,26 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
   }
 }
 
-async function referenceAssetsBelongToWorkspace(env: Env, workspaceId: string, assetIds: string[]) {
-  if (!assetIds.length) return true
+async function referenceAssetReadiness(
+  env: Env,
+  workspaceId: string,
+  assetIds: string[]
+): Promise<'ready' | 'missing' | 'rights-unconfirmed'> {
+  if (!assetIds.length) return 'ready'
   const placeholders = assetIds.map(() => '?').join(',')
-  const result = await env.DB.prepare(`SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ? AND id IN (${placeholders}) AND kind = 'product-source'`)
-    .bind(workspaceId, ...assetIds)
-    .first<{ count: number }>()
-  return result?.count === new Set(assetIds).size
+  const result = await env.DB.prepare(`
+    SELECT COUNT(*) AS count, COUNT(r.asset_id) AS rightsCount
+    FROM media_assets a
+    LEFT JOIN product_asset_rights_attestations r
+      ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
+      AND r.attestation_version = ?
+    WHERE a.workspace_id = ? AND a.id IN (${placeholders}) AND a.kind = 'product-source'
+  `)
+    .bind(COMMERCIAL_USE_RIGHTS_ATTESTATION, workspaceId, ...assetIds)
+    .first<{ count: number; rightsCount: number }>()
+  const expected = new Set(assetIds).size
+  if (result?.count !== expected) return 'missing'
+  return result.rightsCount === expected ? 'ready' : 'rights-unconfirmed'
 }
 
 async function approvedGenerationInput(env: Env, input: GenerationInput) {
@@ -2362,11 +2535,20 @@ async function requireCurrentGenerationExecution(
     FROM generations g
     JOIN workspaces w ON w.id = g.workspace_id
     JOIN media_assets a ON a.workspace_id = w.id
+    JOIN product_asset_rights_attestations r
+      ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
     WHERE g.id = ? AND g.workspace_id = ?
       AND g.status = 'processing' AND g.processing_attempt = ?
       AND w.access_status = 'active'
       AND a.id = ? AND a.kind = 'product-source'
-  `).bind(generationId, input.workspaceId, processingAttempt, input.referenceAssetIds[0]).first<{ current: number }>()
+      AND r.attestation_version = ?
+  `).bind(
+    generationId,
+    input.workspaceId,
+    processingAttempt,
+    input.referenceAssetIds[0],
+    COMMERCIAL_USE_RIGHTS_ATTESTATION
+  ).first<{ current: number }>()
   if (!current || !await approvedGenerationInput(env, input)) {
     throw new TerminalGenerationError('Generation execution approval is stale.')
   }
@@ -2375,6 +2557,9 @@ async function requireCurrentGenerationExecution(
 async function generationSourceAsset(env: Env, input: GenerationInput) {
   const asset = await productAssetForWorkspace(env, input.workspaceId, input.referenceAssetIds[0])
   if (!asset) throw new TerminalGenerationError('Approved product asset is unavailable.')
+  if (!hasConfirmedProductAssetRights(asset)) {
+    throw new TerminalGenerationError('Approved product asset rights are unavailable.')
+  }
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
   if (!object) throw new TerminalGenerationError('Approved product asset is unavailable.')
   if (!hasCanonicalProductAssetMetadata(asset, object)) {
@@ -3166,14 +3351,15 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     if (issues.length) return json({ error: issues[0], issues }, { status: 422 })
     if (!workflowById(input.workflowId).ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   }
-  let ownsReferenceAssets: boolean
+  let referenceAssets: Awaited<ReturnType<typeof referenceAssetReadiness>>
   try {
-    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)
+    referenceAssets = await referenceAssetReadiness(env, workspace.id, inputs[0].referenceAssetIds)
   } catch {
     console.error('campaign-pack-asset-preflight-read-failed')
     return generationPreflightUnavailable()
   }
-  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'missing') return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'rights-unconfirmed') return productAssetRightsRequired()
   try {
     if (!await approvedCampaignPackInputs(env, inputs)) return json({ error: 'Campaign plan approval is missing, stale, or does not match this pack.' }, { status: 409 })
   } catch {
@@ -3334,14 +3520,15 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   const safeInput: GenerationInput = { ...input, workspaceId: workspace.id, intent: brief.intent, brand: brief.brand, product: brief.product, referenceImageUrls: [], referenceAssetIds: [input.referenceAssetIds[0]] }
   const compositionIssues = validateCompositionInput(safeInput)
   if (compositionIssues.length) return json({ error: compositionIssues[0], issues: compositionIssues }, { status: 422 })
-  let ownsReferenceAssets: boolean
+  let referenceAssets: Awaited<ReturnType<typeof referenceAssetReadiness>>
   try {
-    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)
+    referenceAssets = await referenceAssetReadiness(env, workspace.id, safeInput.referenceAssetIds)
   } catch {
     console.error('generation-asset-preflight-read-failed')
     return generationPreflightUnavailable()
   }
-  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'missing') return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'rights-unconfirmed') return productAssetRightsRequired()
   const workflow = workflowById(input.workflowId)
   if (!workflow.ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   try {
@@ -3990,6 +4177,14 @@ export default {
       if (request.method === 'POST') return uploadProductAsset(request, env, session)
       await cancelRequestBody(request)
       return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const assetRightsMatch = url.pathname.match(/^\/api\/assets\/([^/]+)\/rights$/)
+    if (assetRightsMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'POST') return confirmProductAssetRights(request, env, session, assetRightsMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'POST' } })
     }
     const assetMatch = url.pathname.match(/^\/api\/assets\/([^/]+)$/)
     if (assetMatch && request.method === 'GET') {

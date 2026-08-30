@@ -178,6 +178,7 @@ export type ProductAsset = {
   sizeBytes: number
   widthPx: number | null
   heightPx: number | null
+  rightsStatus: 'confirmed' | 'unconfirmed'
   previewUrl: string
 }
 

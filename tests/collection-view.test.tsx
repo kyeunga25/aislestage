@@ -81,6 +81,7 @@ const productAssets: ProductAssetListItem[] = [
     sizeBytes: 1024,
     widthPx: 1024,
     heightPx: 1024,
+    rightsStatus: 'confirmed',
     previewUrl: '/api/assets/123e4567-e89b-42d3-a456-426614174010',
     createdAt: '2026-08-30T05:00:00Z'
   },
@@ -91,6 +92,7 @@ const productAssets: ProductAssetListItem[] = [
     sizeBytes: 2048,
     widthPx: null,
     heightPx: null,
+    rightsStatus: 'unconfirmed',
     previewUrl: '/api/assets/123e4567-e89b-42d3-a456-426614174011',
     createdAt: '2026-08-30T05:05:00Z'
   }
@@ -277,6 +279,7 @@ describe('Collection View private output deletion state', () => {
       productAssetNotice="私人商品來源圖暫時無法讀取。 Private product sources are temporarily unavailable."
       onRefreshProductAssets={vi.fn()}
       onSelectProductAsset={vi.fn()}
+      onConfirmProductAssetRights={vi.fn()}
       onDeleteProductAsset={vi.fn()}
       onBack={vi.fn()}
       onDeleteResult={vi.fn()}
@@ -289,8 +292,12 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('WebP')
     expect(markup).toContain('1024 × 1024 px')
     expect(markup).toContain('尺寸未記錄 · Dimensions unavailable')
+    expect(markup).toContain('商業使用權已確認')
+    expect(markup).toContain('使用權未確認 · Rights not confirmed')
+    expect(markup).toContain('確認商業使用權')
     expect(markup).toContain('目前使用第 1 張私人商品圖')
-    expect(markup).toContain('使用第 2 張私人商品圖')
+    expect(markup).not.toContain('使用第 2 張私人商品圖')
+    expect(markup).toContain('確認第 2 張商品圖商業使用權')
     expect(markup).toContain('正在刪除第 2 張私人商品圖 · Deleting private product source 2')
     expect(markup).toContain('role="alert"')
     expect(markup).toContain('Private product sources are temporarily unavailable.')

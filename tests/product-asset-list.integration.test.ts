@@ -11,6 +11,7 @@ async function uploadProductSource(
 ) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array(bytes).buffer], filename, { type: contentType }))
+  form.set('rightsAttestation', 'commercial-use-v1')
   return dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() },
@@ -36,9 +37,10 @@ describe('private product-source library', () => {
 
     expect(Object.keys(payload)).toEqual(['assets'])
     expect(payload.assets).toHaveLength(2)
-    expect(payload.assets.every((asset) => Object.keys(asset).sort().join(',') === 'contentType,createdAt,heightPx,id,name,previewUrl,sizeBytes,widthPx')).toBe(true)
+    expect(payload.assets.every((asset) => Object.keys(asset).sort().join(',') === 'contentType,createdAt,heightPx,id,name,previewUrl,rightsStatus,sizeBytes,widthPx')).toBe(true)
     expect(payload.assets.map((asset) => asset.name)).toEqual(expect.arrayContaining(['product-image.png', 'product-image.webp']))
     expect(payload.assets.every((asset) => asset.widthPx === 1 && asset.heightPx === 1)).toBe(true)
+    expect(payload.assets.every((asset) => asset.rightsStatus === 'confirmed')).toBe(true)
     expect(payload.assets.every((asset) => asset.previewUrl === `/api/assets/${asset.id}`)).toBe(true)
     expect(payload.assets.every((asset) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(String(asset.createdAt)))).toBe(true)
     expect(raw).not.toContain('private-launch-name.png')

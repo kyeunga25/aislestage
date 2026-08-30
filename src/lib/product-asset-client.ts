@@ -8,13 +8,22 @@ export const productAssetSizeMessage = '圖片必須有內容且不可超過 4 M
 export const productAssetResponseInvalidMessage = '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
 export const productAssetUploadUnavailableMessage = '商品圖片上載暫時無法使用。 Product image upload is temporarily unavailable.'
 export const productAssetConflictMessage = '商品圖片上載識別資料已被使用，請重新選擇圖片。 Product image upload identity was already used; select the image again.'
+export const productAssetRightsRequiredMessage = '請先確認你有權將商品圖片用於商業素材。 Confirm commercial-use rights before uploading.'
+export const productAssetRightsResponseInvalidMessage = '未能確認商品圖片使用權狀態。 Unable to verify product image rights status.'
+export const productAssetRightsUnavailableMessage = '商品圖片使用權確認暫時無法使用。 Product image rights confirmation is temporarily unavailable.'
+export const commercialUseRightsAttestation = 'commercial-use-v1' as const
+export type CommercialUseRightsAttestation = typeof commercialUseRightsAttestation
 
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_PRODUCT_ASSET_RESPONSE_BYTES = 4 * 1024
 const PRODUCT_UPLOAD_TIMEOUT_MS = 45_000
 const PRODUCT_UPLOAD_ATTEMPTS = 2
-const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'widthPx', 'heightPx', 'previewUrl'])
+const PRODUCT_RIGHTS_TIMEOUT_MS = 15_000
+const MAX_PRODUCT_RIGHTS_RESPONSE_BYTES = 2 * 1024
+const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'widthPx', 'heightPx', 'rightsStatus', 'previewUrl'])
 const responseKeys = new Set(['asset'])
+const rightsResponseKeys = new Set(['asset', 'replayed'])
+const rightsAssetKeys = new Set(['id', 'rightsStatus'])
 const imageNames = new Map<ProductAsset['contentType'], string>([
   ['image/png', 'product-image.png'],
   ['image/jpeg', 'product-image.jpg'],
@@ -61,6 +70,7 @@ function normalizeProductAsset(value: unknown, file: File, idempotencyKey: strin
     || !Number.isSafeInteger(value.sizeBytes)
     || Number(value.sizeBytes) <= 0
     || !hasSafeImageDimensions({ width: value.widthPx as number, height: value.heightPx as number })
+    || value.rightsStatus !== 'confirmed'
     || value.previewUrl !== `/api/assets/${encodeURIComponent(String(value.id))}`) return null
   return {
     id: String(value.id),
@@ -69,6 +79,7 @@ function normalizeProductAsset(value: unknown, file: File, idempotencyKey: strin
     sizeBytes: value.sizeBytes as number,
     widthPx: value.widthPx as number,
     heightPx: value.heightPx as number,
+    rightsStatus: 'confirmed',
     previewUrl: value.previewUrl
   }
 }
@@ -115,18 +126,22 @@ async function uploadProductAssetAttempt(file: File, form: FormData, idempotency
   )
 }
 
-export async function uploadProductAsset(file: File) {
+export async function uploadProductAsset(file: File, rightsAttestation: CommercialUseRightsAttestation) {
   if (!(file instanceof File) || !imageNames.has(file.type as ProductAsset['contentType'])) {
     throw new Error(productAssetTypeMessage)
   }
   if (!Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_PRODUCT_IMAGE_BYTES) {
     throw new Error(productAssetSizeMessage)
   }
+  if (rightsAttestation !== commercialUseRightsAttestation) {
+    throw new Error(productAssetRightsRequiredMessage)
+  }
 
   const canonicalFilename = imageNames.get(file.type as ProductAsset['contentType'])!
   const idempotencyKey = crypto.randomUUID()
   const form = new FormData()
   form.set('file', file, canonicalFilename)
+  form.set('rightsAttestation', rightsAttestation)
   for (let attempt = 0; attempt < PRODUCT_UPLOAD_ATTEMPTS; attempt += 1) {
     try {
       return await uploadProductAssetAttempt(file, form, idempotencyKey)
@@ -138,4 +153,52 @@ export async function uploadProductAsset(file: File) {
     }
   }
   throw new Error(productAssetUploadUnavailableMessage)
+}
+
+export async function confirmProductAssetRights(assetId: string): Promise<Pick<ProductAsset, 'id' | 'rightsStatus'>> {
+  if (!uuidV4.test(assetId)) throw new Error(productAssetRightsResponseInvalidMessage)
+  try {
+    return await fetchWithTimeout(
+      `/api/assets/${encodeURIComponent(assetId)}/rights`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ attestation: commercialUseRightsAttestation })
+      },
+      PRODUCT_RIGHTS_TIMEOUT_MS,
+      async (response, signal) => {
+        if (response.status !== 200 || !response.ok) {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(productAssetRightsUnavailableMessage)
+        }
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+        if (contentType !== 'application/json') {
+          await response.body?.cancel().catch(() => undefined)
+          throw new Error(productAssetRightsResponseInvalidMessage)
+        }
+        const outcome = await readBoundedJsonResponseOutcome(response, MAX_PRODUCT_RIGHTS_RESPONSE_BYTES)
+        if (signal.aborted || outcome.kind !== 'value' || !isRecord(outcome.value)) {
+          throw new Error(outcome.kind === 'stream-error'
+            ? productAssetRightsUnavailableMessage
+            : productAssetRightsResponseInvalidMessage)
+        }
+        const data = outcome.value
+        if (!hasExactKeys(data, rightsResponseKeys)
+          || typeof data.replayed !== 'boolean'
+          || !isRecord(data.asset)
+          || !hasExactKeys(data.asset, rightsAssetKeys)
+          || data.asset.id !== assetId
+          || data.asset.rightsStatus !== 'confirmed') {
+          throw new Error(productAssetRightsResponseInvalidMessage)
+        }
+        return { id: assetId, rightsStatus: 'confirmed' as const }
+      }
+    )
+  } catch (error) {
+    if (error instanceof Error
+      && (error.message === productAssetRightsResponseInvalidMessage
+        || error.message === productAssetRightsUnavailableMessage)) throw error
+    throw new Error(productAssetRightsUnavailableMessage)
+  }
 }

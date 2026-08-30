@@ -82,6 +82,7 @@ async function createCampaignPack(cookie: string, input: Awaited<ReturnType<type
 async function approvedInput(cookie: string, workspaceId: string) {
   const form = new FormData()
   form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
+  form.set('rightsAttestation', 'commercial-use-v1')
   const upload = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
   const { asset } = await upload.json() as { asset: { id: string } }
   const seed = generationInput(workspaceId, asset.id)
@@ -226,7 +227,7 @@ describe('workspace authorization and output allowance integrity', () => {
     const assetFailureDb = {
       prepare(query: string) {
         const statement = env.DB.prepare(query)
-        if (!query.includes('SELECT COUNT(*) AS count FROM media_assets') || !query.includes('id IN')) return statement
+        if (!query.includes('SELECT COUNT(*) AS count') || !query.includes('FROM media_assets a') || !query.includes('id IN')) return statement
         return {
           bind: () => ({
             first: async () => { throw new TypeError('synthetic pack asset preflight failure') }
@@ -1185,6 +1186,19 @@ describe('workspace authorization and output allowance integrity', () => {
       .first<{ objectKey: string }>()
     await env.DB.prepare('DELETE FROM media_assets WHERE id = ? AND workspace_id = ?').bind(input.referenceAssetIds[0], account.currentWorkspace.id).run()
     if (asset) await env.MEDIA_BUCKET.delete(asset.objectKey)
+
+    await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
+  })
+
+  it('terminally fails before provider or R2 work when source rights are no longer confirmed', async () => {
+    const account = await registerAccount('Queue Missing Source Rights')
+    const input = await approvedInput(account.cookie, account.currentWorkspace.id)
+    const assistedEnv = manuallyDeliveredAssistedEnv()
+    const queued = await createGeneration(account.cookie, input, assistedEnv)
+    const { id } = await queued.json() as { id: string }
+    await env.DB.prepare('DELETE FROM product_asset_rights_attestations WHERE asset_id = ? AND workspace_id = ?')
+      .bind(input.referenceAssetIds[0], account.currentWorkspace.id)
+      .run()
 
     await expectTerminalQueueFailure(account, id, input, 1, assistedEnv)
   })

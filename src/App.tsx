@@ -27,9 +27,11 @@ import type { AccessFailureReason } from './lib/access-login'
 import { generationListUnavailableMessage, loadGenerationSnapshot } from './lib/generation-loader'
 import { generationReviewSourceInvalidMessage, submitGenerationReview } from './lib/generation-review-client'
 import {
+  confirmProductAssetRights,
   productAssetSizeMessage,
   productAssetTypeMessage,
   productAssetUploadUnavailableMessage,
+  type CommercialUseRightsAttestation,
   uploadProductAsset
 } from './lib/product-asset-client'
 import { loadProductAssetListSnapshot } from './lib/product-asset-list-loader'
@@ -98,6 +100,7 @@ const demoProductAssets: ProductAssetListItem[] = [{
   sizeBytes: 1_000_640,
   widthPx: 1024,
   heightPx: 1024,
+  rightsStatus: 'confirmed',
   previewUrl: demoSpeaker,
   createdAt: '2026-08-30T03:55:00Z'
 }]
@@ -161,6 +164,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [productAssetNotice, setProductAssetNotice] = useState('')
   const [isRefreshingProductAssets, setIsRefreshingProductAssets] = useState(false)
   const [deletingProductAssetId, setDeletingProductAssetId] = useState<string | null>(null)
+  const [confirmingProductAssetRightsId, setConfirmingProductAssetRightsId] = useState<string | null>(null)
   const [productProfiles, setProductProfiles] = useState<SavedProductProfile[]>(demoMode ? demoProductProfiles : [])
   const [selectedProductProfileId, setSelectedProductProfileId] = useState<string | null>(null)
   const [productProfileNotice, setProductProfileNotice] = useState('')
@@ -191,6 +195,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationRefreshLock = useRef(false)
   const generationRefreshEpoch = useRef(0)
   const productAssetRefreshLock = useRef(false)
+  const productAssetRightsMutationLock = useRef(false)
   const productAssetRefreshEpoch = useRef(0)
   const productProfileMutationLock = useRef(false)
   const productProfileRefreshLock = useRef(false)
@@ -242,7 +247,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setImage({
         name: '已保存的商品圖片',
         url: previewUrl,
-        asset: { id: nextState.brief.assetId, name: '已保存的商品圖片', contentType: 'image/png', sizeBytes: 0, widthPx: null, heightPx: null, previewUrl },
+        asset: { id: nextState.brief.assetId, name: '已保存的商品圖片', contentType: 'image/png', sizeBytes: 0, widthPx: null, heightPx: null, rightsStatus: 'confirmed', previewUrl },
         status: 'ready',
         error: ''
       })
@@ -252,25 +257,57 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   function applyWorkspaceSnapshots(
     generationSnapshot: Awaited<ReturnType<typeof loadGenerationSnapshot>>,
     campaignAgentSnapshot: Awaited<ReturnType<typeof loadCampaignAgentSnapshot>>,
+    productAssetSnapshot: Awaited<ReturnType<typeof loadProductAssetListSnapshot>>,
     hydrationEpoch: number,
-    generationEpoch: number
+    generationEpoch: number,
+    productAssetEpoch: number
   ) {
     if (hydrationEpoch !== workspaceHydrationEpoch.current) return
     const generationSnapshotCurrent = generationEpoch === generationRefreshEpoch.current
     if (generationSnapshotCurrent && generationSnapshot.results !== null) setServerResults(generationSnapshot.results)
     if (campaignAgentSnapshot.state !== null) applyCampaignState(campaignAgentSnapshot.state)
-    const availabilityErrors = [generationSnapshotCurrent ? generationSnapshot.error : null, campaignAgentSnapshot.error].filter(Boolean)
+    const productAssetSnapshotCurrent = productAssetEpoch === productAssetRefreshEpoch.current
+    if (productAssetSnapshotCurrent && productAssetSnapshot.assets !== null) {
+      setProductAssets(productAssetSnapshot.assets)
+      const plannedAssetId = campaignAgentSnapshot.state?.brief?.assetId
+      const plannedAsset = plannedAssetId
+        ? productAssetSnapshot.assets.find((asset) => asset.id === plannedAssetId)
+        : null
+      if (plannedAsset) {
+        setImage({
+          name: plannedAsset.name,
+          url: plannedAsset.previewUrl,
+          asset: plannedAsset,
+          status: 'ready',
+          error: ''
+        })
+      }
+    }
+    const availabilityErrors = [
+      generationSnapshotCurrent ? generationSnapshot.error : null,
+      campaignAgentSnapshot.error,
+      productAssetSnapshotCurrent ? productAssetSnapshot.error : null
+    ].filter(Boolean)
     if (availabilityErrors.length) setNotice(availabilityErrors.join(' '))
   }
 
   async function hydrateWorkspace(nextSession: AuthedSession) {
     const hydrationEpoch = ++workspaceHydrationEpoch.current
     const generationEpoch = ++generationRefreshEpoch.current
-    const [generationSnapshot, campaignAgentSnapshot] = await Promise.all([
+    const productAssetEpoch = ++productAssetRefreshEpoch.current
+    const [generationSnapshot, campaignAgentSnapshot, productAssetSnapshot] = await Promise.all([
       loadGenerationSnapshot(nextSession.currentWorkspace.id),
-      loadCampaignAgentSnapshot()
+      loadCampaignAgentSnapshot(),
+      loadProductAssetListSnapshot()
     ])
-    applyWorkspaceSnapshots(generationSnapshot, campaignAgentSnapshot, hydrationEpoch, generationEpoch)
+    applyWorkspaceSnapshots(
+      generationSnapshot,
+      campaignAgentSnapshot,
+      productAssetSnapshot,
+      hydrationEpoch,
+      generationEpoch,
+      productAssetEpoch
+    )
   }
 
   function mergeCurrentWorkspaceSummary(nextWorkspace: WorkspaceSummary) {
@@ -338,6 +375,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       || campaignAgentLock.current
       || productProfileMutationLock.current
       || brandPackMutationLock.current
+      || productAssetRightsMutationLock.current
       || workspaceAccessMutationLock.current
   }
 
@@ -397,7 +435,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (!session
       || session.user.id === 'demo-user'
       || productAssetRefreshLock.current
-      || productImageDeleteLock.current) return
+      || productImageDeleteLock.current
+      || productAssetRightsMutationLock.current) return
     productAssetRefreshLock.current = true
     const refreshEpoch = ++productAssetRefreshEpoch.current
     setIsRefreshingProductAssets(true)
@@ -695,16 +734,24 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     let active = true
     const hydrationEpoch = ++workspaceHydrationEpoch.current
     const generationEpoch = ++generationRefreshEpoch.current
+    const productAssetEpoch = ++productAssetRefreshEpoch.current
 
-    void workspaceBootstrapLoader.current!().then(({ sessionResult, platformStatus: nextPlatformStatus, generationSnapshot, campaignAgentSnapshot }) => {
+    void workspaceBootstrapLoader.current!().then(({ sessionResult, platformStatus: nextPlatformStatus, generationSnapshot, campaignAgentSnapshot, productAssetSnapshot }) => {
       if (!active || hydrationEpoch !== workspaceHydrationEpoch.current) return
       const nextSession = sessionResult.session
       setSession(nextSession)
       setWorkspaces(nextSession ? [nextSession.currentWorkspace] : [])
       if (sessionResult.failure) setAccessFailure(sessionResult.failure)
       setPlatformStatus(nextPlatformStatus)
-      if (nextSession && generationSnapshot && campaignAgentSnapshot) {
-        applyWorkspaceSnapshots(generationSnapshot, campaignAgentSnapshot, hydrationEpoch, generationEpoch)
+      if (nextSession && generationSnapshot && campaignAgentSnapshot && productAssetSnapshot) {
+        applyWorkspaceSnapshots(
+          generationSnapshot,
+          campaignAgentSnapshot,
+          productAssetSnapshot,
+          hydrationEpoch,
+          generationEpoch,
+          productAssetEpoch
+        )
       }
     }).catch(() => {
       if (!active || hydrationEpoch !== workspaceHydrationEpoch.current) return
@@ -742,7 +789,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       brand,
       product,
       intent,
-      assetId: image.asset?.id || (image.status === 'demo' ? 'demo-product-source' : null)
+      assetId: image.status === 'demo'
+        ? 'demo-product-source'
+        : image.asset?.rightsStatus === 'confirmed' ? image.asset.id : null
     }
   }
 
@@ -822,7 +871,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
-  async function uploadProductImage(file: File) {
+  async function uploadProductImage(file: File, rightsAttestation: CommercialUseRightsAttestation) {
     if (campaignIdentityLocked()) return
     generationRequestKey.current = null
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
@@ -845,7 +894,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       return
     }
     try {
-      const asset = await uploadProductAsset(file)
+      const asset = await uploadProductAsset(file, rightsAttestation)
       setImage({ name: asset.name, url: asset.previewUrl, asset, status: 'ready', error: '' })
       setAgentState(initialCampaignAgentState())
       URL.revokeObjectURL(localUrl)
@@ -866,6 +915,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       || productProfileMutationLock.current
       || productProfileRefreshLock.current
       || image.status === 'uploading') return
+    if (asset.rightsStatus !== 'confirmed') {
+      setProductAssetNotice('先確認這張圖片的商業使用權，才可用於 Agent 或素材建立。 Confirm commercial-use rights before using this image with the Agent or generation.')
+      return
+    }
     generationRequestKey.current = null
     if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
     setImage({
@@ -879,6 +932,37 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setProductAssetNotice('')
     setNotice('')
     setActiveSection('workspace')
+  }
+
+  async function confirmProductAssetRightsFromLibrary(asset: ProductAssetListItem) {
+    if (asset.rightsStatus === 'confirmed'
+      || campaignIdentityLocked()
+      || productImageDeleteLock.current
+      || productAssetRefreshLock.current
+      || productAssetRightsMutationLock.current
+      || image.status === 'uploading') return
+    if (!window.confirm('我確認擁有或已取得必要權利，可將這張圖片用於預計的商業素材。 I confirm that I have the necessary rights to use this image in the intended commercial assets.')) return
+    productAssetRightsMutationLock.current = true
+    setConfirmingProductAssetRightsId(asset.id)
+    setProductAssetNotice('')
+    try {
+      const confirmed = session?.user.id === 'demo-user'
+        ? { id: asset.id, rightsStatus: 'confirmed' as const }
+        : await confirmProductAssetRights(asset.id)
+      setProductAssets((current) => current.map((item) => item.id === confirmed.id
+        ? { ...item, rightsStatus: confirmed.rightsStatus }
+        : item))
+      setImage((current) => current.asset?.id === confirmed.id
+        ? { ...current, asset: { ...current.asset, rightsStatus: confirmed.rightsStatus } }
+        : current)
+      if (image.asset?.id === confirmed.id) invalidatePlan()
+      setProductAssetNotice('商業使用權確認已保存；Agent 與生成仍會重新核對。 Commercial-use rights confirmation saved; Agent and generation checks remain enforced.')
+    } catch (error) {
+      setProductAssetNotice(error instanceof Error ? error.message : '商品圖片使用權確認暫時無法使用。 Product image rights confirmation is temporarily unavailable.')
+    } finally {
+      productAssetRightsMutationLock.current = false
+      setConfirmingProductAssetRightsId(null)
+    }
   }
 
   async function deleteProductImage() {
@@ -1286,6 +1370,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceListRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
+    productAssetRightsMutationLock.current = false
     productProfileRefreshLock.current = false
     productProfileMutationLock.current = false
     brandPackRefreshLock.current = false
@@ -1317,6 +1402,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setProductAssets([])
     setProductAssetNotice('')
     setDeletingProductAssetId(null)
+    setConfirmingProductAssetRightsId(null)
     setProductProfiles([])
     setSelectedProductProfileId(null)
     setProductProfileNotice('')
@@ -1380,7 +1466,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           {demoMode
             ? <p className="preview-notice" role="status"><strong>公開互動 Demo</strong><span>只在目前瀏覽器記憶體處理合成資料；不會上傳、保存或呼叫外部 AI。</span></p>
             : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
-          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} generationBusy={isGenerating} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file) => void uploadProductImage(file)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
+          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} generationBusy={isGenerating} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file, rightsAttestation) => void uploadProductImage(file, rightsAttestation)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
           {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={canReviewOutputs} reviewingId={reviewingId} reviewingDecision={reviewingDecision} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
           <section className="support-panel" id="support" aria-labelledby="support-title">
@@ -1429,6 +1515,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             productAssets={productAssets}
             selectedProductAssetId={image.asset?.id || null}
             deletingProductAssetId={deletingProductAssetId}
+            confirmingProductAssetRightsId={confirmingProductAssetRightsId}
             isRefreshingProductAssets={isRefreshingProductAssets}
             productAssetNotice={productAssetNotice}
             onRefreshProductAssets={session.user.id === 'demo-user' ? undefined : () => {
@@ -1436,6 +1523,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
               void refreshProductProfiles()
             }}
             onSelectProductAsset={selectProductAssetFromLibrary}
+            onConfirmProductAssetRights={(asset) => void confirmProductAssetRightsFromLibrary(asset)}
             onDeleteProductAsset={(asset) => void deleteProductAssetFromLibrary(asset)}
             productProfiles={productProfiles}
             selectedProductProfileId={selectedProductProfileId}
