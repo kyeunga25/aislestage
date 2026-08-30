@@ -19,7 +19,7 @@ export function Sidebar({ workspace, active, onNavigate }: Props) {
         <BrandMark /><span><strong>AisleStage</strong><small>AI 電商素材工作台</small></span>
       </button>
       <nav aria-label="主要導覽" className="nav-list">
-        {navItems.filter(({ id }) => id !== 'activity' || workspace.role === 'owner' || workspace.role === 'admin').map(({ id, label, icon: Icon }) => <button className={`nav-item ${id === active ? 'active' : ''}`} type="button" aria-label={label} onClick={() => onNavigate(id)} aria-current={id === active ? 'page' : undefined} key={id}><Icon size={18} /><span>{label}</span></button>)}
+        {navItems.filter(({ id }) => (id !== 'activity' && id !== 'access') || workspace.role === 'owner' || workspace.role === 'admin').map(({ id, label, icon: Icon }) => <button className={`nav-item ${id === active ? 'active' : ''}`} type="button" aria-label={label} onClick={() => onNavigate(id)} aria-current={id === active ? 'page' : undefined} key={id}><Icon size={18} /><span>{label}</span></button>)}
       </nav>
     </div>
     <div className="sidebar-footer">

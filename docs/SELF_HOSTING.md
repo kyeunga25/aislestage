@@ -198,6 +198,7 @@ Migration 是受保護的 state change：
 - 不要在 CI 自動對未知 database 執行 migration；
 - 引入 asset／output checksum contract 的版本不會盲目回填舊物件；缺少已驗證 checksum 的既有來源圖會保持不可預覽／批准／生成，既有輸出則不可核准／交付，應在升級後由授權使用者重新建立；
 - 引入工作區活動記錄的版本只會由 migration 套用後開始收集最小必要事件 metadata，不會由既有商品、brief、檔案或輸出內容推算或回填歷史；
+- 引入 workspace 存取管理的版本會加入 50 人資料庫上限及最小 membership audit；不會替既有身份修改 Cloudflare Access policy、回填歷史 audit event 或發送邀請電郵；
 - 引入核准品牌快照庫的版本不會從舊 brief 或既有欄位推算、回填或自動保存品牌；升級後必須由授權使用者重新核對 Agent 計劃並明確保存；
 - 引入核准商品資料庫的版本同樣不會把舊商品資料自動標示為已批准；升級後必須由授權使用者以目前 Agent revision 明確保存；
 - 程式 rollback 不代表 schema rollback，不能以刪除 database 作復原方法。
@@ -258,6 +259,14 @@ The protected onboarding command requires an explicit local or remote target. It
 
 若無法在一次受控維護時段內完成啟用、登入、停用及驗證，停止 bootstrap 並先回復 `disabled`。兩種方法只選其一，不要在 D1 onboarding 同時保持 auto-provision enabled。
 
+### 日常成員管理
+
+owner 可在私人工作區「存取管理」加入 admin／member、調整非 owner 且非自己的角色，以及移除非 owner／非本人員；admin 只可加入或移除一般 member。這個介面只改變目前 D1 workspace membership，移除時不刪 user account、其他 workspace 或資產。
+
+在介面加入身份前後，都要由獲授權操作者另外核對 Cloudflare Access Allow policy 已允許同一 exact email 或受控 identity group。AisleStage 不會呼叫 Access 管理 API、不會自動修改 policy，也不會發送電郵；只完成 D1 membership 而沒有 edge allow policy，該使用者仍不能到達 Worker。反過來，只在 Access policy 加入身份而沒有 active D1 membership，Worker 仍會 fail closed。
+
+新電郵首次通過 Access 時才綁定 subject hash。每個 workspace 最多 50 人；owner 轉移、帳號停用及 Access policy 移除仍要使用另外的受保護操作流程。請先在 staging 以合成身份核對 owner／admin 權限矩陣，再處理正式身份。
+
 ## 12. 部署後驗收
 
 使用合成資料完成以下檢查。不要在截圖、console、network export 或 bug report 中留下 cookie、JWT、電郵、object key、brief 或 resource identifier。
@@ -269,6 +278,7 @@ The protected onboarding command requires an explicit local or remote target. It
 | 匿名 `/app/campaign-packs` | 與 `/app` 一樣受保護，不能因 SPA fallback 而匿名 200 |
 | 匿名受保護 API | Access 或 Worker 拒絕，不返回資料庫／資源細節 |
 | 已受邀 `/api/session` | JWT 與 active membership 都通過後才成功 |
+| owner／admin `/api/workspace-members` | 只返回目前 workspace 的 bounded canonical 清單；member 被拒絕，新增 membership 不會改動 Access policy |
 | 已受邀 `/api/output-usage` | 只返回目前 workspace 的技術 allowance／事件摘要；沒有 identity、note、provider 或付款資料 |
 | 私人 R2 內容 | 只經授權 Worker route 返回，帶 private／no-store 等 headers |
 | Generation | 初次部署保持 disabled；不能排隊或扣用量 |
@@ -331,6 +341,8 @@ Wrangler secret 更新會建立並部署新的 Worker version，應在維護時�
 | `/app` 匿名可直接讀取 | Access 是否同時保護 `/app` 與 `/app/*`；Static Assets 是否對兩者 Worker-first |
 | Access 登入後仍 401 | Team domain、audience、JWT issuer／expiry 及 request header |
 | Access 登入後 403 | Auto-provision 是否已停用且 identity 尚無 active membership；不要開 broad policy 繞過 |
+| 已加入 membership 仍無法進入 | Cloudflare Access Allow policy 是否另行允許同一 identity；不要把 D1 membership 當作 edge policy |
+| 存取管理顯示 403 | 目前 D1 role 是否為 owner／admin；admin 不可新增 admin 或變更角色 |
 | D1 migration 找不到目標 | Private config 是否有正確 database name／ID 及 `DB` binding |
 | Queue deployment 失敗 | Producer、consumer 與 dead-letter Queue 是否已建立且名稱一致 |
 | Private asset 404 | 先核對 identity、workspace membership 及 object ownership；不要改成 public bucket |

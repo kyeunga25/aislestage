@@ -58,6 +58,15 @@ ACCESS_AUTO_PROVISION=disabled
 
 自動建立只應在 Access policy 已收窄至受邀身份後啟用。D1 只保存 Access subject 的 SHA-256 hash；原始 JWT、subject、PIN 及 Access cookie 不會寫入 log 或資料表。綁定後若同一帳戶出現不同 subject，請求會 fail closed。
 
+## 日常 workspace membership
+
+首次 owner 建立後，owner／admin 可在私人「存取管理」按角色矩陣加入目前 workspace 成員。新電郵會先建立為未綁定 subject 的 Access-only beta account；它不會收到系統電郵，也不會因此自動進入 Access application。正式加入一位使用者需要兩個互不取代的批准：
+
+1. 在 Cloudflare Access 的受保護 Allow policy 中允許該 exact email 或受控 identity group；
+2. 在 AisleStage「存取管理」建立同一標準化電郵的 D1 membership。
+
+owner 可加入 admin／member、變更非 owner 且非自己的角色，以及移除非 owner／非本人員；admin 只可加入或移除一般 member。移除 membership 不會刪除 user account、其他 workspace 或 Access policy entry。每個 workspace 最多 50 人；owner 轉移、帳號停用及 policy 變更仍由受保護操作流程處理。
+
 ## 發佈順序
 
 1. 在受保護設定加入實際 team domain、audience 及 auth mode；
@@ -66,7 +75,7 @@ ACCESS_AUTO_PROVISION=disabled
 4. 執行完整 check、test、build 及 dry-run；
 5. 執行 `npm run cf:deploy`；
 6. 匿名檢查 `/` 可讀，而 `/app` 及至少一個深層 workspace route 都由 Access 攔截；
-7. 以受邀測試身份登入，確認 `/api/session`、workspace membership、私人 R2 讀取、登出及重新驗證；
+7. 以受邀測試身份登入，確認 `/api/session`、workspace membership、私人 R2 讀取、登出及重新驗證；再由 owner／admin 核對「存取管理」只顯示目前 workspace，且不會改動 Access policy；
 8. 核對公開 log、PR 及 deployment output 沒有受保護 identifier 或身份資料。
 
 Turnstile 不應疊加在 Access 登入頁。若日後公開主頁加入匿名試用申請或聯絡表單，才為該表單獨立加入 Turnstile server-side verification。

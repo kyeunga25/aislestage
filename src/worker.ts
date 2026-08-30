@@ -39,6 +39,15 @@ type AuthUser = { id: string; email: string; name: string; accountStatus: Accoun
 type Workspace = { id: string; name: string; role: WorkspaceRole; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 type AccessIdentity = { subject: string; email: string; name: string }
+type WorkspaceMemberPayload = {
+  id: string
+  name: string
+  email: string
+  role: WorkspaceRole
+  accountStatus: AccountStatus
+  authMode: 'access' | 'password'
+  createdAt: string
+}
 type GenerationRow = {
   id: string
   campaignPackId: string | null
@@ -72,6 +81,8 @@ const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_BRAND_PACK_BODY_BYTES = 1_024
 const MAX_PRODUCT_PROFILE_BODY_BYTES = 1_024
+const MAX_WORKSPACE_MEMBER_BODY_BYTES = 2_048
+const MAX_WORKSPACE_MEMBERS = 50
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -79,6 +90,7 @@ const WORKSPACE_SHELL_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 
 const WORKSPACE_SHELL_PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()'
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const MAX_USED_INVITE_DAYS = 30
+const MAX_WORKSPACE_ACCESS_EVENT_DAYS = 180
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
 const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
@@ -961,7 +973,11 @@ async function cleanExpiredAuthState(env: Env) {
       DELETE FROM beta_invites
       WHERE (status IN ('pending', 'revoked') AND expires_at <= CURRENT_TIMESTAMP)
         OR (status = 'used' AND used_at IS NOT NULL AND used_at < datetime('now', ?))
-    `).bind(`-${MAX_USED_INVITE_DAYS} days`)
+    `).bind(`-${MAX_USED_INVITE_DAYS} days`),
+    env.DB.prepare(`
+      DELETE FROM workspace_access_events
+      WHERE created_at < datetime('now', ?)
+    `).bind(`-${MAX_WORKSPACE_ACCESS_EVENT_DAYS} days`)
   ])
 }
 
@@ -1022,6 +1038,404 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
     LEFT JOIN output_allowances oa ON oa.workspace_id = w.id
     WHERE wm.user_id = ? AND wm.workspace_id = ? AND w.access_status = 'active'
   `).bind(userId, workspaceId).first<Workspace>()
+}
+
+type WorkspaceMemberRow = WorkspaceMemberPayload & { ownerUserId: string }
+type WorkspaceAccountRow = {
+  id: string
+  email: string
+  name: string
+  accountStatus: AccountStatus
+  accountType: AccountType
+  authMode: 'access' | 'password'
+  accessSubjectHash: string | null
+}
+
+const workspaceMemberSelect = `
+  SELECT u.id, u.name, u.email, wm.role,
+    u.account_status AS accountStatus, u.auth_mode AS authMode,
+    strftime('%Y-%m-%dT%H:%M:%SZ', wm.created_at) AS createdAt,
+    w.owner_user_id AS ownerUserId
+  FROM workspace_memberships wm
+  JOIN users u ON u.id = wm.user_id
+  JOIN workspaces w ON w.id = wm.workspace_id
+`
+
+function workspaceMembersUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區成員暫時無法讀取。 Workspace members are temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function workspaceMemberMutationUnavailable(kind: 'invite' | 'role' | 'remove') {
+  const error = kind === 'invite'
+    ? '成員邀請暫時無法使用。 Workspace member invitation is temporarily unavailable.'
+    : kind === 'role'
+      ? '成員角色更新暫時無法使用。 Workspace member role update is temporarily unavailable.'
+      : '成員移除暫時無法使用。 Workspace member removal is temporarily unavailable.'
+  return json({ code: 'unavailable', error }, { status: 503 })
+}
+
+function workspaceMemberManagerDenied() {
+  return json({
+    error: '只有工作區 owner 或 admin 可以管理成員。 Only workspace owners or admins can manage members.'
+  }, { status: 403 })
+}
+
+function canManageWorkspaceMembers(session: SessionContext) {
+  return session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'
+}
+
+function isCanonicalUtcSecond(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value.replace(/Z$/, '.000Z')
+}
+
+function workspaceMemberPayload(row: WorkspaceMemberRow): WorkspaceMemberPayload | null {
+  if (!UUID_V4_PATTERN.test(row.id)
+    || !UUID_V4_PATTERN.test(row.ownerUserId)
+    || !boundedString(row.name, 120)
+    || row.name !== row.name.trim()
+    || normalizeEmail(row.email) !== row.email
+    || !validEmail(row.email)
+    || (row.role !== 'owner' && row.role !== 'admin' && row.role !== 'member')
+    || (row.accountStatus !== 'active' && row.accountStatus !== 'suspended' && row.accountStatus !== 'deactivated')
+    || (row.authMode !== 'access' && row.authMode !== 'password')
+    || !isCanonicalUtcSecond(row.createdAt)) return null
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    accountStatus: row.accountStatus,
+    authMode: row.authMode,
+    createdAt: row.createdAt
+  }
+}
+
+function isCanonicalWorkspaceAccount(row: WorkspaceAccountRow) {
+  return UUID_V4_PATTERN.test(row.id)
+    && boundedString(row.name, 120)
+    && row.name === row.name.trim()
+    && normalizeEmail(row.email) === row.email
+    && validEmail(row.email)
+    && (row.accountStatus === 'active' || row.accountStatus === 'suspended' || row.accountStatus === 'deactivated')
+    && (row.accountType === 'standard' || row.accountType === 'beta' || row.accountType === 'test')
+    && (row.authMode === 'access' || row.authMode === 'password')
+    && (row.accessSubjectHash === null || boundedString(row.accessSubjectHash, 128))
+}
+
+async function workspaceAccountByEmail(env: Env, email: string) {
+  return env.DB.prepare(`
+    SELECT id, email, name, account_status AS accountStatus,
+      account_type AS accountType, auth_mode AS authMode,
+      access_subject_hash AS accessSubjectHash
+    FROM users
+    WHERE email = ?
+  `).bind(email).first<WorkspaceAccountRow>()
+}
+
+async function workspaceMemberById(env: Env, workspaceId: string, memberId: string) {
+  return env.DB.prepare(`${workspaceMemberSelect}
+    WHERE wm.workspace_id = ? AND wm.user_id = ? AND w.access_status = 'active'
+  `).bind(workspaceId, memberId).first<WorkspaceMemberRow>()
+}
+
+async function listWorkspaceMembers(env: Env, session: SessionContext) {
+  if (!canManageWorkspaceMembers(session)) return workspaceMemberManagerDenied()
+  try {
+    const result = await env.DB.prepare(`${workspaceMemberSelect}
+      WHERE wm.workspace_id = ? AND w.access_status = 'active'
+      ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+        wm.created_at ASC, u.id ASC
+      LIMIT ?
+    `).bind(session.currentWorkspace.id, MAX_WORKSPACE_MEMBERS + 1).all<WorkspaceMemberRow>()
+    if (result.results.length < 1 || result.results.length > MAX_WORKSPACE_MEMBERS) {
+      throw new TypeError('Invalid workspace member count')
+    }
+    const members: WorkspaceMemberPayload[] = []
+    for (const row of result.results) {
+      const member = workspaceMemberPayload(row)
+      if (!member) throw new TypeError('Invalid workspace member row')
+      members.push(member)
+    }
+    const ownerUserIds = new Set(result.results.map((row) => row.ownerUserId))
+    const declaredOwnerId = result.results[0]?.ownerUserId
+    if (ownerUserIds.size !== 1
+      || !declaredOwnerId
+      || members.filter((member) => member.role === 'owner').length !== 1
+      || !members.some((member) => member.id === declaredOwnerId && member.role === 'owner')
+      || !members.some((member) => member.id === session.user.id)
+      || new Set(members.map((member) => member.id)).size !== members.length
+      || new Set(members.map((member) => member.email)).size !== members.length) {
+      throw new TypeError('Invalid workspace owner invariant')
+    }
+    return json({ members })
+  } catch {
+    console.error('workspace-member-list-read-failed')
+    return workspaceMembersUnavailable()
+  }
+}
+
+async function inviteWorkspaceMember(request: Request, env: Env, session: SessionContext) {
+  if (!canManageWorkspaceMembers(session)) {
+    await cancelRequestBody(request)
+    return workspaceMemberManagerDenied()
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_WORKSPACE_MEMBER_BODY_BYTES)
+  if (parsed.tooLarge) {
+    return json({ error: '成員邀請請求過大。 Workspace member invitation is too large.' }, { status: 413 })
+  }
+  if (!hasExactKeys(parsed.body, ['email', 'name', 'role'])) {
+    return json({ error: '成員資料格式無效。 Workspace member details are invalid.' }, { status: 400 })
+  }
+  const body = parsed.body as { email: unknown; name: unknown; role: unknown }
+  const email = normalizeEmail(body.email)
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const role = body.role
+  if (typeof body.email !== 'string'
+    || body.email !== email
+    || !validEmail(email)
+    || typeof body.name !== 'string'
+    || body.name !== name
+    || !boundedString(name, 120)
+    || (role !== 'admin' && role !== 'member')) {
+    return json({ error: '成員資料格式無效。 Workspace member details are invalid.' }, { status: 400 })
+  }
+  if (session.currentWorkspace.role === 'admin' && role !== 'member') {
+    return json({ error: '只有 workspace owner 可以加入 admin。 Only the workspace owner can add an admin.' }, { status: 403 })
+  }
+
+  let account: WorkspaceAccountRow | null
+  let existingMember: WorkspaceMemberRow | null = null
+  try {
+    account = await workspaceAccountByEmail(env, email)
+    if (account) existingMember = await workspaceMemberById(env, session.currentWorkspace.id, account.id)
+  } catch {
+    console.error('workspace-member-invite-preflight-failed')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+  if (account && !isCanonicalWorkspaceAccount(account)) {
+    console.error('workspace-member-account-invalid')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+  if (existingMember) {
+    const member = workspaceMemberPayload(existingMember)
+    if (!member) return workspaceMemberMutationUnavailable('invite')
+    if (member.role === role) return json({ member, replayed: true })
+    return json({ error: '這個帳號已有不同工作區角色。 This account already has a different workspace role.' }, { status: 409 })
+  }
+  if (account?.accountStatus !== undefined && account.accountStatus !== 'active') {
+    return json({ error: '這個帳號目前不可加入工作區。 This account cannot currently join the workspace.' }, { status: 409 })
+  }
+  try {
+    const count = await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM workspace_memberships
+      WHERE workspace_id = ?
+    `).bind(session.currentWorkspace.id).first<{ count: number }>()
+    if (!count || !Number.isSafeInteger(count.count)) throw new TypeError('Invalid member count')
+    if (count.count >= MAX_WORKSPACE_MEMBERS) {
+      return json({ error: '工作區成員已達目前上限。 The workspace member limit has been reached.' }, { status: 409 })
+    }
+  } catch {
+    console.error('workspace-member-capacity-read-failed')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+
+  const expectedUserId = account?.id || crypto.randomUUID()
+  let mutationReportedFailure = false
+  try {
+    if (account) {
+      await env.DB.prepare(`
+        INSERT INTO workspace_memberships (
+          workspace_id, user_id, role, changed_by_user_id
+        ) VALUES (?, ?, ?, ?)
+      `).bind(session.currentWorkspace.id, account.id, role, session.user.id).run()
+    } else {
+      await env.DB.batch([
+        env.DB.prepare(`
+          INSERT INTO users (
+            id, email, name, password_hash, password_salt,
+            account_status, account_type, auth_mode
+          ) VALUES (?, ?, ?, ?, ?, 'active', 'beta', 'access')
+        `).bind(
+          expectedUserId,
+          email,
+          name,
+          base64(crypto.getRandomValues(new Uint8Array(32))),
+          base64(crypto.getRandomValues(new Uint8Array(16)))
+        ),
+        env.DB.prepare(`
+          INSERT INTO workspace_memberships (
+            workspace_id, user_id, role, changed_by_user_id
+          ) VALUES (?, ?, ?, ?)
+        `).bind(session.currentWorkspace.id, expectedUserId, role, session.user.id)
+      ])
+    }
+  } catch {
+    mutationReportedFailure = true
+  }
+
+  try {
+    const storedAccount = await workspaceAccountByEmail(env, email)
+    if (!storedAccount || !isCanonicalWorkspaceAccount(storedAccount)) {
+      if (storedAccount) console.error('workspace-member-invite-reconciliation-account-conflict')
+      return mutationReportedFailure
+        ? workspaceMemberMutationUnavailable('invite')
+        : json({ error: '這個帳號未能加入工作區。 This account could not be added to the workspace.' }, { status: 409 })
+    }
+    const storedRow = await workspaceMemberById(env, session.currentWorkspace.id, storedAccount.id)
+    const member = storedRow ? workspaceMemberPayload(storedRow) : null
+    if (!member || member.role !== role) {
+      if (member) console.error('workspace-member-invite-reconciliation-role-conflict')
+      return mutationReportedFailure
+        ? workspaceMemberMutationUnavailable('invite')
+        : json({ error: '這個帳號已有不同工作區角色。 This account already has a different workspace role.' }, { status: 409 })
+    }
+    if (!account && storedAccount.id === expectedUserId
+      && (storedAccount.name !== name
+        || storedAccount.accountStatus !== 'active'
+        || storedAccount.accountType !== 'beta'
+        || storedAccount.authMode !== 'access'
+        || storedAccount.accessSubjectHash !== null)) {
+      console.error('workspace-member-invite-reconciliation-user-conflict')
+      return workspaceMemberMutationUnavailable('invite')
+    }
+    const replayed = storedAccount.id !== expectedUserId
+    return json({ member, replayed }, { status: replayed ? 200 : 201 })
+  } catch {
+    console.error('workspace-member-invite-reconciliation-failed')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+}
+
+async function updateWorkspaceMemberRole(request: Request, env: Env, session: SessionContext, memberId: string) {
+  if (session.currentWorkspace.role !== 'owner') {
+    await cancelRequestBody(request)
+    return json({ error: '只有 workspace owner 可以變更成員角色。 Only the workspace owner can change member roles.' }, { status: 403 })
+  }
+  if (!UUID_V4_PATTERN.test(memberId)) {
+    await cancelRequestBody(request)
+    return json({ error: 'Workspace member not found.' }, { status: 404 })
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_WORKSPACE_MEMBER_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: '成員角色請求過大。 Workspace member role request is too large.' }, { status: 413 })
+  if (!hasExactKeys(parsed.body, ['role'])) {
+    return json({ error: '成員角色格式無效。 Workspace member role is invalid.' }, { status: 400 })
+  }
+  const role = (parsed.body as { role: unknown }).role
+  if (role !== 'admin' && role !== 'member') {
+    return json({ error: '成員角色格式無效。 Workspace member role is invalid.' }, { status: 400 })
+  }
+  let target: WorkspaceMemberRow | null
+  try {
+    target = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+  } catch {
+    console.error('workspace-member-role-preflight-failed')
+    return workspaceMemberMutationUnavailable('role')
+  }
+  if (!target) return json({ error: 'Workspace member not found.' }, { status: 404 })
+  const current = workspaceMemberPayload(target)
+  if (!current) return workspaceMemberMutationUnavailable('role')
+  if (target.ownerUserId === memberId || current.role === 'owner' || memberId === session.user.id) {
+    return json({ error: 'Workspace owner 或目前帳號角色不可在此變更。 The workspace owner or current account role cannot be changed here.' }, { status: 409 })
+  }
+  if (current.role === role) return json({ member: current, replayed: true })
+
+  let updateChanges = 0
+  let updateReportedFailure = false
+  try {
+    const update = await env.DB.prepare(`
+      UPDATE workspace_memberships
+      SET role = ?, changed_by_user_id = ?
+      WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
+    `).bind(role, session.user.id, session.currentWorkspace.id, memberId).run()
+    updateChanges = update.meta.changes
+  } catch {
+    updateReportedFailure = true
+  }
+  try {
+    const latestRow = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+    if (!latestRow) return json({ error: 'Workspace member not found.' }, { status: 404 })
+    const latest = workspaceMemberPayload(latestRow)
+    if (!latest) return workspaceMemberMutationUnavailable('role')
+    if (latest.role === role) return json({ member: latest, replayed: updateChanges === 0 && !updateReportedFailure })
+    if (updateReportedFailure) return workspaceMemberMutationUnavailable('role')
+    return json({ error: '這個成員角色不可變更。 This workspace member role cannot be changed.' }, { status: 409 })
+  } catch {
+    console.error('workspace-member-role-reconciliation-failed')
+    return workspaceMemberMutationUnavailable('role')
+  }
+}
+
+async function removeWorkspaceMember(request: Request, env: Env, session: SessionContext, memberId: string) {
+  if (!canManageWorkspaceMembers(session)) {
+    await cancelRequestBody(request)
+    return workspaceMemberManagerDenied()
+  }
+  const boundedBody = await readBoundedRequestBytes(request, 0)
+  if (boundedBody.tooLarge) return json({ error: '成員移除請求不可包含 body。 Workspace member removal must not include a body.' }, { status: 413 })
+  if (!boundedBody.bytes) return json({ error: '成員移除請求格式無效。 Workspace member removal request is invalid.' }, { status: 400 })
+  if (!UUID_V4_PATTERN.test(memberId)) return json({ error: 'Workspace member not found.' }, { status: 404 })
+
+  let target: WorkspaceMemberRow | null
+  try {
+    target = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+  } catch {
+    console.error('workspace-member-remove-preflight-failed')
+    return workspaceMemberMutationUnavailable('remove')
+  }
+  if (!target) return json({ error: 'Workspace member not found.' }, { status: 404 })
+  const member = workspaceMemberPayload(target)
+  if (!member) return workspaceMemberMutationUnavailable('remove')
+  if (target.ownerUserId === memberId || member.role === 'owner' || memberId === session.user.id) {
+    return json({ error: 'Workspace owner 或目前帳號不可移除。 The workspace owner or current account cannot be removed.' }, { status: 409 })
+  }
+  if (session.currentWorkspace.role === 'admin' && member.role !== 'member') {
+    return json({ error: 'Workspace admin 只可移除一般成員。 Workspace admins can remove ordinary members only.' }, { status: 403 })
+  }
+
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  const requiredRole = session.currentWorkspace.role === 'admin' ? 'member' : null
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE workspace_memberships
+        SET changed_by_user_id = ?
+        WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
+          AND (? IS NULL OR role = ?)
+      `).bind(session.user.id, session.currentWorkspace.id, memberId, requiredRole, requiredRole),
+      env.DB.prepare(`
+        DELETE FROM workspace_memberships
+        WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
+          AND (? IS NULL OR role = ?)
+      `).bind(session.currentWorkspace.id, memberId, requiredRole, requiredRole)
+    ])
+    if (results[1]?.meta.changes) return deletedResponse()
+  } catch {
+    // The post-read below distinguishes a committed delete from a retryable failure.
+  }
+  try {
+    const remaining = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+    if (!remaining) return deletedResponse()
+    const remainingMember = workspaceMemberPayload(remaining)
+    if (!remainingMember) return workspaceMemberMutationUnavailable('remove')
+    if (remaining.ownerUserId === memberId || remainingMember.role === 'owner') {
+      return json({ error: 'Workspace owner 或目前帳號不可移除。 The workspace owner or current account cannot be removed.' }, { status: 409 })
+    }
+    if (session.currentWorkspace.role === 'admin' && remainingMember.role !== 'member') {
+      return json({ error: 'Workspace admin 只可移除一般成員。 Workspace admins can remove ordinary members only.' }, { status: 403 })
+    }
+    console.error('workspace-member-remove-reconciliation-pending')
+  } catch {
+    console.error('workspace-member-remove-reconciliation-failed')
+  }
+  return workspaceMemberMutationUnavailable('remove')
 }
 
 type ProductAssetListRow = {
@@ -3407,6 +3821,23 @@ export default {
         console.error('workspace-list-read-failed')
         return workspaceListUnavailable()
       }
+    }
+    if (url.pathname === '/api/workspace-members') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listWorkspaceMembers(env, session)
+      if (request.method === 'POST') return inviteWorkspaceMember(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const workspaceMemberMatch = url.pathname.match(/^\/api\/workspace-members\/([^/]+)$/)
+    if (workspaceMemberMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'PATCH') return updateWorkspaceMemberRole(request, env, session, workspaceMemberMatch[1])
+      if (request.method === 'DELETE') return removeWorkspaceMember(request, env, session, workspaceMemberMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'PATCH, DELETE' } })
     }
     if (url.pathname === '/api/workspace-activity') {
       const session = await requireSession(request, env)

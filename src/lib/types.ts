@@ -126,6 +126,16 @@ export type WorkspaceSummary = {
   reservedOutputs: number
 }
 
+export type WorkspaceMember = {
+  id: string
+  name: string
+  email: string
+  role: 'owner' | 'admin' | 'member'
+  accountStatus: 'active' | 'suspended' | 'deactivated'
+  authMode: 'access' | 'password'
+  createdAt: string
+}
+
 export type WorkspaceActivityEventType =
   | 'product_asset_uploaded'
   | 'product_asset_deleted'

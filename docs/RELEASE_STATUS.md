@@ -27,7 +27,7 @@
 - [x] PNG critical chunk／CRC／結尾、indexed-color PLTE bit-depth 容量、`tRNS` 色彩類型／長度／palette／唯一性／次序，以及靜態 WebP RIFF size／padding／VP8／VP8L header 採 bounded 結構驗證；private PNG 與 unknown WebP 自訂 payload 會拒絕，而 public PNG color chunk、合法透明度及標準 extended WebP fixture 保持可用；signature-only、truncated、checksum／length 失配、超額 palette、無效透明度與無 image data 上傳均在 D1／R2 前 fail closed；
 - [x] PNG IHDR、JPEG frame、WebP VP8X／VP8／VP8L header 尺寸在解碼前限制為單邊 8192 px 及 32 MP；三種 oversized fixture 均不建立 D1／R2 asset；
 - [x] PNG chunk、JPEG structural marker 與 WebP chunk 掃描均採固定 4,096 traversal-count 上限；過度分段 JPEG 在寫入 D1／R2 前 fail closed；
-- [x] scheduled auth cleanup 刪除過期 session、7 日前 auth attempt、過期 pending／revoked invite hash 及 30 日前 used invite linkage，同時保留仍有效／近期記錄；
+- [x] scheduled auth cleanup 刪除過期 session、7 日前 auth attempt、過期 pending／revoked invite hash、30 日前 used invite linkage 及 180 日前 workspace access audit event，同時保留仍有效／近期記錄；
 - [x] password／invite registration batch ambiguous commit 以 server-generated user／workspace IDs、canonical account fields、owner membership、初始 allowance 及 invite linkage reconciliation；已提交可建立 session，其他同 email 帳號不可冒充本次成功；
 - [x] session INSERT ambiguous commit 以本次 token hash、user ID 與 exact expiry reconciliation；完整相符才發出原 hardened cookie，其他狀態不回傳 token 識別資料；
 - [x] password session／active user／workspace membership 讀取不可用時，`/api/session` 及受保護 API 回雙語 no-store `503 unavailable` 並保留 cookie；只有已確認無效 session 才清 cookie；
@@ -53,6 +53,8 @@
 - [x] 商品圖上載／刪除、Campaign Pack 建立、輸出批准／拒絕／刪除以 D1 trigger 與核心 mutation 原子記錄最小必要活動 metadata；
 - [x] owner／admin 專用活動 API 只返回目前 workspace 最近 50 項操作類型、UTC 時間及可選操作者名稱；member、跨 workspace、subject ID、原始檔名、brief／input JSON 及底層錯誤均不可取得；
 - [x] 活動 view 採 on-demand 15 秒／64 KiB strict loader，故障保留可信快照；desktop 與 390 px 導覽、keyboard-accessible name、無水平溢出及無 console error 已完成 browser QA；
+- [x] workspace 存取管理只供 owner／admin：owner 可加入 admin／member、變更非 owner／非本人角色及移除非 owner／非本人員；admin 只可加入／移除一般 member。每 workspace 50 人上限由 API preflight 與 D1 trigger 雙重執行，owner／self／跨 workspace、strict body、ambiguous commit、audit trigger／retention 及 workspace cascade 均由隔離 integration tests 覆蓋；
+- [x] workspace-member browser client 採 on-demand 15 秒／64 KiB exact list、16 KiB mutation acknowledgement、canonical identity binding 及最多一次安全暫時故障重試；故障保留可信清單，logout／新 hydration epoch 阻止舊回應回寫。1440×1000 與 390×844 browser QA 已驗證導覽、Access policy 邊界、新增成員、角色變更、返回工作台及移除確認入口，沒有水平溢出、framework overlay 或 console warning／error；
 - [x] Campaign Pack browser client 使用 32 KiB canonical request、三組唯一合法輸出，並以 exact `202` creation／`200` replay envelope 綁定 UUID、pack identity、輸出數、revision 及完整 workflow／ratio set；不解析任意 server error detail；
 - [x] Campaign Pack 每次 browser attempt 連完整 response 有 30 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多以同一 canonical body／idempotency key 自動重試一次，其他結果不重送；request／polling 期間鎖定 brief、來源圖、重規劃及重複建立入口；
 - [x] Pack 建立後的 poll 綁定 exact 三個 generation IDs 與 16 個固定 interval；成功讀取重設 failure count，最多容許兩次連續暫時 GET 故障並保留最後可信快照，第三次才以雙語 queued-but-unavailable 狀態解除鎖，不誤報建立失敗；

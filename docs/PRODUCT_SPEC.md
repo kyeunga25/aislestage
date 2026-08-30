@@ -36,7 +36,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 ## 3. 帳號與 access
 
-- 正式環境使用邀請註冊，不提供匿名自助註冊；
+- 正式環境採 contact-first Cloudflare Access allow policy 與預先建立的 D1 membership，不提供匿名自助註冊；password invite 只保留作本機／遷移相容；
 - 一次性邀請同時綁定標準化電郵，D1 只保存 token hash 與組合 hash；
 - Access subject hash 及已驗證 email 的初始帳號查詢不可讀時返回 no-store `503 unavailable`；不得洩漏資料庫錯誤，亦不得把暫時可用性問題當成未獲邀或無 membership；
 - pre-onboarded 帳號的首次 Access subject 綁定只保存 subject hash；UPDATE 回應不確定時必須由同一 user、email、顯示名稱、hash、Access auth mode 及 active 狀態完整證實，未提交時返回暫時不可用並保留安全重試路徑；
@@ -53,6 +53,10 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - workspace 狀態為 `active`、`suspended` 或 `closed`；
 - membership 角色為 `owner`、`admin` 或 `member`；
 - 所有受保護操作都採 server-side workspace scope；正式輸出審核另要求 `owner` 或 `admin`；
+- 私人 workspace 成員清單只供 owner／admin 按需讀取，最多 50 人；每項只包含 canonical user ID、名稱、標準化電郵、角色、帳號狀態、auth mode 及 UTC 加入時間，不返回 workspace ID、subject hash、password material 或其他 workspace 資料；
+- owner 可加入 admin／member、改動非 owner 且非自己的角色，以及移除非 owner／非本人員；admin 只可加入或移除一般 member。未知電郵建立為 active beta Access-only account 並等待首次 verified Access identity 綁定；既有 active account 只增加目前 workspace membership；
+- membership POST／PATCH 只接受 exact bounded JSON，DELETE 必須空 body；D1 hard limit 與 API preflight 同時維持每 workspace 50 人上限。自然電郵／membership identity、post-write canonical reconciliation 及 workspace-scoped absence 令暫時故障重送安全收斂；
+- 成員管理不發送電郵、不修改 Cloudflare Access allow policy、不轉移 owner、不停用／刪除 user account，也不刪除其他 workspace 或私人資產。加入、角色變更及移除只保存最小 audit identity，180 日後由 scheduled cleanup 刪除；
 - 工作區活動記錄只供目前 workspace 的 `owner`／`admin` 讀取，`member` 固定拒絕。每次最多返回最近 50 項，只包含安全事件 ID、操作類型、UTC 時間及可選的已知操作者名稱；不返回 subject ID、商品／輸出內容、原始檔名、Campaign Brief 或底層錯誤；
 - 工作區用量供目前 active membership 讀取；API 只返回 authoritative available／reserved output allowance、完成／退回總數，以及最多 50 項 `reservation`／`settlement`／`release` 類型、固定單位與 UTC 時間。不返回 workspace、user、generation、ledger、provider identity、note、失敗原因、付款資料或底層錯誤；任何 allowance、summary、event amount 或時間失配會整個 snapshot fail closed；
 - 已授權的 `/api/workspaces` 清單查詢不可讀時返回雙語 no-store `503 unavailable`，保留 session 並拒絕輸出不完整 workspace 資料；
@@ -60,6 +64,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 工作區前端只有收到最多 20 項、ID 唯一、完整且通過 runtime schema 的 `generations` array 才替換目前輸出；workflow、比例、狀態、review／provenance revision 及同網域 preview／download route 必須一致。清單 GET 與 Campaign Pack success response 共用此契約；網絡錯誤、`503`、外部 URL 或 malformed payload 均保留登入狀態與現有結果並顯示雙語提示，只有明確空 array 才顯示真正空清單；
 - 活動記錄不屬於初始 bootstrap；只有 owner／admin 進入或重新整理「活動記錄」時才發出一條 15 秒、64 KiB 有界 GET。前端只接受 exact `200 application/json`、exact `{ activity }` envelope、合法事件類型、唯一 ID 及嚴格 UTC 時間；故障或 malformed 回應保留上一次可信快照並顯示固定雙語提示；
 - 用量 dashboard 同樣不屬於初始 bootstrap；只有 active member 進入或重新整理「用量」時才發出一條 15 秒、64 KiB 有界 GET。Browser 只接受 exact allowance／summary／events envelope、非負整數統計、固定事件 amount 及嚴格 UTC 時間；故障或 malformed 回應保留上一次可信 snapshot，成功則同步頂部 available／reserved 顯示；
+- 存取管理同樣不屬於初始 bootstrap；只有 owner／admin 進入或重新整理時才發出一條 15 秒、64 KiB 有界 GET。Browser 要求 exact `{ members }`、唯一 UUID／電郵、單一 owner 與 canonical 時間；POST／PATCH acknowledgement 上限 16 KiB，只有 transport／stream／deadline／`408`／`5xx` 以同一自然 identity 最多重試一次，其他狀態或 non-canonical success 不重送；
 - 私人品牌庫只列出目前 workspace 最近 20 個具 canonical digest 及正整數批准 revision 的品牌快照；每項只返回 UUID、七個已核准品牌欄位、批准 revision 及 UTC 建立時間，不返回 workspace／user identity、digest 或 Agent 其他 brief。Browser 只在進入或重新整理品牌庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ brandPacks }` envelope；malformed、重複 ID 或暫時故障保留上一次可信清單；
 - 品牌快照 POST 只接受 exact `{ approvedRevision }`，Worker 必須重新讀取目前 workspace 的 Agent state，並只保存與該 revision 完全相符的 `approved` canonical brand。相同品牌欄位由 digest-backed unique identity 去重；首次確認建立返回 `201`，相同內容或不確定寫入後的 reconciliation 返回 exact `200` replay。Browser 對 transport／stream／deadline／`408`／`5xx` 最多以同一 revision 重試一次，其他狀態及 non-canonical success 不重送；
 - 使用者可把單一品牌快照套用回工作台，這只帶回品牌欄位並立即令本機 Agent 批准及 Campaign Pack idempotency key 失效，必須配合目前商品及來源圖重新規劃。單筆 DELETE 維持 workspace-scoped `404`、`204` 及不確定結果 reconciliation；刪除品牌庫記錄不會改寫目前 Campaign Brief；
@@ -72,7 +77,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 ## 4. Dashboard 資訊架構
 
-- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入活動記錄；
+- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入活動記錄及存取管理；
 - 頂部：可用輸出數、目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
@@ -202,6 +207,7 @@ Cron Trigger -> expired session, auth-attempt and invite-retention cleanup
 - D1 與 R2 的來源圖 SHA-256／大小／MIME／provenance metadata 不一致時，不可預覽或批准，Queue 亦不可開始 provider work；
 - 私人來源圖庫只列目前 workspace 的有界安全 metadata；選用其他來源圖後不可沿用舊 Agent 批准，跨 workspace、原始檔名及 R2 identity 不可取得；
 - owner／admin 可讀的活動快照只限目前 workspace 及最小必要 metadata；member、跨 workspace、內容欄位及原始檔名均不可取得；
+- owner／admin 的成員管理只限目前 workspace 並符合角色矩陣、單一 owner 與 50 人上限；重送及 D1 ambiguous response 不重複 membership，移除不刪 account，D1 membership 亦不宣稱授予 Cloudflare Access policy；
 - 匿名及跨 workspace 不可讀取私人資料；
 - deterministic mode 不接觸 provider；
 - desktop、mobile、keyboard focus、無水平溢出及破圖檢查通過；

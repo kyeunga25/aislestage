@@ -7,11 +7,11 @@
 | 身分 | 可用範圍 | 目前限制 |
 | --- | --- | --- |
 | 未登入訪客 | 公開產品主頁；健康狀態及 workflow 清單可按部署 policy 保持公開 | 不可讀取 workspace、Agent、圖片或生成記錄 |
-| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准、生成、技術用量及正式輸出審核 | 只限內容操作，沒有帳號管理 API |
-| `admin` | 與 `owner` 相同的內容操作、技術用量及正式輸出審核 | 角色已保留，但尚未有獨立帳號管理權限 |
+| `owner` | 自己所屬 workspace 的資料、私有圖片、Agent 規劃／批准、生成、技術用量、正式輸出審核及成員管理 | 可加入 `admin`／`member`、調整非 owner 角色及移除非本人員；不可在介面轉移或移除 owner |
+| `admin` | 與 `owner` 相同的內容操作、技術用量及正式輸出審核；可管理一般 member | 只可加入／移除 `member`；不可加入 admin、變更角色、移除 admin／owner 或自己 |
 | `member` | 所屬 workspace 的內容操作、私人草稿預覽與技術用量 | 不可作出不可變更的正式下載審核決定 |
 
-正式環境的每個受保護請求都要先通過 Cloudflare Access，再由 Worker 驗證 JWT，最後以 `workspace_memberships` 驗證 workspace。一般內容操作仍使用相同 workspace scope；正式輸出審核則額外要求 `owner` 或 `admin`。這是窄範圍的 delivery gate，不代表已提供完整帳號管理 RBAC。
+正式環境的每個受保護請求都要先通過 Cloudflare Access，再由 Worker 驗證 JWT，最後以 `workspace_memberships` 驗證 workspace。一般內容操作仍使用相同 workspace scope；正式輸出審核及管理介面再按上表要求 `owner`／`admin`。UI 隱藏只供可用性，真正角色與 workspace scope 一律由 Worker 重核。
 
 ## Access-first 登入
 
@@ -20,6 +20,18 @@
 restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`：身份必須先對應既有 active account 與 workspace membership。未來若另行批准自動建立，仍必須先把 Access allow policy 收窄至受邀電郵或 group。密碼登入及註冊 endpoint 在 Access 模式返回 not found。
 
 `AUTH_MODE=password` 只保留給本機、隔離測試及遷移相容；以下舊式邀請合約仍由 integration tests 覆蓋，但不會出現在新的公開登入路徑。
+
+## Workspace 存取管理
+
+owner／admin 登入私人工作區後，可按需開啟「存取管理」。清單最多返回目前 workspace 的 50 個 canonical 成員，只包含顯示名稱、標準化電郵、角色、帳號狀態、登入模式及加入時間；不返回 workspace identifier、Access subject hash、password material 或其他 workspace 身份。
+
+- 加入一個尚不存在的電郵時，Worker 會建立 `active`、`beta`、Access-only 帳號與目前 workspace membership；subject hash 保持空白，直至同一已核實電郵首次通過 Cloudflare Access JWT 驗證才綁定；
+- 加入既有 active 帳號只建立目前 workspace membership，不改寫其名稱、登入模式或其他 workspace；相同角色重送安全收斂，不同角色固定 conflict；
+- D1 及 API 同時限制每個 workspace 最多 50 個成員，避免並發加入越過應用層 preflight；
+- 角色更新只由 owner 操作，owner／目前帳號不可變更；移除只刪除一筆 membership，不刪 user account、其他 workspace 或私人資產；
+- membership 加入、角色變更及移除只保存最小 audit identity，保留 180 日後由 scheduled cleanup 刪除。
+
+這個介面**不會**修改 Cloudflare Access application／Allow policy，也不會發送電郵、PIN 或邀請連結。操作者必須另外在受保護的 Cloudflare 設定確認該身份已獲 allow policy 授權；D1 membership 不能繞過 edge Access，Access policy 亦不能繞過 Worker membership。
 
 ## 相容密碼註冊模式
 
@@ -42,9 +54,9 @@ restricted release 保持 `ACCESS_AUTO_PROVISION=disabled`：身份必須先對�
 - workspace role：`owner`、`admin`、`member`；所有內容操作由 server-side workspace scope 驗證，而正式輸出審核只容許 `owner` 或 `admin`。
 - workspace access：只有 `active` workspace 可建立 session context 或執行受保護操作。
 
-Scheduled cleanup 會刪除已過期的 pending／revoked invite hash；已使用 invite 的 hash 與帳戶 linkage 只保留 30 日。仍有效的 pending invite 及 30 日內的 used 記錄會保留，讓短期重送與營運核對維持可預期。
+Scheduled cleanup 會刪除已過期的 pending／revoked invite hash；已使用 invite 的 hash 與帳戶 linkage 只保留 30 日，workspace membership audit event 保留 180 日。仍有效的 pending invite、30 日內的 used 記錄及 180 日內的 access event 會保留，讓短期重送與營運核對維持可預期。
 
-公開介面不提供帳號清單或邀請管理。邀請可由 `npm run cf:invite` 在受保護本機環境建立；收件電郵只由 `AISLESTAGE_INVITE_EMAIL` 環境變數提供，D1 則只使用受保護 `wrangler.local.jsonc` 內的通用 `DB` binding。script 拒絕以 command-line flags 傳入收件電郵、資料庫或 config，亦不會把這些受保護值交給 child-process argv。撤銷、帳號狀態變更及成員指派只可經受保護的操作流程完成。
+公開主頁不提供帳號清單或邀請管理；workspace 成員清單只在私人 owner／admin 介面按需載入。`npm run cf:invite` 仍供 password-mode 相容註冊流程使用；收件電郵只由 `AISLESTAGE_INVITE_EMAIL` 環境變數提供，D1 則只使用受保護 `wrangler.local.jsonc` 內的通用 `DB` binding。script 拒絕以 command-line flags 傳入收件電郵、資料庫或 config，亦不會把這些受保護值交給 child-process argv。帳號狀態變更、owner 轉移及 Cloudflare policy 維護仍不在 workspace UI 範圍。
 
 ## 邀請指令 / Invite command
 
@@ -75,6 +87,7 @@ Set the recipient only through a protected `AISLESTAGE_INVITE_EMAIL` environment
 4. 確認邀請轉為 `used`，不可轉用另一電郵或再次使用。
 5. 驗證未登入及跨 workspace 請求被拒絕。
 6. 把帳號改為 `suspended`，確認既有 session 及新登入同時失效。
-7. 測試結束後只清理隔離測試環境，不以正式帳號或正式資產作 fixture。
+7. 驗證 owner／admin 的成員矩陣、50 人上限、重送對帳、audit retention、跨 workspace 隱藏及 malformed body fail-closed。
+8. 測試結束後只清理隔離測試環境，不以正式帳號或正式資產作 fixture。
 
 Integration tests cover this contract with isolated Workers and D1 bindings. Production identities and deployment mappings are intentionally excluded.

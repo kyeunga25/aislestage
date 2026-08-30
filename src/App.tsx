@@ -12,6 +12,7 @@ import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { WorkspaceActivityView } from './components/WorkspaceActivityView'
+import { WorkspaceAccessView, type WorkspaceAccessMutation } from './components/WorkspaceAccessView'
 import { WorkspaceUsageView } from './components/WorkspaceUsageView'
 import { loadBrandPackListSnapshot, saveApprovedBrandPack } from './lib/brand-pack-client'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
@@ -35,9 +36,15 @@ import { loadProductProfileListSnapshot, saveApprovedProductProfile } from './li
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import { loadOutputUsageSnapshot } from './lib/output-usage-loader'
-import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent, WorkspaceMember } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
+import {
+  inviteWorkspaceMember as submitWorkspaceMemberInvite,
+  loadWorkspaceMembersSnapshot,
+  removeWorkspaceMember as submitWorkspaceMemberRemoval,
+  updateWorkspaceMemberRole as submitWorkspaceMemberRole
+} from './lib/workspace-access-client'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
 
 const demoSession: AuthedSession = {
@@ -61,6 +68,26 @@ const demoOutputUsage: OutputUsageSnapshot = {
     { type: 'reservation', amount: -1, createdAt: '2026-08-30T04:00:00Z' }
   ]
 }
+const demoWorkspaceMembers: WorkspaceMember[] = [
+  {
+    id: 'demo-user',
+    name: 'Demo User',
+    email: 'demo@example.test',
+    role: 'owner',
+    accountStatus: 'active',
+    authMode: 'access',
+    createdAt: '2026-08-30T03:45:00Z'
+  },
+  {
+    id: 'demo-member',
+    name: 'Campaign Reviewer',
+    email: 'reviewer@example.test',
+    role: 'member',
+    accountStatus: 'active',
+    authMode: 'access',
+    createdAt: '2026-08-30T03:50:00Z'
+  }
+]
 const demoProductAssets: ProductAssetListItem[] = [{
   id: '123e4567-e89b-42d3-a456-426614174100',
   name: 'product-image.png',
@@ -140,6 +167,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivityEvent[]>(demoMode ? demoActivity : [])
   const [activityNotice, setActivityNotice] = useState('')
   const [isRefreshingActivity, setIsRefreshingActivity] = useState(false)
+  const [workspaceMembers, setWorkspaceMembers] = useState<WorkspaceMember[]>(demoMode ? demoWorkspaceMembers : [])
+  const [workspaceAccessNotice, setWorkspaceAccessNotice] = useState('')
+  const [isRefreshingWorkspaceMembers, setIsRefreshingWorkspaceMembers] = useState(false)
+  const [workspaceAccessMutation, setWorkspaceAccessMutation] = useState<WorkspaceAccessMutation | null>(null)
   const [outputUsage, setOutputUsage] = useState<OutputUsageSnapshot | null>(demoMode ? demoOutputUsage : null)
   const [outputUsageNotice, setOutputUsageNotice] = useState('')
   const [isRefreshingOutputUsage, setIsRefreshingOutputUsage] = useState(false)
@@ -160,6 +191,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const brandPackRefreshEpoch = useRef(0)
   const activityRefreshLock = useRef(false)
   const activityRefreshEpoch = useRef(0)
+  const workspaceAccessRefreshLock = useRef(false)
+  const workspaceAccessRefreshEpoch = useRef(0)
+  const workspaceAccessMutationLock = useRef(false)
+  const workspaceAccessMutationEpoch = useRef(0)
   const outputUsageRefreshLock = useRef(false)
   const outputUsageRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
@@ -362,6 +397,33 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshWorkspaceMembers() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin')
+      || workspaceAccessRefreshLock.current
+      || workspaceAccessMutationLock.current) return
+    workspaceAccessRefreshLock.current = true
+    const refreshEpoch = ++workspaceAccessRefreshEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    const workspaceId = session.currentWorkspace.id
+    setIsRefreshingWorkspaceMembers(true)
+    setWorkspaceAccessNotice('')
+    try {
+      const snapshot = await loadWorkspaceMembersSnapshot()
+      if (refreshEpoch !== workspaceAccessRefreshEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current
+        || session.currentWorkspace.id !== workspaceId) return
+      if (snapshot.members !== null) setWorkspaceMembers(snapshot.members)
+      if (snapshot.error) setWorkspaceAccessNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === workspaceAccessRefreshEpoch.current) {
+        workspaceAccessRefreshLock.current = false
+        setIsRefreshingWorkspaceMembers(false)
+      }
+    }
+  }
+
   async function refreshOutputUsage() {
     if (!session || session.user.id === 'demo-user' || outputUsageRefreshLock.current) return
     outputUsageRefreshLock.current = true
@@ -393,6 +455,123 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  function mergeWorkspaceMember(member: WorkspaceMember) {
+    setWorkspaceMembers((current) => {
+      const next = [...current.filter((item) => item.id !== member.id), member]
+      const roleOrder = { owner: 0, admin: 1, member: 2 } as const
+      return next.sort((left, right) => roleOrder[left.role] - roleOrder[right.role]
+        || left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id))
+    })
+  }
+
+  async function inviteMemberFromAccessView(input: { email: string; name: string; role: 'admin' | 'member' }) {
+    if (!session
+      || (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin')
+      || workspaceAccessMutationLock.current
+      || workspaceAccessRefreshLock.current) return false
+    workspaceAccessMutationLock.current = true
+    const mutationEpoch = ++workspaceAccessMutationEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    setWorkspaceAccessMutation({ kind: 'invite', memberId: null })
+    setWorkspaceAccessNotice('')
+    try {
+      if (session.user.id === 'demo-user') {
+        if (workspaceMembers.some((member) => member.email === input.email)) {
+          setWorkspaceAccessNotice('這個 Demo 成員已在工作區。 This demo member is already in the workspace.')
+          return false
+        }
+        if (workspaceMembers.length >= 50) {
+          setWorkspaceAccessNotice('Demo 工作區成員已達目前上限。 The demo workspace member limit has been reached.')
+          return false
+        }
+        mergeWorkspaceMember({
+          id: crypto.randomUUID(),
+          ...input,
+          role: session.currentWorkspace.role === 'admin' ? 'member' : input.role,
+          accountStatus: 'active',
+          authMode: 'access',
+          createdAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+        })
+        return true
+      }
+      const member = await submitWorkspaceMemberInvite(input)
+      if (mutationEpoch !== workspaceAccessMutationEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current) return false
+      mergeWorkspaceMember(member)
+      return true
+    } catch (error) {
+      if (mutationEpoch === workspaceAccessMutationEpoch.current
+        && hydrationEpoch === workspaceHydrationEpoch.current) {
+        setWorkspaceAccessNotice(error instanceof Error ? error.message : '成員邀請暫時無法使用。 Workspace member invitation is temporarily unavailable.')
+      }
+      return false
+    } finally {
+      if (mutationEpoch === workspaceAccessMutationEpoch.current) {
+        workspaceAccessMutationLock.current = false
+        setWorkspaceAccessMutation(null)
+      }
+    }
+  }
+
+  async function changeWorkspaceMemberRole(member: WorkspaceMember, role: 'admin' | 'member') {
+    if (!session
+      || session.currentWorkspace.role !== 'owner'
+      || workspaceAccessMutationLock.current
+      || workspaceAccessRefreshLock.current) return
+    workspaceAccessMutationLock.current = true
+    const mutationEpoch = ++workspaceAccessMutationEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    setWorkspaceAccessMutation({ kind: 'role', memberId: member.id })
+    setWorkspaceAccessNotice('')
+    try {
+      const updated = session.user.id === 'demo-user'
+        ? { ...member, role }
+        : await submitWorkspaceMemberRole(member.id, role)
+      if (mutationEpoch !== workspaceAccessMutationEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current) return
+      mergeWorkspaceMember(updated)
+    } catch (error) {
+      if (mutationEpoch === workspaceAccessMutationEpoch.current
+        && hydrationEpoch === workspaceHydrationEpoch.current) {
+        setWorkspaceAccessNotice(error instanceof Error ? error.message : '成員角色更新暫時無法使用。 Workspace member role update is temporarily unavailable.')
+      }
+    } finally {
+      if (mutationEpoch === workspaceAccessMutationEpoch.current) {
+        workspaceAccessMutationLock.current = false
+        setWorkspaceAccessMutation(null)
+      }
+    }
+  }
+
+  async function removeMemberFromWorkspace(member: WorkspaceMember) {
+    if (!session
+      || (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin')
+      || workspaceAccessMutationLock.current
+      || workspaceAccessRefreshLock.current) return
+    workspaceAccessMutationLock.current = true
+    const mutationEpoch = ++workspaceAccessMutationEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    setWorkspaceAccessMutation({ kind: 'remove', memberId: member.id })
+    setWorkspaceAccessNotice('')
+    try {
+      if (session.user.id !== 'demo-user') await submitWorkspaceMemberRemoval(member.id)
+      if (mutationEpoch !== workspaceAccessMutationEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current) return
+      setWorkspaceMembers((current) => current.filter((item) => item.id !== member.id))
+    } catch (error) {
+      if (mutationEpoch === workspaceAccessMutationEpoch.current
+        && hydrationEpoch === workspaceHydrationEpoch.current) {
+        setWorkspaceAccessNotice(error instanceof Error ? error.message : '成員移除暫時無法使用。 Workspace member removal is temporarily unavailable.')
+      }
+    } finally {
+      if (mutationEpoch === workspaceAccessMutationEpoch.current) {
+        workspaceAccessMutationLock.current = false
+        setWorkspaceAccessMutation(null)
+      }
+    }
+  }
+
   function navigateToSection(nextSection: NavigationSection) {
     setActiveSection(nextSection)
     if (nextSection === 'campaigns' || nextSection === 'assets') {
@@ -405,6 +584,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (nextSection === 'brands') void refreshBrandPacks()
     if (nextSection === 'usage') void refreshOutputUsage()
     if (nextSection === 'activity') void refreshWorkspaceActivity()
+    if (nextSection === 'access') void refreshWorkspaceMembers()
   }
 
   useEffect(() => {
@@ -974,6 +1154,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     productProfileRefreshEpoch.current += 1
     brandPackRefreshEpoch.current += 1
     activityRefreshEpoch.current += 1
+    workspaceAccessRefreshEpoch.current += 1
+    workspaceAccessMutationEpoch.current += 1
     outputUsageRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
@@ -982,6 +1164,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     brandPackRefreshLock.current = false
     brandPackMutationLock.current = false
     activityRefreshLock.current = false
+    workspaceAccessRefreshLock.current = false
+    workspaceAccessMutationLock.current = false
     outputUsageRefreshLock.current = false
     setIsRefreshingResults(false)
     setIsRefreshingProductAssets(false)
@@ -990,6 +1174,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setIsRefreshingBrandPacks(false)
     setIsSavingBrandPack(false)
     setIsRefreshingActivity(false)
+    setIsRefreshingWorkspaceMembers(false)
+    setWorkspaceAccessMutation(null)
     setIsRefreshingOutputUsage(false)
     setSession(null)
     setReviewingId(null)
@@ -1008,6 +1194,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setDeletingBrandPackId(null)
     setWorkspaceActivity([])
     setActivityNotice('')
+    setWorkspaceMembers([])
+    setWorkspaceAccessNotice('')
     setOutputUsage(null)
     setOutputUsageNotice('')
     setAgentState(initialCampaignAgentState())
@@ -1057,6 +1245,25 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           ? <WorkspaceUsageView usage={outputUsage} isRefreshing={isRefreshingOutputUsage} notice={outputUsageNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshOutputUsage()} onBack={() => setActiveSection('workspace')} />
           : activeSection === 'activity'
           ? <WorkspaceActivityView activity={workspaceActivity} isRefreshing={isRefreshingActivity} notice={activityNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceActivity()} onBack={() => setActiveSection('workspace')} />
+          : activeSection === 'access'
+          ? (session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'
+            ? <WorkspaceAccessView
+              members={workspaceMembers}
+              viewerRole={session.currentWorkspace.role}
+              viewerUserId={session.user.id}
+              isRefreshing={isRefreshingWorkspaceMembers}
+              mutation={workspaceAccessMutation}
+              notice={workspaceAccessNotice}
+              onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceMembers()}
+              onInvite={inviteMemberFromAccessView}
+              onRoleChange={(member, role) => void changeWorkspaceMemberRole(member, role)}
+              onRemove={(member) => void removeMemberFromWorkspace(member)}
+              onBack={() => setActiveSection('workspace')}
+            />
+            : <section className="collection-view" aria-labelledby="access-denied-title">
+              <div className="collection-heading"><div className="collection-heading-main"><div><h1 id="access-denied-title">無法開啟存取管理</h1><p>Workspace access requires an owner or admin role.</p></div></div></div>
+              <button className="outline-button" type="button" onClick={() => setActiveSection('workspace')}>返回工作台</button>
+            </section>)
           : <CollectionView
             section={activeSection}
             brand={brand}

@@ -703,7 +703,9 @@ describe('restricted registration authentication', () => {
       env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at) VALUES ('expired-revoked', 'token-expired-revoked', 'recipient-expired-revoked', 'revoked', datetime('now', '-1 minute'))"),
       env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at, used_by_user_id, used_at) VALUES ('old-used', 'token-old-used', 'recipient-old-used', 'used', datetime('now', '+7 days'), ?, datetime('now', '-31 days'))").bind(account.user.id),
       env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at, used_by_user_id, used_at) VALUES ('recent-used', 'token-recent-used', 'recipient-recent-used', 'used', datetime('now', '+7 days'), ?, datetime('now', '-29 days'))").bind(account.user.id),
-      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at) VALUES ('future-pending', 'token-future-pending', 'recipient-future-pending', 'pending', datetime('now', '+1 day'))")
+      env.DB.prepare("INSERT INTO beta_invites (id, token_hash, recipient_hash, status, expires_at) VALUES ('future-pending', 'token-future-pending', 'recipient-future-pending', 'pending', datetime('now', '+1 day'))"),
+      env.DB.prepare("INSERT INTO workspace_access_events (id, workspace_id, actor_user_id, target_user_id, event_type, created_at) VALUES ('old-access-event', ?, ?, ?, 'member_invited', datetime('now', '-181 days'))").bind(account.currentWorkspace.id, account.user.id, account.user.id),
+      env.DB.prepare("INSERT INTO workspace_access_events (id, workspace_id, actor_user_id, target_user_id, event_type, created_at) VALUES ('recent-access-event', ?, ?, ?, 'member_role_changed', datetime('now', '-179 days'))").bind(account.currentWorkspace.id, account.user.id, account.user.id)
     ])
 
     const context = createExecutionContext()
@@ -714,6 +716,9 @@ describe('restricted registration authentication', () => {
     expect(await env.DB.prepare("SELECT id FROM auth_attempts WHERE id IN ('old-attempt', 'recent-attempt') ORDER BY id").all()).toMatchObject({ results: [{ id: 'recent-attempt' }] })
     expect(await env.DB.prepare("SELECT id FROM beta_invites WHERE id IN ('expired-pending', 'expired-revoked', 'old-used', 'recent-used', 'future-pending') ORDER BY id").all()).toMatchObject({
       results: [{ id: 'future-pending' }, { id: 'recent-used' }]
+    })
+    expect(await env.DB.prepare("SELECT id FROM workspace_access_events WHERE id IN ('old-access-event', 'recent-access-event') ORDER BY id").all()).toMatchObject({
+      results: [{ id: 'recent-access-event' }]
     })
   })
 
