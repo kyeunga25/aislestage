@@ -176,6 +176,8 @@ export type ProductAsset = {
   name: string
   contentType: 'image/png' | 'image/jpeg' | 'image/webp'
   sizeBytes: number
+  widthPx: number | null
+  heightPx: number | null
   previewUrl: string
 }
 

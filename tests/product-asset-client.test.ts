@@ -14,6 +14,8 @@ describe('product asset upload client', () => {
     name: 'product-image.png',
     contentType: 'image/png',
     sizeBytes: 4,
+    widthPx: 1024,
+    heightPx: 1024,
     previewUrl: `/api/assets/${assetId}`
   }
 
@@ -65,6 +67,24 @@ describe('product asset upload client', () => {
     const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       asset: { ...canonicalAsset, contentType: 'image/jpeg' }
+    }, { status: 201 })))
+
+    await expect(uploadProductAsset(file)).rejects.toThrow(
+      '未能確認商品圖片上載結果。 Unable to verify the product image upload.'
+    )
+  })
+
+  it.each([
+    { widthPx: null, heightPx: null },
+    { widthPx: 1024, heightPx: null },
+    { widthPx: 0, heightPx: 1024 },
+    { widthPx: 8193, heightPx: 1 },
+    { widthPx: 8000, heightPx: 5000 },
+    { widthPx: 1024.5, heightPx: 1024 }
+  ])('rejects unsafe or incomplete verified dimensions %#', async (dimensions) => {
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'product.png', { type: 'image/png' })
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      asset: { ...canonicalAsset, ...dimensions }
     }, { status: 201 })))
 
     await expect(uploadProductAsset(file)).rejects.toThrow(

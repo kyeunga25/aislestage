@@ -36,8 +36,9 @@ describe('private product-source library', () => {
 
     expect(Object.keys(payload)).toEqual(['assets'])
     expect(payload.assets).toHaveLength(2)
-    expect(payload.assets.every((asset) => Object.keys(asset).sort().join(',') === 'contentType,createdAt,id,name,previewUrl,sizeBytes')).toBe(true)
+    expect(payload.assets.every((asset) => Object.keys(asset).sort().join(',') === 'contentType,createdAt,heightPx,id,name,previewUrl,sizeBytes,widthPx')).toBe(true)
     expect(payload.assets.map((asset) => asset.name)).toEqual(expect.arrayContaining(['product-image.png', 'product-image.webp']))
+    expect(payload.assets.every((asset) => asset.widthPx === 1 && asset.heightPx === 1)).toBe(true)
     expect(payload.assets.every((asset) => asset.previewUrl === `/api/assets/${asset.id}`)).toBe(true)
     expect(payload.assets.every((asset) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(String(asset.createdAt)))).toBe(true)
     expect(raw).not.toContain('private-launch-name.png')
@@ -47,6 +48,34 @@ describe('private product-source library', () => {
     expect(raw).not.toContain(otherOwner.currentWorkspace.id)
     expect(raw).not.toContain('object_key')
     expect(raw).not.toContain('content_sha256')
+  })
+
+  it('returns explicit unknown dimensions for a verified legacy source', async () => {
+    const owner = await registerAccount('Legacy Product Library')
+    const uploaded = await uploadProductSource(owner.cookie, validPngBytes(), 'legacy.png', 'image/png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    await env.DB.prepare('UPDATE media_assets SET width_px = NULL, height_px = NULL WHERE id = ?')
+      .bind(asset.id)
+      .run()
+
+    const response = await dispatch('/api/assets/product', { headers: { cookie: owner.cookie } })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      assets: [{ id: asset.id, widthPx: null, heightPx: null }]
+    })
+  })
+
+  it('rejects partial or unsafe stored dimension pairs at the D1 boundary', async () => {
+    const owner = await registerAccount('Product Dimension Constraint')
+    const uploaded = await uploadProductSource(owner.cookie, validPngBytes(), 'constraint.png', 'image/png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+
+    await expect(env.DB.prepare('UPDATE media_assets SET width_px = ?, height_px = ? WHERE id = ?')
+      .bind(1024, null, asset.id)
+      .run()).rejects.toThrow()
+    await expect(env.DB.prepare('UPDATE media_assets SET width_px = ?, height_px = ? WHERE id = ?')
+      .bind(8000, 5000, asset.id)
+      .run()).rejects.toThrow()
   })
 
   it('fails closed without exposing D1 details when the source list cannot be read', async () => {

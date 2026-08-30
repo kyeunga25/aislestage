@@ -1,5 +1,6 @@
 import { readBoundedJsonResponseOutcome } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
+import { hasSafeImageDimensions } from './image-validation'
 import type { ProductAsset } from './types'
 
 export const productAssetTypeMessage = '只支援 PNG、JPEG 或靜態 WebP 圖片。 Only PNG, JPEG, or static WebP images are supported.'
@@ -12,7 +13,7 @@ const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_PRODUCT_ASSET_RESPONSE_BYTES = 4 * 1024
 const PRODUCT_UPLOAD_TIMEOUT_MS = 45_000
 const PRODUCT_UPLOAD_ATTEMPTS = 2
-const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'previewUrl'])
+const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'widthPx', 'heightPx', 'previewUrl'])
 const responseKeys = new Set(['asset'])
 const imageNames = new Map<ProductAsset['contentType'], string>([
   ['image/png', 'product-image.png'],
@@ -59,12 +60,15 @@ function normalizeProductAsset(value: unknown, file: File, idempotencyKey: strin
     || value.sizeBytes !== file.size
     || !Number.isSafeInteger(value.sizeBytes)
     || Number(value.sizeBytes) <= 0
+    || !hasSafeImageDimensions({ width: value.widthPx as number, height: value.heightPx as number })
     || value.previewUrl !== `/api/assets/${encodeURIComponent(String(value.id))}`) return null
   return {
     id: String(value.id),
     name: expectedName,
     contentType: contentType as ProductAsset['contentType'],
     sizeBytes: value.sizeBytes as number,
+    widthPx: value.widthPx as number,
+    heightPx: value.heightPx as number,
     previewUrl: value.previewUrl
   }
 }

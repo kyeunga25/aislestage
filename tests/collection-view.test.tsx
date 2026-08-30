@@ -79,6 +79,8 @@ const productAssets: ProductAssetListItem[] = [
     name: 'product-image.png',
     contentType: 'image/png',
     sizeBytes: 1024,
+    widthPx: 1024,
+    heightPx: 1024,
     previewUrl: '/api/assets/123e4567-e89b-42d3-a456-426614174010',
     createdAt: '2026-08-30T05:00:00Z'
   },
@@ -87,6 +89,8 @@ const productAssets: ProductAssetListItem[] = [
     name: 'product-image.webp',
     contentType: 'image/webp',
     sizeBytes: 2048,
+    widthPx: null,
+    heightPx: null,
     previewUrl: '/api/assets/123e4567-e89b-42d3-a456-426614174011',
     createdAt: '2026-08-30T05:05:00Z'
   }
@@ -283,6 +287,8 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('2 張')
     expect(markup).toContain('PNG')
     expect(markup).toContain('WebP')
+    expect(markup).toContain('1024 × 1024 px')
+    expect(markup).toContain('尺寸未記錄 · Dimensions unavailable')
     expect(markup).toContain('目前使用第 1 張私人商品圖')
     expect(markup).toContain('使用第 2 張私人商品圖')
     expect(markup).toContain('正在刪除第 2 張私人商品圖 · Deleting private product source 2')

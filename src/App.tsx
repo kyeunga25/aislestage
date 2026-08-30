@@ -96,6 +96,8 @@ const demoProductAssets: ProductAssetListItem[] = [{
   name: 'product-image.png',
   contentType: 'image/png',
   sizeBytes: 1_000_640,
+  widthPx: 1024,
+  heightPx: 1024,
   previewUrl: demoSpeaker,
   createdAt: '2026-08-30T03:55:00Z'
 }]
@@ -240,7 +242,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setImage({
         name: '已保存的商品圖片',
         url: previewUrl,
-        asset: { id: nextState.brief.assetId, name: '已保存的商品圖片', contentType: 'image/png', sizeBytes: 0, previewUrl },
+        asset: { id: nextState.brief.assetId, name: '已保存的商品圖片', contentType: 'image/png', sizeBytes: 0, widthPx: null, heightPx: null, previewUrl },
         status: 'ready',
         error: ''
       })

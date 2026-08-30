@@ -307,6 +307,8 @@ npm run release:check
 5. 核對 production target，再套用 migration 及部署同一 reviewed commit；
 6. 重做匿名、Access、membership、私人檔案及 kill-switch 驗收。
 
+`0019_product_asset_dimensions.sql` 可先於相同 reviewed commit 的 Worker 套用：既有及短暫由舊 Worker 建立的 row 可保留 `width_px = NULL`、`height_px = NULL`，升級後的新上傳會固定寫入完整尺寸。不要為了回填舊資料而公開 R2、下載整個 bucket 或繞過 Worker 授權；舊項目在介面標示「尺寸未記錄」即可安全繼續使用。
+
 回復時優先使用 Cloudflare 的版本／deployment rollback 能力，但先確認該 Worker version 與目前 D1 schema 相容。不要刪除 Worker、D1、R2、Queue 或 Durable Object 作為一般 rollback；資源刪除可能不可逆，且不在本指南的授權範圍。
 
 ## 14. 可選 AI adapter

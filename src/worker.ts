@@ -685,11 +685,6 @@ function productImageDimensions(contentType: string, bytes: Uint8Array) {
   return null
 }
 
-function hasSafeProductImageDimensions(contentType: string, bytes: Uint8Array) {
-  const dimensions = productImageDimensions(contentType, bytes)
-  return hasSafeImageDimensions(dimensions)
-}
-
 function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
   if (contentType === 'image/jpeg') {
     if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return true
@@ -1500,7 +1495,15 @@ type ProductAssetListRow = {
   id: string
   contentType: 'image/png' | 'image/jpeg' | 'image/webp'
   sizeBytes: number
+  widthPx: number | null
+  heightPx: number | null
   createdAt: string
+}
+
+function storedProductAssetDimensions(widthPx: unknown, heightPx: unknown) {
+  if (widthPx === null && heightPx === null) return null
+  const dimensions = { width: widthPx as number, height: heightPx as number }
+  return hasSafeImageDimensions(dimensions) ? dimensions : undefined
 }
 
 type BrandPackRow = {
@@ -1999,6 +2002,7 @@ async function listProductAssets(env: Env, session: SessionContext) {
   try {
     const result = await env.DB.prepare(`
       SELECT a.id, a.content_type AS contentType, a.size_bytes AS sizeBytes,
+        a.width_px AS widthPx, a.height_px AS heightPx,
         strftime('%Y-%m-%dT%H:%M:%SZ', a.created_at) AS createdAt
       FROM media_assets a
       WHERE a.workspace_id = ? AND a.kind = 'product-source'
@@ -2007,14 +2011,20 @@ async function listProductAssets(env: Env, session: SessionContext) {
       LIMIT 20
     `).bind(session.currentWorkspace.id, MAX_PRODUCT_IMAGE_BYTES).all<ProductAssetListRow>()
     return json({
-      assets: result.results.map((asset) => ({
-        id: asset.id,
-        name: `product-image.${extensionForContentType(asset.contentType)}`,
-        contentType: asset.contentType,
-        sizeBytes: asset.sizeBytes,
-        previewUrl: `/api/assets/${asset.id}`,
-        createdAt: asset.createdAt
-      }))
+      assets: result.results.map((asset) => {
+        const dimensions = storedProductAssetDimensions(asset.widthPx, asset.heightPx)
+        if (dimensions === undefined) throw new TypeError('Invalid stored product asset dimensions.')
+        return {
+          id: asset.id,
+          name: `product-image.${extensionForContentType(asset.contentType)}`,
+          contentType: asset.contentType,
+          sizeBytes: asset.sizeBytes,
+          widthPx: dimensions?.width ?? null,
+          heightPx: dimensions?.height ?? null,
+          previewUrl: `/api/assets/${asset.id}`,
+          createdAt: asset.createdAt
+        }
+      })
     })
   } catch {
     console.error('product-asset-list-read-failed')
@@ -2049,7 +2059,8 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
     return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
   }
-  if (!hasSafeProductImageDimensions(value.type, bytes)) {
+  const dimensions = productImageDimensions(value.type, bytes)
+  if (!dimensions || !hasSafeImageDimensions(dimensions)) {
     return json({ error: '圖片尺寸不可超過 8192 px 單邊或 3,200 萬像素。 Image dimensions must not exceed 8192 px per side or 32 megapixels.' }, { status: 413 })
   }
 
@@ -2063,6 +2074,8 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
       name: storedFilename,
       contentType: value.type,
       sizeBytes: value.size,
+      widthPx: dimensions.width,
+      heightPx: dimensions.height,
       previewUrl: `/api/assets/${assetId}`
     }
   }, { status: 201 })
@@ -2109,10 +2122,22 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     await env.DB.prepare(`
       INSERT INTO media_assets (
         id, workspace_id, created_by_user_id, kind, object_key,
-        original_filename, content_type, size_bytes, content_sha256
+        original_filename, content_type, size_bytes, content_sha256,
+        width_px, height_px
       )
-      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?)
-    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size, contentSha256).run()
+      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      assetId,
+      session.currentWorkspace.id,
+      session.user.id,
+      objectKey,
+      storedFilename,
+      value.type,
+      value.size,
+      contentSha256,
+      dimensions.width,
+      dimensions.height
+    ).run()
   } catch {
     try {
       const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)

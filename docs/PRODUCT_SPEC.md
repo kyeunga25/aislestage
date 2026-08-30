@@ -132,14 +132,15 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 - 最大 4 MB、單邊 8192 px，總像素不超過 32 MP；
 - browser 與 Worker 都檢查基本類型／大小，Worker 再檢查 signature；PNG 必須具有效 critical chunk 次序、CRC、IDAT、IEND、indexed-color palette 容量，以及按 color type 對應長度、palette、唯一性與次序都合法的 `tRNS`；private PNG chunk 及未識別 WebP chunk 會被視為不可保留的自訂 payload；WebP 必須具一致 RIFF 長度、padding 及靜態 VP8／VP8L image chunk；
 - 含 EXIF、XMP 或文字 metadata 的來源圖會被拒絕，原始檔名不會保存；
-- browser 建立 multipart request 時已按 MIME 換成 generic 檔名，不傳送本機原始檔名；成功後只接受精確的 `201 application/json` asset envelope，UUID、canonical 名稱、MIME、位元組數及同源 preview path 必須與本次檔案一致，否則 fail closed，亦不向 workspace 顯示 server error detail；
-- 私人來源圖庫 GET 只返回目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP；每項只包含 UUID、canonical generic 名稱、MIME、大小、同源 preview route 及 UTC 建立時間，不返回原始檔名、workspace／user、object identity 或 checksum。Browser 只在進入或重新整理商品庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ assets }` envelope；malformed 或暫時故障保留上一次可信清單；
+- browser 建立 multipart request 時已按 MIME 換成 generic 檔名，不傳送本機原始檔名；成功後只接受精確的 `201 application/json` asset envelope，UUID、canonical 名稱、MIME、位元組數、Worker 已驗證寬高及同源 preview path 必須與本次檔案契約一致，否則 fail closed，亦不向 workspace 顯示 server error detail；
+- Worker 由已驗證的 PNG IHDR、JPEG frame 或 WebP bitstream header 取得寬高，D1 同時保存完整 pair；欄位只可同時為有效正整數或同時為 `NULL`，並由 schema 保持 8192 px／32 MP 上限。`NULL/NULL` 只供 migration 前舊資料及滾動部署相容，新上傳固定寫入兩個值；
+- 私人來源圖庫 GET 只返回目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP；每項只包含 UUID、canonical generic 名稱、MIME、大小、已驗證寬高（舊資料為明確 `null/null`）、同源 preview route 及 UTC 建立時間，不返回原始檔名、workspace／user、object identity 或 checksum。Browser 只在進入或重新整理商品庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ assets }` envelope；malformed、半套／超限尺寸或暫時故障保留上一次可信清單；
 - 使用者可從私人來源圖庫把單一已保存圖片選回工作台；這個 client 動作會清除本機 Campaign Pack idempotency key、令現有 Agent 批准失效並要求重新規劃。圖片實際 preview、Agent plan 及 Queue 仍各自重新核對 workspace 與 D1／R2 完整性；
 - source object 存於 workspace-scoped private R2 key；
 - 私人商品圖讀取先核對 workspace-scoped D1 metadata，再讀取 R2 object；成功 body 使用 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin`，不能由同一 browser 在登出／換帳號後沿用，亦不可作為跨來源子資源嵌入。不存在或跨 workspace 維持 `404`，任一儲存層不可讀則回雙語 no-store `503 unavailable`，不輸出 object key、workspace ID 或底層錯誤；
 - Worker 上傳時向 R2 提供 SHA-256，核對寫入回傳 checksum，並在 D1 保存同一 canonical digest；
 - Browser 為每次商品圖上傳建立 UUID v4 idempotency key；Worker 在讀取 multipart 前驗證，並把它綁定 asset ID。同 workspace 以同 key 重送相同 MIME、size、digest 及 private object identity 會返回原 asset；不同內容 `409` fail closed，跨 workspace 不可 replay。不同 digest 使用分離的候選私人 object identity，並發衝突不會互相覆寫，敗方只清理未被 D1 row 引用的候選 object。每次 upload attempt 連 success body 讀取有 45 秒 deadline；transport／response stream 中斷／deadline、HTTP `408` 或 `5xx` 最多以同 key 自動重試一次，validation／authorization／conflict 或 malformed success 不重送；
-- browser 只收到 asset ID 及授權 preview URL；
+- browser 只收到 canonical generic 名稱、MIME、大小、已驗證寬高、asset ID 及授權 preview URL；不收到原始檔名、object key、workspace／user identity 或 checksum；
 - 跨 workspace 返回 not found；
 - Agent plan 在寫入 Durable Object 或呼叫可選 provider 前，先核對來源圖屬於目前 workspace 且 D1／R2 SHA-256、大小、MIME、asset kind 與 metadata 一致；preview、Agent 批准及 Queue 讀取亦會再次核對，任一不一致均不返回 object body、不改寫有效 revision、不批准亦不呼叫 provider；
 - R2 驗收後若 D1 insert 回報失敗，Worker 會重新核對同 workspace、同 request-bound asset ID 的 canonical row；已提交且欄位完全一致則返回成功，明確未提交才清理剛建立的單一 R2 object。若 reconciliation 狀態不可讀，會 fail closed 而不盲目刪除可能已被 D1 引用的 object；

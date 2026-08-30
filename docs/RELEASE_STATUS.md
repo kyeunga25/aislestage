@@ -44,8 +44,8 @@
 - [x] workspace selector 的 1280×720／390×844 `/demo` browser QA 已驗證語義化 button／`aria-expanded`、開啟／收合／再開啟、sticky topbar 定位及面板視窗邊界；沒有水平溢出、framework overlay 或 console warning／error；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
-- [x] 私人 product-source GET 只列目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP，並只返回 UUID、canonical generic 名稱、MIME、大小、同源 preview route 及 UTC 時間；原始檔名、object／workspace／user identity 與 checksum 不進入清單；
-- [x] product-source client 採 on-demand 15 秒／64 KiB exact envelope 與逐項 schema；malformed、跨 workspace 或暫時故障保留可信清單，選用另一張來源圖會失效舊 Agent 計劃並返回工作台；
+- [x] 私人 product-source GET 只列目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP，並只返回 UUID、canonical generic 名稱、MIME、大小、已驗證寬高、同源 preview route 及 UTC 時間；migration 前舊資料以明確 `null/null` 表示，原始檔名、object／workspace／user identity 與 checksum 不進入清單；
+- [x] product-source client 採 on-demand 15 秒／64 KiB exact envelope 與逐項 schema；有效 dimensions 必須成對且符合 8192 px／32 MP，只有成對 `null` 可代表舊資料。malformed、跨 workspace 或暫時故障保留可信清單，選用另一張來源圖會失效舊 Agent 計劃並返回工作台；
 - [x] 商品庫的 strict refresh 與序列化單項刪除已通過 component／integration tests；列表、選用、返回工作台、目前使用及私隱提示另通過 1440 px／390 px browser QA，沒有水平溢出或 app console warning／error；
 - [x] 私人商品資料庫只保存目前 workspace 的 approved canonical product；GET 最多 20 個 exact snapshot，POST 以 approved revision 重核 Agent state 並按內容 digest 去重，單筆 DELETE 保持 workspace scope 與 ambiguous result reconciliation；
 - [x] 商品資料 browser client 採 15 秒／64 KiB strict list、16 KiB save acknowledgement 與同 revision 最多一次暫時故障重試；套用快照只取代商品欄位，保留品牌與圖片並強制重新規劃。1440×1000 與 390×844 browser QA 已驗證套用、重新規劃／批准、去重保存及返回工作台，無水平溢出或 console warning／error；
@@ -117,7 +117,7 @@
 - [x] closed／invite／open registration server gates；
 - [x] email-bound one-time invite hash contract；
 - [x] private R2 商品圖、4 MB 限制、MIME + signature 檢查；
-- [x] browser multipart 不傳送本機原始檔名；upload success 只接受 exact `201 application/json` 及與本次 File 完全相符的 UUID、canonical 名稱、MIME、size 及同源 preview path，malformed response 與 server error detail 均 fail closed；upload pending 時所有圖片 file-input／更換／刪除入口都鎖定，避免競爭 mutation；
+- [x] browser multipart 不傳送本機原始檔名；upload success 只接受 exact `201 application/json` 及與本次 File 契約相符的 UUID、canonical 名稱、MIME、size、有效寬高及同源 preview path，malformed response 與 server error detail 均 fail closed；upload pending 時所有圖片 file-input／更換／刪除入口都鎖定，避免競爭 mutation；
 - [x] product upload 要求 client UUID v4 idempotency key 並綁定 asset ID；同 workspace 同 key／同 canonical content replay 原 `201`，不同內容固定 `409`，跨 workspace 不可 replay；digest-separated 候選 R2 object 令並發 conflict 不互相覆寫，敗方只清理未被 D1 引用的 object；
 - [x] browser upload 每次 attempt 連完整 response body 有 45 秒 deadline；transport／response stream 中斷／deadline／`408`／`5xx` 最多同 key 自動重試一次，兩次失敗後釋放 UI；`4xx`、malformed／oversized success 不重送；
 - [x] workspace-scoped Campaign Agent 與 revision approval；

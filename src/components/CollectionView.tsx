@@ -236,7 +236,7 @@ export function CollectionView({
           const controlsLocked = productInteractionDisabled || productLibraryBusy
           return <article className={`product-source-card ${selected ? 'selected' : ''}`} aria-busy={deleting} key={asset.id}>
             <div className="product-source-preview"><img src={asset.previewUrl} alt={`私人商品來源圖 ${itemNumber}`} loading="lazy" />{selected ? <span><Check size={13} />使用中</span> : null}</div>
-            <div className="product-source-meta"><strong>{productAssetFormats[asset.contentType]}</strong><small>{productAssetSize(asset.sizeBytes)} · {productAssetTime.format(new Date(asset.createdAt))}</small></div>
+            <div className="product-source-meta"><strong>{productAssetFormats[asset.contentType]} · {asset.widthPx !== null && asset.heightPx !== null ? `${asset.widthPx} × ${asset.heightPx} px` : '尺寸未記錄 · Dimensions unavailable'}</strong><small>{productAssetSize(asset.sizeBytes)} · {productAssetTime.format(new Date(asset.createdAt))}</small></div>
             <div className="product-source-actions">
               {onSelectProductAsset ? <button type="button" onClick={() => onSelectProductAsset(asset)} disabled={selected || controlsLocked} aria-label={selected ? `目前使用第 ${itemNumber} 張私人商品圖` : `使用第 ${itemNumber} 張私人商品圖`}>{selected ? '目前使用' : '使用此圖片'}</button> : null}
               {onDeleteProductAsset ? <button className="danger" type="button" onClick={() => onDeleteProductAsset(asset)} disabled={controlsLocked} aria-label={deleting ? `正在刪除第 ${itemNumber} 張私人商品圖 · Deleting private product source ${itemNumber}` : `刪除第 ${itemNumber} 張私人商品圖`}><Trash2 size={14} />{deleting ? '刪除中…' : '刪除'}</button> : null}

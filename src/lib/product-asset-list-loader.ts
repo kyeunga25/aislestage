@@ -1,5 +1,6 @@
 import { readBoundedJsonResponse } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
+import { hasSafeImageDimensions } from './image-validation'
 import type { ProductAssetListItem } from './types'
 
 export const productAssetListUnavailableMessage = '私人商品來源圖暫時無法讀取。 Private product sources are temporarily unavailable.'
@@ -8,7 +9,7 @@ const MAX_PRODUCT_ASSET_LIST_BYTES = 64 * 1024
 const PRODUCT_ASSET_LIST_TIMEOUT_MS = 15_000
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const responseKeys = new Set(['assets'])
-const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'previewUrl', 'createdAt'])
+const assetKeys = new Set(['id', 'name', 'contentType', 'sizeBytes', 'widthPx', 'heightPx', 'previewUrl', 'createdAt'])
 const canonicalNames = new Map<ProductAssetListItem['contentType'], string>([
   ['image/png', 'product-image.png'],
   ['image/jpeg', 'product-image.jpg'],
@@ -38,11 +39,14 @@ function normalizeProductAsset(value: unknown): ProductAssetListItem | null {
   if (typeof contentType !== 'string' || !canonicalNames.has(contentType as ProductAssetListItem['contentType'])) return null
   const canonicalName = canonicalNames.get(contentType as ProductAssetListItem['contentType'])
   const id = String(value.id)
+  const hasUnknownDimensions = value.widthPx === null && value.heightPx === null
+  const hasVerifiedDimensions = hasSafeImageDimensions({ width: value.widthPx as number, height: value.heightPx as number })
   if (!canonicalName
     || value.name !== canonicalName
     || !Number.isSafeInteger(value.sizeBytes)
     || Number(value.sizeBytes) <= 0
     || Number(value.sizeBytes) > MAX_PRODUCT_IMAGE_BYTES
+    || (!hasUnknownDimensions && !hasVerifiedDimensions)
     || value.previewUrl !== `/api/assets/${encodeURIComponent(id)}`
     || !isCanonicalUtcTimestamp(value.createdAt)) return null
   return {
@@ -50,6 +54,8 @@ function normalizeProductAsset(value: unknown): ProductAssetListItem | null {
     name: canonicalName,
     contentType: contentType as ProductAssetListItem['contentType'],
     sizeBytes: value.sizeBytes as number,
+    widthPx: value.widthPx as number | null,
+    heightPx: value.heightPx as number | null,
     previewUrl: value.previewUrl,
     createdAt: value.createdAt
   }

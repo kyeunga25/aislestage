@@ -10,6 +10,8 @@ const canonicalAsset = {
   name: 'product-image.png',
   contentType: 'image/png',
   sizeBytes: 1024,
+  widthPx: 1024,
+  heightPx: 1024,
   previewUrl: '/api/assets/123e4567-e89b-42d3-a456-426614174000',
   createdAt: '2026-08-30T05:00:00Z'
 }
@@ -41,12 +43,24 @@ describe('product asset list loader', () => {
     }))
   })
 
+  it('accepts a legacy source whose verified dimensions were not recorded', async () => {
+    const legacyAsset = { ...canonicalAsset, widthPx: null, heightPx: null }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ assets: [legacyAsset] })))
+
+    await expect(loadProductAssetList()).resolves.toEqual([legacyAsset])
+  })
+
   it.each([
     { assets: [{ ...canonicalAsset, objectKey: 'private-object' }] },
     { assets: [{ ...canonicalAsset, id: 'not-a-uuid' }] },
     { assets: [{ ...canonicalAsset, name: 'original-private-name.png' }] },
     { assets: [{ ...canonicalAsset, contentType: 'image/gif' }] },
     { assets: [{ ...canonicalAsset, sizeBytes: 0 }] },
+    { assets: [{ ...canonicalAsset, widthPx: null }] },
+    { assets: [{ ...canonicalAsset, heightPx: null }] },
+    { assets: [{ ...canonicalAsset, widthPx: 8193, heightPx: 1 }] },
+    { assets: [{ ...canonicalAsset, widthPx: 8000, heightPx: 5000 }] },
+    { assets: [{ ...canonicalAsset, widthPx: 1024.5 }] },
     { assets: [{ ...canonicalAsset, previewUrl: 'https://example.test/private.png' }] },
     { assets: [{ ...canonicalAsset, createdAt: '2026-02-31T05:00:00Z' }] },
     { assets: [canonicalAsset, canonicalAsset] },

@@ -212,14 +212,15 @@ describe('private product assets', () => {
     const owner = await registerAccount('Asset Owner')
     const uploaded = await uploadPng(owner.cookie)
     expect(uploaded.status).toBe(201)
-    const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number } }
-    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: validPngBytes().byteLength })
+    const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number; widthPx: number; heightPx: number } }
+    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: validPngBytes().byteLength, widthPx: 1, heightPx: 1 })
 
     const storedAsset = await env.DB.prepare(`
-      SELECT object_key AS objectKey, content_sha256 AS contentSha256, size_bytes AS sizeBytes
+      SELECT object_key AS objectKey, content_sha256 AS contentSha256, size_bytes AS sizeBytes,
+        width_px AS widthPx, height_px AS heightPx
       FROM media_assets WHERE id = ?
-    `).bind(payload.asset.id).first<{ objectKey: string; contentSha256: string; sizeBytes: number }>()
-    expect(storedAsset).toMatchObject({ sizeBytes: validPngBytes().byteLength, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })
+    `).bind(payload.asset.id).first<{ objectKey: string; contentSha256: string; sizeBytes: number; widthPx: number; heightPx: number }>()
+    expect(storedAsset).toMatchObject({ sizeBytes: validPngBytes().byteLength, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), widthPx: 1, heightPx: 1 })
     const storedObject = storedAsset ? await env.MEDIA_BUCKET.head(storedAsset.objectKey) : null
     expect(storedObject?.checksums.sha256?.byteLength).toBe(32)
     expect(base64Url(storedObject!.checksums.sha256!)).toBe(storedAsset!.contentSha256)
@@ -586,7 +587,9 @@ describe('private product assets', () => {
     const response = await uploadWebp(owner.cookie)
 
     expect(response.status).toBe(201)
-    expect(await response.json()).toMatchObject({ asset: { contentType: 'image/webp', sizeBytes: validWebpBytes().byteLength } })
+    expect(await response.json()).toMatchObject({
+      asset: { contentType: 'image/webp', sizeBytes: validWebpBytes().byteLength, widthPx: 1, heightPx: 1 }
+    })
   })
 
   it.each([
@@ -656,7 +659,9 @@ describe('private product assets', () => {
 
     const response = await uploadJpeg(owner.cookie, bytes)
     expect(response.status).toBe(201)
-    expect(await response.json()).toMatchObject({ asset: { contentType: 'image/jpeg', sizeBytes: bytes.byteLength } })
+    expect(await response.json()).toMatchObject({
+      asset: { contentType: 'image/jpeg', sizeBytes: bytes.byteLength, widthPx: 1, heightPx: 1 }
+    })
   })
 
   it('rejects a JPEG with excessive marker work before storing the asset', async () => {
