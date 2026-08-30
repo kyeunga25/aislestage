@@ -109,6 +109,41 @@ export type OutputUsageSnapshot = {
   events: OutputUsageEvent[]
 }
 
+export type IntegrationReadinessSnapshot = {
+  contractVersion: 'integration-readiness-v1'
+  access: {
+    authMode: 'access' | 'password'
+    registrationMode: 'open' | 'invite' | 'closed'
+  }
+  generation: {
+    requestedMode: 'disabled' | 'deterministic' | 'assisted'
+    effectiveMode: 'disabled' | 'deterministic' | 'assisted'
+    enabled: boolean
+    maxActivePerWorkspace: number
+  }
+  agent: {
+    requestedMode: 'deterministic' | 'assisted'
+    effectiveMode: 'deterministic' | 'assisted'
+  }
+  assisted: {
+    requested: boolean
+    executionApproved: boolean
+    gates: {
+      providerAllowlisted: boolean
+      dataPolicyApproved: boolean
+      evaluationApproved: boolean
+      budgetApproved: boolean
+      credentialConfigured: boolean
+    }
+  }
+  payment: {
+    enabled: false
+    checkoutAvailable: false
+    subscriptionAvailable: false
+    approvalRequired: true
+  }
+}
+
 export type AuthUser = {
   id: string
   email: string

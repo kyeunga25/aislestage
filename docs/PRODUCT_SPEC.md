@@ -79,13 +79,14 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 
 ## 4. Dashboard 資訊架構
 
-- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入活動記錄及存取管理；
+- 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入整合就緒度、活動記錄及存取管理；
 - 頂部：可用輸出數、可核對及切換的目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
 - 成果區：三比例私人草稿、雙語文案、provenance、逐一審核、受控下載及重新建立；
 - Campaign Packs：最新素材包預設展開，其他素材包按需展開；每個歷史輸出保持排隊、處理、草稿、已核准、需要修改或失敗狀態及 provenance；
 - 素材庫：集中顯示可授權預覽的歷史輸出；owner／admin 可審批草稿，全成員只可下載已核准輸出，並可逐項刪除明確檔案；
+- 整合就緒度：只供 owner／admin 按需讀取目前 Worker 設定的 public-safe snapshot；分開顯示 requested／effective Generation 與 Agent mode、Access／registration、workspace 併發、五個 assisted approval gate 及固定停用的付款邊界。Credential 只顯示是否存在，不返回名稱、內容、provider identity、workspace identity 或部署 mapping，介面亦不會修改設定；
 - 使用指引：完整三步流程與私隱提示。
 
 所有導覽都有實際 workspace view。workspace 選單只顯示由受保護 API 核實的真實 active memberships；仍未提供通知或帳號選單時不顯示假按鈕。示範預覽、排隊中、草稿待審核、已核准、需要修改及失敗狀態必須清楚區分。
@@ -177,9 +178,9 @@ Preview／已批准 download 的成功 SVG body 使用 `private, no-store` 及 `
 
 Browser generation list 在任何 JSON parse 前要求 exact `200 application/json`，成功亦只接受 exact `{ generations }` envelope，再套用最多 20 項、唯一 ID、完整 review／provenance 與同源 route normalizer；額外 outer fields 不會進入 workspace。
 
-Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、workspace activity／output usage／product-source／product profile／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate 或任何既有可信 snapshot。
+Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session／integration readiness 16 KiB、workspace activity／output usage／product-source／product profile／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate 或任何既有可信 snapshot。
 
-Session、health、workspace activity、output usage、product-source list、product profile list、brand snapshot list、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading；on-demand view 則保留上一次可信 snapshot 並顯示固定雙語錯誤，不以 GET timeout 猜測任何 mutation 是否已提交。
+Session、health、integration readiness、workspace activity、output usage、product-source list、product profile list、brand snapshot list、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading；on-demand view 則保留上一次可信 snapshot 並顯示固定雙語錯誤，不以 GET timeout 猜測任何 mutation 是否已提交。
 
 同一個 mounted workspace 的並行初始 bootstrap 會共用一個 in-flight request coordinator：session／health 各一次，只有確認登入後才讀 generation list／Agent state。完成或失敗後立即清除 promise，不跨 reload 保留私人 cache；effect teardown、登出及較新 session hydration 會使舊 epoch 失效，舊輸出或 Agent 快照不可重新進入畫面。
 

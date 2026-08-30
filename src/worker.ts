@@ -6,7 +6,7 @@ import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TY
 import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
 import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, MAX_IMAGE_CONTAINER_CHUNKS, pngImageDimensions } from './lib/image-validation'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
-import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
+import { agentMode, assistedExecutionApproved, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
 import type { BrandPack, CampaignAgentState, GenerationInput, Product } from './lib/types'
 
@@ -3761,6 +3761,53 @@ async function listOutputUsage(env: Env, session: SessionContext) {
   }
 }
 
+function integrationReadiness(env: Env, session: SessionContext) {
+  if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
+    return json({
+      error: '只有工作區 owner 或 admin 可以查看整合就緒度。 Only workspace owners or admins can view integration readiness.'
+    }, { status: 403 })
+  }
+  const requestedGeneration = env.GENERATION_MODE === 'deterministic'
+    ? 'deterministic'
+    : env.GENERATION_MODE === 'assisted' ? 'assisted' : 'disabled'
+  const requestedAgent = env.AGENT_MODE === 'assisted' ? 'assisted' : 'deterministic'
+  const effectiveGeneration = generationMode(env)
+  const effectiveAgent = agentMode(env)
+  const activeAuthMode = authMode(env)
+  const gates = {
+    providerAllowlisted: env.ASSISTED_PROVIDER === 'openai',
+    dataPolicyApproved: env.ASSISTED_DATA_POLICY === 'approved',
+    evaluationApproved: env.ASSISTED_EVALUATION === 'approved',
+    budgetApproved: env.ASSISTED_BUDGET_MODE === 'approved',
+    credentialConfigured: Boolean(env.OPENAI_API_KEY?.trim())
+  }
+  return json({
+    contractVersion: 'integration-readiness-v1',
+    access: {
+      authMode: activeAuthMode,
+      registrationMode: activeAuthMode === 'access' ? 'closed' : registrationMode(env)
+    },
+    generation: {
+      requestedMode: requestedGeneration,
+      effectiveMode: effectiveGeneration,
+      enabled: effectiveGeneration !== 'disabled',
+      maxActivePerWorkspace: maxActiveGenerations(env)
+    },
+    agent: { requestedMode: requestedAgent, effectiveMode: effectiveAgent },
+    assisted: {
+      requested: requestedGeneration === 'assisted' || requestedAgent === 'assisted',
+      executionApproved: assistedExecutionApproved(env),
+      gates
+    },
+    payment: {
+      enabled: false,
+      checkoutAvailable: false,
+      subscriptionAvailable: false,
+      approvalRequired: true
+    }
+  })
+}
+
 type CanonicalOutputResult =
   | { state: 'ready'; object: R2ObjectBody }
   | { state: 'missing' }
@@ -4137,6 +4184,15 @@ export default {
         return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
       }
       return listOutputUsage(env, session)
+    }
+    if (url.pathname === '/api/integration-readiness') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'GET') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
+      }
+      return integrationReadiness(env, session)
     }
     if (url.pathname === '/api/brand-packs') {
       const session = await requireSession(request, env)

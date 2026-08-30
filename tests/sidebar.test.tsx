@@ -22,6 +22,7 @@ describe('workspace sidebar role and mobile accessibility', () => {
     expect(markup).toContain('aria-label="品牌庫"')
     expect(markup).toContain('aria-label="素材庫"')
     expect(markup).toContain('aria-label="用量"')
+    expect(markup).toContain('aria-label="整合就緒度"')
     expect(markup).toContain('aria-label="活動記錄"')
     expect(markup).toContain('aria-label="存取管理"')
     expect(markup).toContain('aria-current="page"')
@@ -32,6 +33,8 @@ describe('workspace sidebar role and mobile accessibility', () => {
 
     expect(markup).not.toContain('aria-label="活動記錄"')
     expect(markup).not.toContain('>活動記錄<')
+    expect(markup).not.toContain('aria-label="整合就緒度"')
+    expect(markup).not.toContain('>整合就緒度<')
     expect(markup).not.toContain('aria-label="存取管理"')
     expect(markup).not.toContain('>存取管理<')
     expect(markup).toContain('aria-label="用量"')

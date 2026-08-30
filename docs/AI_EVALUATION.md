@@ -53,6 +53,8 @@
 
 Workers AI 免費用量屬帳戶共享配置，不可當作每個 app 或每個 workspace 的商業保證。AI Gateway analytics 不能取代應用層的用量與一致性控制。
 
+Owner／admin 可在工作區「整合就緒度」按需核對 requested／effective mode、五個 gate 及 server credential 是否存在。這份 public-safe snapshot 不返回 secret、provider identity 或部署 mapping，也不會修改 config；全部顯示通過仍只代表 Worker 設定符合執行前置條件，不代表 provider connectivity、品質評估、正式 deployment 或 live output 已驗收。
+
 ## 官方資料核對
 
 - [OpenAI `gpt-5.6-terra`](https://developers.openai.com/api/docs/models/gpt-5.6-terra) — 目前 optional text adapter 的公開 model reference；

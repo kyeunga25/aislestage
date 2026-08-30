@@ -5,7 +5,7 @@ import { GenerationLibraryCard } from './GenerationLibraryCard'
 import type { BrandPack, GenerationResult, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile } from '../lib/types'
 
 type Props = {
-  section: Exclude<NavigationSection, 'workspace' | 'usage' | 'activity' | 'access'>
+  section: Exclude<NavigationSection, 'workspace' | 'usage' | 'readiness' | 'activity' | 'access'>
   brand: BrandPack
   product: Product
   results: GenerationResult[]

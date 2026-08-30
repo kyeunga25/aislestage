@@ -281,6 +281,7 @@ owner 可在私人工作區「存取管理」加入 admin／member、調整非 o
 | owner／admin `/api/workspace-members` | 只返回目前 workspace 的 bounded canonical 清單；member 被拒絕，新增 membership 不會改動 Access policy |
 | 多 workspace 帳戶 | 選單只列 active memberships；切換後 session、私人圖片、用量及管理 route 都指向同一 workspace，其他分頁會同步 reload |
 | 已受邀 `/api/output-usage` | 只返回目前 workspace 的技術 allowance／事件摘要；沒有 identity、note、provider 或付款資料 |
+| owner／admin `/api/integration-readiness` | 只返回 requested／effective mode、五個 gate、credential 是否存在及固定 disabled payment boundary；member 被拒絕，回應沒有 secret、provider、workspace 或 deployment identity |
 | 私人 R2 內容 | 只經授權 Worker route 返回，帶 private／no-store 等 headers |
 | Generation | 初次部署保持 disabled；不能排隊或扣用量 |
 | Static assets | 公開 hashed assets 可讀，私人 workspace shell 保持 Worker-first |
@@ -337,7 +338,7 @@ Credential 只在 Worker 已建立、目標 config 已核對後，以互動 prom
 npx wrangler secret put OPENAI_API_KEY --config wrangler.local.jsonc
 ```
 
-Wrangler secret 更新會建立並部署新的 Worker version，應在維護時段執行並重新驗收。只有 `GENERATION_MODE`、provider allowlist、資料政策、固定評估、預算及 secret 全部批准時 assisted adapter 才可執行。詳細 gate 見 [AI_EVALUATION.md](AI_EVALUATION.md)。
+Wrangler secret 更新會建立並部署新的 Worker version，應在維護時段執行並重新驗收。只有 `GENERATION_MODE`、provider allowlist、資料政策、固定評估、預算及 secret 全部批准時 assisted adapter 才可執行。部署後可由 owner／admin 在「整合就緒度」核對 public-safe config snapshot；該畫面不會測試 provider 連線，也不能取代 fixed-SHA、migration、deployment 或 live-route 驗收。詳細 gate 見 [AI_EVALUATION.md](AI_EVALUATION.md)。
 
 ## 15. 常見失敗
 

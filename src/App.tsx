@@ -7,6 +7,7 @@ import { AuthPage } from './components/AuthPage'
 import { BrandMark } from './components/BrandMark'
 import { CampaignWorkspace, type ImageState } from './components/CampaignWorkspace'
 import { CollectionView } from './components/CollectionView'
+import { IntegrationReadinessView } from './components/IntegrationReadinessView'
 import type { NavigationSection } from './components/Icon'
 import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
@@ -26,6 +27,7 @@ import { isPublicDemoPath } from './lib/demo-mode'
 import type { AccessFailureReason } from './lib/access-login'
 import { generationListUnavailableMessage, loadGenerationSnapshot } from './lib/generation-loader'
 import { generationReviewSourceInvalidMessage, submitGenerationReview } from './lib/generation-review-client'
+import { loadIntegrationReadinessSnapshot } from './lib/integration-readiness-loader'
 import {
   confirmProductAssetRights,
   productAssetSizeMessage,
@@ -39,7 +41,7 @@ import { loadProductProfileListSnapshot, saveApprovedProductProfile } from './li
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import { loadOutputUsageSnapshot } from './lib/output-usage-loader'
-import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent, WorkspaceMember, WorkspaceSummary } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, IntegrationReadinessSnapshot, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent, WorkspaceMember, WorkspaceSummary } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import {
@@ -72,6 +74,24 @@ const demoOutputUsage: OutputUsageSnapshot = {
     { type: 'release', amount: 1, createdAt: '2026-08-30T04:03:00Z' },
     { type: 'reservation', amount: -1, createdAt: '2026-08-30T04:00:00Z' }
   ]
+}
+const demoIntegrationReadiness: IntegrationReadinessSnapshot = {
+  contractVersion: 'integration-readiness-v1',
+  access: { authMode: 'password', registrationMode: 'closed' },
+  generation: { requestedMode: 'deterministic', effectiveMode: 'deterministic', enabled: true, maxActivePerWorkspace: 3 },
+  agent: { requestedMode: 'deterministic', effectiveMode: 'deterministic' },
+  assisted: {
+    requested: false,
+    executionApproved: false,
+    gates: {
+      providerAllowlisted: false,
+      dataPolicyApproved: false,
+      evaluationApproved: false,
+      budgetApproved: false,
+      credentialConfigured: false
+    }
+  },
+  payment: { enabled: false, checkoutAvailable: false, subscriptionAvailable: false, approvalRequired: true }
 }
 const demoWorkspaceMembers: WorkspaceMember[] = [
   {
@@ -187,6 +207,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [outputUsage, setOutputUsage] = useState<OutputUsageSnapshot | null>(demoMode ? demoOutputUsage : null)
   const [outputUsageNotice, setOutputUsageNotice] = useState('')
   const [isRefreshingOutputUsage, setIsRefreshingOutputUsage] = useState(false)
+  const [integrationReadiness, setIntegrationReadiness] = useState<IntegrationReadinessSnapshot | null>(demoMode ? demoIntegrationReadiness : null)
+  const [integrationReadinessNotice, setIntegrationReadinessNotice] = useState('')
+  const [isRefreshingIntegrationReadiness, setIsRefreshingIntegrationReadiness] = useState(false)
   const [notice, setNotice] = useState('')
   const generationRequestKey = useRef<string | null>(null)
   const productImageDeleteLock = useRef(false)
@@ -214,6 +237,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const workspaceSwitchLock = useRef(false)
   const outputUsageRefreshLock = useRef(false)
   const outputUsageRefreshEpoch = useRef(0)
+  const integrationReadinessRefreshLock = useRef(false)
+  const integrationReadinessRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
   const campaignPackLock = useRef(false)
   const campaignAgentLock = useRef(false)
@@ -597,6 +622,32 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshIntegrationReadiness() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin')
+      || integrationReadinessRefreshLock.current) return
+    integrationReadinessRefreshLock.current = true
+    const refreshEpoch = ++integrationReadinessRefreshEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    const workspaceId = session.currentWorkspace.id
+    setIsRefreshingIntegrationReadiness(true)
+    setIntegrationReadinessNotice('')
+    try {
+      const snapshot = await loadIntegrationReadinessSnapshot()
+      if (refreshEpoch !== integrationReadinessRefreshEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current
+        || session.currentWorkspace.id !== workspaceId) return
+      if (snapshot.readiness !== null) setIntegrationReadiness(snapshot.readiness)
+      if (snapshot.error) setIntegrationReadinessNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === integrationReadinessRefreshEpoch.current) {
+        integrationReadinessRefreshLock.current = false
+        setIsRefreshingIntegrationReadiness(false)
+      }
+    }
+  }
+
   function mergeWorkspaceMember(member: WorkspaceMember) {
     setWorkspaceMembers((current) => {
       const next = [...current.filter((item) => item.id !== member.id), member]
@@ -725,6 +776,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
     if (nextSection === 'brands') void refreshBrandPacks()
     if (nextSection === 'usage') void refreshOutputUsage()
+    if (nextSection === 'readiness') void refreshIntegrationReadiness()
     if (nextSection === 'activity') void refreshWorkspaceActivity()
     if (nextSection === 'access') void refreshWorkspaceMembers()
   }
@@ -1367,6 +1419,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceAccessRefreshEpoch.current += 1
     workspaceAccessMutationEpoch.current += 1
     outputUsageRefreshEpoch.current += 1
+    integrationReadinessRefreshEpoch.current += 1
     workspaceListRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
@@ -1379,6 +1432,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceAccessRefreshLock.current = false
     workspaceAccessMutationLock.current = false
     outputUsageRefreshLock.current = false
+    integrationReadinessRefreshLock.current = false
     workspaceListRefreshLock.current = false
     workspaceSwitchLock.current = false
     setIsRefreshingResults(false)
@@ -1391,6 +1445,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setIsRefreshingWorkspaceMembers(false)
     setWorkspaceAccessMutation(null)
     setIsRefreshingOutputUsage(false)
+    setIsRefreshingIntegrationReadiness(false)
     setIsRefreshingWorkspaceList(false)
     setIsSwitchingWorkspace(false)
     setSession(null)
@@ -1417,6 +1472,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setWorkspaceAccessNotice('')
     setOutputUsage(null)
     setOutputUsageNotice('')
+    setIntegrationReadiness(null)
+    setIntegrationReadinessNotice('')
     setAgentState(initialCampaignAgentState())
     setBrand(emptyBrand)
     setProduct(emptyProduct)
@@ -1475,6 +1532,19 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           </section>
         </> : activeSection === 'usage'
           ? <WorkspaceUsageView usage={outputUsage} isRefreshing={isRefreshingOutputUsage} notice={outputUsageNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshOutputUsage()} onBack={() => setActiveSection('workspace')} />
+          : activeSection === 'readiness'
+          ? (session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'
+            ? <IntegrationReadinessView
+              readiness={integrationReadiness}
+              isRefreshing={isRefreshingIntegrationReadiness}
+              notice={integrationReadinessNotice}
+              onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshIntegrationReadiness()}
+              onBack={() => setActiveSection('workspace')}
+            />
+            : <section className="collection-view" aria-labelledby="readiness-denied-title">
+              <div className="collection-heading"><div className="collection-heading-main"><div><h1 id="readiness-denied-title">無法開啟整合就緒度</h1><p>Integration readiness requires an owner or admin role.</p></div></div></div>
+              <button className="outline-button" type="button" onClick={() => setActiveSection('workspace')}>返回工作台</button>
+            </section>)
           : activeSection === 'activity'
           ? <WorkspaceActivityView activity={workspaceActivity} isRefreshing={isRefreshingActivity} notice={activityNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceActivity()} onBack={() => setActiveSection('workspace')} />
           : activeSection === 'access'
