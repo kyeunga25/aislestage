@@ -20,6 +20,7 @@ import { loadBrandPackListSnapshot, saveApprovedBrandPack } from './lib/brand-pa
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
 import { submitCampaignAgentAction } from './lib/campaign-agent-client'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
+import { parseCampaignBriefFile, serializeCampaignBriefFile } from './lib/campaign-brief-file'
 import { createCampaignPack } from './lib/campaign-pack-client'
 import { pollCampaignPack } from './lib/campaign-pack-poller'
 import { demoResults, emptyBrand, emptyProduct, starterBrand, starterProduct } from './lib/demo-data'
@@ -211,6 +212,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [integrationReadiness, setIntegrationReadiness] = useState<IntegrationReadinessSnapshot | null>(demoMode ? demoIntegrationReadiness : null)
   const [integrationReadinessNotice, setIntegrationReadinessNotice] = useState('')
   const [isRefreshingIntegrationReadiness, setIsRefreshingIntegrationReadiness] = useState(false)
+  const [campaignBriefFileNotice, setCampaignBriefFileNotice] = useState('')
+  const [isImportingCampaignBrief, setIsImportingCampaignBrief] = useState(false)
   const [notice, setNotice] = useState('')
   const generationRequestKey = useRef<string | null>(null)
   const productImageDeleteLock = useRef(false)
@@ -240,6 +243,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const outputUsageRefreshEpoch = useRef(0)
   const integrationReadinessRefreshLock = useRef(false)
   const integrationReadinessRefreshEpoch = useRef(0)
+  const campaignBriefImportLock = useRef(false)
+  const campaignBriefImportEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
   const campaignPackLock = useRef(false)
   const campaignAgentLock = useRef(false)
@@ -397,8 +402,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       || isSavingBrandPack
       || deletingBrandPackId !== null
       || workspaceAccessMutation !== null
+      || isImportingCampaignBrief
       || campaignPackLock.current
       || campaignAgentLock.current
+      || campaignBriefImportLock.current
       || productProfileMutationLock.current
       || brandPackMutationLock.current
       || productAssetRightsMutationLock.current
@@ -856,6 +863,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   function campaignIdentityLocked() {
     return campaignPackLock.current
       || campaignAgentLock.current
+      || campaignBriefImportLock.current
       || productProfileMutationLock.current
       || brandPackMutationLock.current
   }
@@ -864,6 +872,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (campaignIdentityLocked()) return
     setBrand(next)
     setSelectedBrandPackId(null)
+    setCampaignBriefFileNotice('')
     invalidatePlan()
   }
 
@@ -871,13 +880,65 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (campaignIdentityLocked()) return
     setProduct(next)
     setSelectedProductProfileId(null)
+    setCampaignBriefFileNotice('')
     invalidatePlan()
   }
 
   function changeIntent(next: string) {
     if (campaignIdentityLocked()) return
     setIntent(next)
+    setCampaignBriefFileNotice('')
     invalidatePlan()
+  }
+
+  async function importCampaignBriefFile(file: File) {
+    if (campaignIdentityLocked()) return
+    campaignBriefImportLock.current = true
+    const importEpoch = ++campaignBriefImportEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    setIsImportingCampaignBrief(true)
+    setCampaignBriefFileNotice('')
+    try {
+      const imported = await parseCampaignBriefFile(file)
+      if (importEpoch !== campaignBriefImportEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current) return
+      setBrand(imported.brand)
+      setProduct(imported.product)
+      setIntent(imported.intent)
+      setSelectedBrandPackId(null)
+      setSelectedProductProfileId(null)
+      invalidatePlan()
+      setCampaignBriefFileNotice('Campaign Brief 已在本機匯入；現有 Agent 計劃已重設，請核對後重新規劃。 Campaign Brief imported locally; review it and create a new Agent plan.')
+    } catch (error) {
+      if (importEpoch === campaignBriefImportEpoch.current
+        && hydrationEpoch === workspaceHydrationEpoch.current) {
+        setCampaignBriefFileNotice(error instanceof Error ? error.message : '未能匯入 Campaign Brief 檔案。 Unable to import the Campaign Brief file.')
+      }
+    } finally {
+      if (importEpoch === campaignBriefImportEpoch.current) {
+        campaignBriefImportLock.current = false
+        setIsImportingCampaignBrief(false)
+      }
+    }
+  }
+
+  function exportCampaignBriefFile() {
+    if (campaignIdentityLocked()) return
+    setCampaignBriefFileNotice('')
+    try {
+      const serialized = serializeCampaignBriefFile({ brand, product, intent })
+      const objectUrl = URL.createObjectURL(new Blob([serialized], { type: 'application/json;charset=utf-8' }))
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = 'aislestage-campaign-brief.json'
+      document.body.append(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+      setCampaignBriefFileNotice('Campaign Brief JSON 已在本機建立；不包含圖片或工作區識別。 Campaign Brief JSON was created locally without image or workspace identity.')
+    } catch (error) {
+      setCampaignBriefFileNotice(error instanceof Error ? error.message : '未能匯出 Campaign Brief 檔案。 Unable to export the Campaign Brief file.')
+    }
   }
 
   async function planCampaign() {
@@ -1418,6 +1479,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     outputUsageRefreshEpoch.current += 1
     integrationReadinessRefreshEpoch.current += 1
     workspaceListRefreshEpoch.current += 1
+    campaignBriefImportEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
     productAssetRightsMutationLock.current = false
@@ -1432,6 +1494,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     integrationReadinessRefreshLock.current = false
     workspaceListRefreshLock.current = false
     workspaceSwitchLock.current = false
+    campaignBriefImportLock.current = false
     setIsRefreshingResults(false)
     setIsRefreshingProductAssets(false)
     setIsRefreshingProductProfiles(false)
@@ -1445,6 +1508,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setIsRefreshingIntegrationReadiness(false)
     setIsRefreshingWorkspaceList(false)
     setIsSwitchingWorkspace(false)
+    setIsImportingCampaignBrief(false)
+    setCampaignBriefFileNotice('')
     setSession(null)
     setWorkspaces([])
     setWorkspaceListNotice('')
@@ -1520,7 +1585,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           {demoMode
             ? <p className="preview-notice" role="status"><strong>公開互動 Demo</strong><span>只在目前瀏覽器記憶體處理合成資料；不會上傳、保存或呼叫外部 AI。</span></p>
             : !platformStatus.generationEnabled ? <p className="preview-notice" role="status"><strong>安全預覽模式</strong><span>商品上傳與 Agent 規劃可正常測試，外部圖片生成仍保持關閉。</span></p> : null}
-          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} generationBusy={isGenerating} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onImageSelected={(file, rightsAttestation) => void uploadProductImage(file, rightsAttestation)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
+          <CampaignWorkspace brand={brand} product={product} intent={intent} image={image} imageDeleteBusy={isDeletingProductImage} generationBusy={isGenerating} agentState={agentState} agentBusy={agentBusy} generationAvailable={platformStatus.generationEnabled} briefFileBusy={isImportingCampaignBrief} briefFileNotice={campaignBriefFileNotice} onBrandChange={changeBrand} onProductChange={changeProduct} onIntentChange={changeIntent} onBriefFileImport={(file) => void importCampaignBriefFile(file)} onBriefFileExport={exportCampaignBriefFile} onImageSelected={(file, rightsAttestation) => void uploadProductImage(file, rightsAttestation)} onImageDelete={() => void deleteProductImage()} onPlan={() => void planCampaign()} onApprove={() => void approveCampaign()} onGenerate={() => void generatePack()} />
           {notice ? <p className="workspace-notice" role="alert">{notice}</p> : null}
           {agentState.plan.length ? <ResultsPanel results={serverResults} product={product} cta={brand.cta} ctaEn={brand.ctaEn} agentState={agentState} isGenerating={isGenerating} generationAvailable={platformStatus.generationEnabled} demoMode={session.user.id === 'demo-user'} canReview={canReviewOutputs} reviewingId={reviewingId} reviewingDecision={reviewingDecision} onGenerate={() => void generatePack()} onReview={(result, decision) => void reviewGeneration(result, decision)} /> : null}
           <section className="support-panel" id="support" aria-labelledby="support-title">

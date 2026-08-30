@@ -14,9 +14,12 @@ describe('Campaign Workspace product contract', () => {
       agentState={initialCampaignAgentState()}
       agentBusy={false}
       generationAvailable={true}
+      briefFileNotice="合成匯入狀態 · Synthetic import status"
       onBrandChange={vi.fn()}
       onProductChange={vi.fn()}
       onIntentChange={vi.fn()}
+      onBriefFileImport={vi.fn()}
+      onBriefFileExport={vi.fn()}
       onImageSelected={vi.fn()}
       onImageDelete={vi.fn()}
       onPlan={vi.fn()}
@@ -25,10 +28,18 @@ describe('Campaign Workspace product contract', () => {
     />)
 
     expect(markup).toContain('商品類別')
+    expect(markup).toContain('商品規格（選填）')
+    expect(markup).toMatch(new RegExp(`<textarea[^>]+maxLength="${campaignBriefLimits.product.specifications}"`))
     expect(markup).toContain('value="synthetic-category"')
     expect(markup).toContain(`maxLength="${campaignBriefLimits.product.category}" value="synthetic-category"`)
     expect(markup).toContain('我確認擁有或已取得必要權利')
     expect(markup).toContain('I have the necessary rights')
+    expect(markup).toContain('Campaign Brief 檔案')
+    expect(markup).toContain('本機匯入／匯出，不含圖片或工作區識別')
+    expect(markup).toContain('合成匯入狀態 · Synthetic import status')
+    expect(markup).toMatch(/<button[^>]+aria-label="匯入 Campaign Brief JSON"/)
+    expect(markup).toMatch(/<button[^>]+aria-label="匯出 Campaign Brief JSON"/)
+    expect(markup).toMatch(/<input[^>]+type="file"[^>]+accept="\.json,application\/json,text\/json"/)
     expect(markup).toContain('先在本機預檢 · Local preflight first')
     expect(markup).toMatch(/<input[^>]+type="checkbox"/)
     expect(markup).toMatch(/<button[^>]+class="upload-zone"[^>]+disabled=""/)
@@ -58,6 +69,37 @@ describe('Campaign Workspace product contract', () => {
     expect(markup).toMatch(/<input[^>]+type="file"[^>]+disabled=""/)
     expect(markup).toMatch(/<button[^>]+aria-label="更換圖片"[^>]+disabled=""/)
     expect(markup).toMatch(/<button[^>]+aria-label="刪除圖片"[^>]+disabled=""/)
+  })
+
+  it('locks the brief, file controls, and product-image mutations while a local brief import is in progress', () => {
+    const markup = renderToStaticMarkup(<CampaignWorkspace
+      brand={starterBrand}
+      product={starterProduct}
+      intent="新品推廣"
+      image={{ name: 'synthetic.png', url: '/synthetic.png', asset: null, status: 'demo', error: '' }}
+      agentState={initialCampaignAgentState()}
+      agentBusy={false}
+      generationAvailable={true}
+      briefFileBusy
+      onBrandChange={vi.fn()}
+      onProductChange={vi.fn()}
+      onIntentChange={vi.fn()}
+      onBriefFileImport={vi.fn()}
+      onBriefFileExport={vi.fn()}
+      onImageSelected={vi.fn()}
+      onImageDelete={vi.fn()}
+      onPlan={vi.fn()}
+      onApprove={vi.fn()}
+      onGenerate={vi.fn()}
+    />)
+
+    expect(markup).toContain('aria-busy="true"')
+    expect(markup).toContain('匯入中…')
+    expect(markup).toMatch(/<fieldset[^>]+class="compact-fields"[^>]+disabled=""/)
+    expect(markup).toMatch(/<button[^>]+aria-label="匯入 Campaign Brief JSON"[^>]+disabled=""/)
+    expect(markup).toMatch(/<button[^>]+aria-label="匯出 Campaign Brief JSON"[^>]+disabled=""/)
+    expect(markup).toMatch(/<input[^>]+accept="\.json,application\/json,text\/json"[^>]+disabled=""/)
+    expect(markup).toMatch(/<button[^>]+class="upload-zone"[^>]+disabled=""/)
   })
 
   it('locks every product-image mutation control while a deletion is in progress', () => {

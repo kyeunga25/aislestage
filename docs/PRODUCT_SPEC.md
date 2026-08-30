@@ -23,7 +23,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 ## 2. 核心工作流
 
 1. 使用者登入 active workspace。
-2. 填寫繁中與英文商品資料、價格、優惠、賣點及 CTA。
+2. 填寫繁中與英文商品資料、價格、優惠、賣點、規格及 CTA，或從本機匯入版本化 Campaign Brief JSON 後逐項核對。
 3. 上傳 PNG、JPEG 或靜態 WebP 商品原圖。
 4. Agent 檢查必填資料、來源圖及三個渠道輸出。
 5. Agent 停在 `awaiting-approval`。
@@ -82,7 +82,7 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入整合就緒度、活動記錄及存取管理；
 - 頂部：可用輸出數、可核對及切換的目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
-- 三欄：雙語商業資料、私人商品圖、Campaign Agent；
+- 三欄：雙語商業資料、私人商品圖、Campaign Agent；商業資料欄提供本機 Campaign Brief JSON 匯入／匯出，並直接顯示會進入確定性輸出的商品規格；
 - 成果區：三比例私人草稿、雙語文案、provenance、逐一審核、受控下載及重新建立；
 - Campaign Packs：最新素材包預設展開，其他素材包按需展開；每個歷史輸出保持排隊、處理、草稿、已核准、需要修改或失敗狀態及 provenance；
 - 素材庫：集中顯示可授權預覽的歷史輸出；owner／admin 可審批草稿，全成員只可下載已核准輸出，並可逐項刪除明確檔案；
@@ -121,6 +121,7 @@ Agent stub 建立或 state RPC 暫時失敗時，Worker 返回固定雙語 no-st
 - assisted mode 只可改寫 plan summary 與三個固定理由；
 - provider 失敗時不批准、不排隊、不扣用量；
 - browser 可見商業欄位與 Worker 共用同一組字元上限；Worker 會在資產查詢、可選 provider 呼叫及 Durable Object 寫入前驗證已提供欄位的型別、語言、清單項數與長度，避免靜默截短、丟棄或改寫商業資料；
+- 本機 Campaign Brief 檔案固定為 `aislestage-campaign-brief-v1` JSON，只含 exact `contractVersion`、`intent`、`brand` 與 `product`；不接受 asset／workspace／user／provider identity 或未知欄位。Browser 以 10 秒 deadline 讀取最多 64 KiB exact bytes，要求 UTF-8、支援的四個推廣目的、安全 hex 品牌色及最多三個繁中／英文賣點；錯誤版本、MIME／副檔名矛盾、malformed／expanded／超限內容均不改變工作台，也不發出 request。匯出使用 generic 檔名且不包含目前圖片 identity；匯入成功會清除品牌／商品快照選擇、Campaign Pack idempotency key 及舊 Agent 批准，保留目前圖片並要求重新規劃；
 - plan envelope 必須恰好包含一個非 null 的 brief object；缺失、null、array、primitive、額外外層欄位或 malformed JSON 不可用空 brief 覆蓋目前 revision；brief object 內缺少商業欄位仍會進入 `needs-input`；
 - 不合規 brief 以不回顯原值的繁中／英文 `422` 拒絕，並保留目前有效 revision；缺少欄位則繼續使用 `needs-input` 流程；
 - Agent 與確定性 compositor 共用文字 normalization、三比例換行參數及合併明細行數預算；無空格 SKU／型號按相同視覺單位安全拆行而不改動字元；超出安全區的商品名稱、價格、優惠、CTA、賣點或規格會提供雙語修正原因並停在 `needs-input`，更正及重新規劃後才可批准；

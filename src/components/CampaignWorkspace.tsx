@@ -1,4 +1,4 @@
-import { Check, FileImage, ImagePlus, LoaderCircle, Plus, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
+import { Check, Download, FileImage, FileUp, ImagePlus, LoaderCircle, Plus, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
 import { useRef, useState, type ChangeEvent } from 'react'
 import { campaignBriefLimits } from '../lib/campaign-agent'
 import { commercialUseRightsAttestation, type CommercialUseRightsAttestation } from '../lib/product-asset-client'
@@ -23,9 +23,13 @@ type Props = {
   agentState: CampaignAgentState
   agentBusy: boolean
   generationAvailable: boolean
+  briefFileBusy?: boolean
+  briefFileNotice?: string
   onBrandChange: (next: BrandPack) => void
   onProductChange: (next: Product) => void
   onIntentChange: (next: string) => void
+  onBriefFileImport?: (file: File) => void
+  onBriefFileExport?: () => void
   onImageSelected: (file: File, rightsAttestation: CommercialUseRightsAttestation) => void
   onImageDelete: () => void
   onPlan: () => void
@@ -36,8 +40,9 @@ type Props = {
 export type { ImageState }
 
 export function CampaignWorkspace(props: Props) {
-  const { brand, product, intent, image, imageDeleteBusy = false, generationBusy = false, agentState, agentBusy, generationAvailable, onBrandChange, onProductChange, onIntentChange, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
+  const { brand, product, intent, image, imageDeleteBusy = false, generationBusy = false, agentState, agentBusy, generationAvailable, briefFileBusy = false, briefFileNotice = '', onBrandChange, onProductChange, onIntentChange, onBriefFileImport, onBriefFileExport, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
   const inputRef = useRef<HTMLInputElement>(null)
+  const briefFileRef = useRef<HTMLInputElement>(null)
   const [rightsConfirmed, setRightsConfirmed] = useState(false)
   const englishReady = Boolean(
     product.nameEn
@@ -56,7 +61,7 @@ export function CampaignWorkspace(props: Props) {
   )
   const imageReady = image.status === 'demo'
     || (image.status === 'ready' && image.asset?.rightsStatus === 'confirmed')
-  const campaignIdentityBusy = agentBusy || generationBusy
+  const campaignIdentityBusy = agentBusy || generationBusy || briefFileBusy
   const imageMutationBusy = image.status === 'uploading' || imageDeleteBusy || campaignIdentityBusy
   const imageSelectionDisabled = imageMutationBusy || !rightsConfirmed
   const agentReady = agentState.stage === 'awaiting-approval' || agentState.stage === 'approved'
@@ -89,6 +94,16 @@ export function CampaignWorkspace(props: Props) {
     event.target.value = ''
   }
 
+  function chooseBriefFile(event: ChangeEvent<HTMLInputElement>) {
+    if (campaignIdentityBusy) {
+      event.target.value = ''
+      return
+    }
+    const file = event.target.files?.[0]
+    if (file) onBriefFileImport?.(file)
+    event.target.value = ''
+  }
+
   const progress = [
     { label: '商品資料', complete: factsReady, current: !factsReady },
     { label: '商品圖片', complete: imageReady, current: factsReady && !imageReady },
@@ -104,6 +119,15 @@ export function CampaignWorkspace(props: Props) {
     <div className="studio-grid">
       <section className="brief-panel" aria-labelledby="brief-title" aria-busy={campaignIdentityBusy}>
         <div className="panel-heading"><h2 id="brief-title">品牌與商品資料</h2><p>只使用已核實、可以公開宣傳的資料。</p></div>
+        {onBriefFileImport && onBriefFileExport ? <div className="brief-file-tools" aria-label="Campaign Brief 檔案">
+          <div><strong>Campaign Brief 檔案</strong><small>JSON v1 · 本機匯入／匯出，不含圖片或工作區識別</small></div>
+          <div className="brief-file-actions">
+            <button type="button" className="outline-button" aria-label="匯入 Campaign Brief JSON" onClick={() => briefFileRef.current?.click()} disabled={campaignIdentityBusy}>{briefFileBusy ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{briefFileBusy ? '匯入中…' : '匯入 JSON'}</button>
+            <button type="button" className="outline-button" aria-label="匯出 Campaign Brief JSON" onClick={onBriefFileExport} disabled={campaignIdentityBusy}><Download size={15} />匯出 JSON</button>
+            <input ref={briefFileRef} className="visually-hidden" type="file" accept=".json,application/json,text/json" onChange={chooseBriefFile} disabled={campaignIdentityBusy} />
+          </div>
+          {briefFileNotice ? <p className="brief-file-notice" role="status">{briefFileNotice}</p> : null}
+        </div> : null}
         <fieldset className="compact-fields" disabled={campaignIdentityBusy}>
           <label><span>品牌名稱</span><input value={brand.name} maxLength={campaignBriefLimits.brand.name} onChange={(event) => setBrand('name', event.target.value)} /></label>
           <label><span>商品名稱</span><input value={product.name} maxLength={campaignBriefLimits.product.name} onChange={(event) => setProduct('name', event.target.value)} /></label>
@@ -111,6 +135,7 @@ export function CampaignWorkspace(props: Props) {
           <div className="field-row"><label><span>價格（HKD）</span><input value={product.price} maxLength={campaignBriefLimits.product.price} onChange={(event) => setProduct('price', event.target.value)} /></label><label><span>推廣目的</span><select value={intent} onChange={(event) => onIntentChange(event.target.value)}><option>限時優惠</option><option>新品推廣</option><option>日常銷售</option><option>節日活動</option></select></label></div>
           <label><span>促銷資訊</span><input value={product.promotion} maxLength={campaignBriefLimits.product.promotion} onChange={(event) => setProduct('promotion', event.target.value)} /></label>
           <fieldset className="selling-points"><legend>產品賣點（最多 3 點）</legend>{[0, 1, 2].map((index) => <label key={index}><b>{index + 1}</b><input value={product.benefits[index] || ''} maxLength={campaignBriefLimits.product.benefits.itemLength} onChange={(event) => updateBenefit(index, event.target.value)} placeholder={`賣點 ${index + 1}`} />{product.benefits[index] ? <X size={13} /> : <Plus size={13} />}</label>)}</fieldset>
+          <label><span>商品規格（選填）</span><textarea value={product.specifications} maxLength={campaignBriefLimits.product.specifications} onChange={(event) => setProduct('specifications', event.target.value)} placeholder="例如：尺寸、物料、連接方式或相容型號" /></label>
           <label><span>品牌語氣</span><input value={brand.tone} maxLength={campaignBriefLimits.brand.tone} onChange={(event) => setBrand('tone', event.target.value)} /></label>
           <label><span>行動呼籲 CTA</span><input value={brand.cta} maxLength={campaignBriefLimits.brand.cta} onChange={(event) => setBrand('cta', event.target.value)} /></label>
           <details className="bilingual-fields">

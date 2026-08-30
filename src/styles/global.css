@@ -117,11 +117,19 @@ a { color: inherit; }
 .panel-heading p,.agent-heading p { margin: 5px 0 0; color: var(--subtle); font-size: 14px; line-height: 1.6; }
 .panel-heading.split { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
 .private-label { display: flex; align-items: center; gap: 5px; color: var(--mint); font-size: 13px; font-weight: 700; line-height: 1.4; white-space: nowrap; }
+.brief-file-tools { display: grid; gap: 10px; margin-top: 16px; border: 1px solid #dbe4f1; border-radius: 8px; background: #f8faff; padding: 12px; }
+.brief-file-tools > div:first-child { display: grid; gap: 3px; }
+.brief-file-tools strong { color: var(--text); font-size: 13px; line-height: 1.4; }
+.brief-file-tools small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.brief-file-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.brief-file-actions .outline-button { min-height: 38px; padding: 7px 9px; font-size: 13px; }
+.brief-file-notice { margin: 0; color: var(--blue); font-size: 12px; line-height: 1.55; }
 .compact-fields { min-width: 0; display: grid; gap: 13px; margin: 19px 0 0; border: 0; padding: 0; }
 .compact-fields > label,.field-row label,.bilingual-fields label { min-width: 0; display: grid; gap: 7px; color: #536176; font-size: 14px; font-weight: 650; line-height: 1.45; }
-.compact-fields input,.compact-fields select,.selling-points input { width: 100%; border: 1px solid #d9e0ea; border-radius: 6px; outline: none; background: #fff; color: var(--text); font-size: 15px; }
+.compact-fields input,.compact-fields select,.compact-fields textarea,.selling-points input { width: 100%; border: 1px solid #d9e0ea; border-radius: 6px; outline: none; background: #fff; color: var(--text); font-size: 15px; }
 .compact-fields input,.compact-fields select { height: 44px; padding: 0 12px; font-size: 15px; }
-.compact-fields input:focus,.compact-fields select:focus,.selling-points input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.compact-fields textarea { min-height: 72px; resize: vertical; padding: 10px 12px; line-height: 1.5; }
+.compact-fields input:focus,.compact-fields select:focus,.compact-fields textarea:focus,.selling-points input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 .field-row { display: grid; grid-template-columns: .86fr 1.14fr; gap: 10px; }
 .selling-points { display: grid; gap: 8px; border: 0; padding: 0; margin: 0; }
 .selling-points legend { color: #536176; font-size: 14px; font-weight: 650; line-height: 1.45; padding: 0; margin-bottom: 3px; }
@@ -599,7 +607,7 @@ a { color: inherit; }
   .campaign-progress li strong { display: none; }
   .campaign-progress li:not(:last-child)::after { margin: 0 7px; }
   .brief-panel,.product-panel,.agent-panel { padding: 21px 16px; }
-  .compact-fields input,.compact-fields select,.selling-points input,.auth-form input,.access-invite-form input,.access-invite-form select,.access-member-role select { font-size: 16px; }
+  .compact-fields input,.compact-fields select,.compact-fields textarea,.selling-points input,.auth-form input,.access-invite-form input,.access-invite-form select,.access-member-role select { font-size: 16px; }
   .field-row { grid-template-columns: 1fr; }
   .product-canvas { height: 270px; }
   .result-collection { display: grid; grid-template-columns: 1fr; overflow-x: visible; scroll-snap-type: none; }
