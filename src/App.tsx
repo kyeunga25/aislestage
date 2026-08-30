@@ -31,10 +31,11 @@ import {
   uploadProductAsset
 } from './lib/product-asset-client'
 import { loadProductAssetListSnapshot } from './lib/product-asset-list-loader'
+import { loadProductProfileListSnapshot, saveApprovedProductProfile } from './lib/product-profile-client'
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import { loadOutputUsageSnapshot } from './lib/output-usage-loader'
-import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, WorkspaceActivityEvent } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
@@ -74,6 +75,12 @@ const demoBrandPacks: SavedBrandPack[] = [{
   approvedRevision: 1,
   createdAt: '2026-08-30T04:10:00Z'
 }]
+const demoProductProfiles: SavedProductProfile[] = [{
+  ...starterProduct,
+  id: '123e4567-e89b-42d3-a456-426614174120',
+  approvedRevision: 1,
+  createdAt: '2026-08-30T04:12:00Z'
+}]
 
 function brandFromSavedBrandPack({ id: _id, approvedRevision: _approvedRevision, createdAt: _createdAt, ...brand }: SavedBrandPack): BrandPack {
   return brand
@@ -81,6 +88,14 @@ function brandFromSavedBrandPack({ id: _id, approvedRevision: _approvedRevision,
 
 function savedBrandMatches(saved: SavedBrandPack, brand: BrandPack) {
   return JSON.stringify(brandFromSavedBrandPack(saved)) === JSON.stringify(brand)
+}
+
+function productFromSavedProductProfile({ id: _id, approvedRevision: _approvedRevision, createdAt: _createdAt, ...product }: SavedProductProfile): Product {
+  return product
+}
+
+function savedProductMatches(saved: SavedProductProfile, product: Product) {
+  return JSON.stringify(productFromSavedProductProfile(saved)) === JSON.stringify(product)
 }
 
 function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
@@ -110,6 +125,12 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [productAssetNotice, setProductAssetNotice] = useState('')
   const [isRefreshingProductAssets, setIsRefreshingProductAssets] = useState(false)
   const [deletingProductAssetId, setDeletingProductAssetId] = useState<string | null>(null)
+  const [productProfiles, setProductProfiles] = useState<SavedProductProfile[]>(demoMode ? demoProductProfiles : [])
+  const [selectedProductProfileId, setSelectedProductProfileId] = useState<string | null>(null)
+  const [productProfileNotice, setProductProfileNotice] = useState('')
+  const [isRefreshingProductProfiles, setIsRefreshingProductProfiles] = useState(false)
+  const [isSavingProductProfile, setIsSavingProductProfile] = useState(false)
+  const [deletingProductProfileId, setDeletingProductProfileId] = useState<string | null>(null)
   const [brandPacks, setBrandPacks] = useState<SavedBrandPack[]>(demoMode ? demoBrandPacks : [])
   const [selectedBrandPackId, setSelectedBrandPackId] = useState<string | null>(null)
   const [brandPackNotice, setBrandPackNotice] = useState('')
@@ -131,6 +152,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationRefreshEpoch = useRef(0)
   const productAssetRefreshLock = useRef(false)
   const productAssetRefreshEpoch = useRef(0)
+  const productProfileMutationLock = useRef(false)
+  const productProfileRefreshLock = useRef(false)
+  const productProfileRefreshEpoch = useRef(0)
   const brandPackMutationLock = useRef(false)
   const brandPackRefreshLock = useRef(false)
   const brandPackRefreshEpoch = useRef(0)
@@ -152,6 +176,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setIntent('限時優惠')
       setImage({ name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
       setSelectedBrandPackId(null)
+      setSelectedProductProfileId(null)
       return
     }
     setBrand(nextState.brief.brand)
@@ -160,6 +185,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setSelectedBrandPackId((current) => {
       const selected = brandPacks.find((saved) => saved.id === current)
       return selected && savedBrandMatches(selected, nextState.brief!.brand) ? current : null
+    })
+    setSelectedProductProfileId((current) => {
+      const selected = productProfiles.find((saved) => saved.id === current)
+      return selected && savedProductMatches(selected, nextState.brief!.product) ? current : null
     })
     if (nextState.brief.assetId) {
       const previewUrl = `/api/assets/${nextState.brief.assetId}`
@@ -261,6 +290,31 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshProductProfiles() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || productProfileRefreshLock.current
+      || productProfileMutationLock.current) return
+    productProfileRefreshLock.current = true
+    const refreshEpoch = ++productProfileRefreshEpoch.current
+    setIsRefreshingProductProfiles(true)
+    setProductProfileNotice('')
+    try {
+      const snapshot = await loadProductProfileListSnapshot()
+      if (refreshEpoch !== productProfileRefreshEpoch.current) return
+      if (snapshot.productProfiles !== null) {
+        setProductProfiles(snapshot.productProfiles)
+        setSelectedProductProfileId((current) => current && snapshot.productProfiles?.some((saved) => saved.id === current) ? current : null)
+      }
+      if (snapshot.error) setProductProfileNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === productProfileRefreshEpoch.current) {
+        productProfileRefreshLock.current = false
+        setIsRefreshingProductProfiles(false)
+      }
+    }
+  }
+
   async function refreshBrandPacks() {
     if (!session
       || session.user.id === 'demo-user'
@@ -344,7 +398,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (nextSection === 'campaigns' || nextSection === 'assets') {
       void refreshGenerationResults()
     }
-    if (nextSection === 'products') void refreshProductAssets()
+    if (nextSection === 'products') {
+      void refreshProductAssets()
+      void refreshProductProfiles()
+    }
     if (nextSection === 'brands') void refreshBrandPacks()
     if (nextSection === 'usage') void refreshOutputUsage()
     if (nextSection === 'activity') void refreshWorkspaceActivity()
@@ -394,7 +451,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   }
 
   function campaignIdentityLocked() {
-    return campaignPackLock.current || campaignAgentLock.current
+    return campaignPackLock.current
+      || campaignAgentLock.current
+      || productProfileMutationLock.current
+      || brandPackMutationLock.current
   }
 
   function changeBrand(next: BrandPack) {
@@ -407,6 +467,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   function changeProduct(next: Product) {
     if (campaignIdentityLocked()) return
     setProduct(next)
+    setSelectedProductProfileId(null)
     invalidatePlan()
   }
 
@@ -501,6 +562,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     if (campaignIdentityLocked()
       || productImageDeleteLock.current
       || productAssetRefreshLock.current
+      || productProfileMutationLock.current
+      || productProfileRefreshLock.current
       || image.status === 'uploading') return
     generationRequestKey.current = null
     if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
@@ -563,7 +626,11 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       await deleteProductImage()
       return
     }
-    if (campaignIdentityLocked() || productImageDeleteLock.current || productAssetRefreshLock.current) return
+    if (campaignIdentityLocked()
+      || productImageDeleteLock.current
+      || productAssetRefreshLock.current
+      || productProfileMutationLock.current
+      || productProfileRefreshLock.current) return
     if (!window.confirm('刪除這張已保存的私人商品來源圖？ Delete this saved private product source?')) return
     productImageDeleteLock.current = true
     setDeletingProductAssetId(asset.id)
@@ -576,6 +643,85 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     } finally {
       productImageDeleteLock.current = false
       setDeletingProductAssetId(null)
+    }
+  }
+
+  function selectProductProfileFromLibrary(savedProduct: SavedProductProfile) {
+    if (campaignIdentityLocked()
+      || productProfileMutationLock.current
+      || productProfileRefreshLock.current
+      || productImageDeleteLock.current
+      || productAssetRefreshLock.current
+      || image.status === 'uploading') return
+    setProduct(productFromSavedProductProfile(savedProduct))
+    setSelectedProductProfileId(savedProduct.id)
+    generationRequestKey.current = null
+    setAgentState(initialCampaignAgentState())
+    setNotice('已套用商品資料快照；請配合目前品牌及圖片重新規劃及批准。 Product profile applied; re-plan and approve it with the current brand and image.')
+    setActiveSection('workspace')
+  }
+
+  async function saveProductProfileToLibrary() {
+    if (!session
+      || agentState.stage !== 'approved'
+      || !agentState.brief
+      || campaignIdentityLocked()
+      || productProfileMutationLock.current
+      || productProfileRefreshLock.current
+      || productImageDeleteLock.current
+      || productAssetRefreshLock.current
+      || image.status === 'uploading') return
+    productProfileMutationLock.current = true
+    const mutationEpoch = workspaceHydrationEpoch.current
+    setIsSavingProductProfile(true)
+    setProductProfileNotice('')
+    try {
+      let savedProduct: SavedProductProfile
+      if (session.user.id === 'demo-user') {
+        savedProduct = productProfiles.find((saved) => savedProductMatches(saved, agentState.brief!.product)) || {
+          ...agentState.brief.product,
+          id: crypto.randomUUID(),
+          approvedRevision: agentState.revision,
+          createdAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+        }
+      } else {
+        savedProduct = await saveApprovedProductProfile(agentState.revision)
+      }
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setProductProfiles((current) => [savedProduct, ...current.filter((item) => item.id !== savedProduct.id)].slice(0, 20))
+      setSelectedProductProfileId(savedProduct.id)
+      setProductProfileNotice('已保存核准商品資料；相同內容不會建立重複記錄。 Approved product profile saved without duplicating identical content.')
+    } catch (error) {
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setProductProfileNotice(error instanceof Error ? error.message : '商品資料儲存暫時無法使用。 Saving the product profile is temporarily unavailable.')
+    } finally {
+      if (mutationEpoch === workspaceHydrationEpoch.current) {
+        productProfileMutationLock.current = false
+        setIsSavingProductProfile(false)
+      }
+    }
+  }
+
+  async function deleteProductProfileFromLibrary(savedProduct: SavedProductProfile) {
+    if (productProfileMutationLock.current || productProfileRefreshLock.current) return
+    if (!window.confirm('刪除這個已保存的商品資料快照？ Delete this saved product profile?')) return
+    productProfileMutationLock.current = true
+    const mutationEpoch = workspaceHydrationEpoch.current
+    setDeletingProductProfileId(savedProduct.id)
+    setProductProfileNotice('')
+    try {
+      if (session?.user.id !== 'demo-user') await deletePrivateResource('product-profile', savedProduct.id)
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setProductProfiles((current) => current.filter((item) => item.id !== savedProduct.id))
+      setSelectedProductProfileId((current) => current === savedProduct.id ? null : current)
+    } catch (error) {
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setProductProfileNotice(error instanceof Error ? error.message : '商品資料快照刪除暫時無法使用。 Product profile deletion is temporarily unavailable.')
+    } finally {
+      if (mutationEpoch === workspaceHydrationEpoch.current) {
+        productProfileMutationLock.current = false
+        setDeletingProductProfileId(null)
+      }
     }
   }
 
@@ -825,17 +971,22 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceHydrationEpoch.current += 1
     generationRefreshEpoch.current += 1
     productAssetRefreshEpoch.current += 1
+    productProfileRefreshEpoch.current += 1
     brandPackRefreshEpoch.current += 1
     activityRefreshEpoch.current += 1
     outputUsageRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
+    productProfileRefreshLock.current = false
+    productProfileMutationLock.current = false
     brandPackRefreshLock.current = false
     brandPackMutationLock.current = false
     activityRefreshLock.current = false
     outputUsageRefreshLock.current = false
     setIsRefreshingResults(false)
     setIsRefreshingProductAssets(false)
+    setIsRefreshingProductProfiles(false)
+    setIsSavingProductProfile(false)
     setIsRefreshingBrandPacks(false)
     setIsSavingBrandPack(false)
     setIsRefreshingActivity(false)
@@ -847,6 +998,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setProductAssets([])
     setProductAssetNotice('')
     setDeletingProductAssetId(null)
+    setProductProfiles([])
+    setSelectedProductProfileId(null)
+    setProductProfileNotice('')
+    setDeletingProductProfileId(null)
     setBrandPacks([])
     setSelectedBrandPackId(null)
     setBrandPackNotice('')
@@ -905,9 +1060,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           : <CollectionView
             section={activeSection}
             brand={brand}
-            product={agentState.brief?.product || emptyProduct}
+            product={product}
             results={serverResults}
-            imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''}
+            imageUrl={image.url}
             deletingResultId={deletingGenerationId}
             isRefreshingResults={isRefreshingResults}
             refreshDisabled={deletingGenerationId !== null || reviewingId !== null}
@@ -918,9 +1073,23 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             deletingProductAssetId={deletingProductAssetId}
             isRefreshingProductAssets={isRefreshingProductAssets}
             productAssetNotice={productAssetNotice}
-            onRefreshProductAssets={session.user.id === 'demo-user' ? undefined : () => void refreshProductAssets()}
+            onRefreshProductAssets={session.user.id === 'demo-user' ? undefined : () => {
+              void refreshProductAssets()
+              void refreshProductProfiles()
+            }}
             onSelectProductAsset={selectProductAssetFromLibrary}
             onDeleteProductAsset={(asset) => void deleteProductAssetFromLibrary(asset)}
+            productProfiles={productProfiles}
+            selectedProductProfileId={selectedProductProfileId}
+            deletingProductProfileId={deletingProductProfileId}
+            isRefreshingProductProfiles={isRefreshingProductProfiles}
+            isSavingProductProfile={isSavingProductProfile}
+            canSaveProductProfile={agentState.stage === 'approved' && Boolean(agentState.brief) && !agentBusy && !isGenerating}
+            productInteractionDisabled={agentBusy || isGenerating}
+            productProfileNotice={productProfileNotice}
+            onSaveProductProfile={() => void saveProductProfileToLibrary()}
+            onSelectProductProfile={selectProductProfileFromLibrary}
+            onDeleteProductProfile={(savedProduct) => void deleteProductProfileFromLibrary(savedProduct)}
             brandPacks={brandPacks}
             selectedBrandPackId={selectedBrandPackId}
             deletingBrandPackId={deletingBrandPackId}

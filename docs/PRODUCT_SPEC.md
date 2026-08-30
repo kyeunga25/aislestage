@@ -63,6 +63,9 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 私人品牌庫只列出目前 workspace 最近 20 個具 canonical digest 及正整數批准 revision 的品牌快照；每項只返回 UUID、七個已核准品牌欄位、批准 revision 及 UTC 建立時間，不返回 workspace／user identity、digest 或 Agent 其他 brief。Browser 只在進入或重新整理品牌庫時，以 15 秒、64 KiB 有界 GET 載入 exact `{ brandPacks }` envelope；malformed、重複 ID 或暫時故障保留上一次可信清單；
 - 品牌快照 POST 只接受 exact `{ approvedRevision }`，Worker 必須重新讀取目前 workspace 的 Agent state，並只保存與該 revision 完全相符的 `approved` canonical brand。相同品牌欄位由 digest-backed unique identity 去重；首次確認建立返回 `201`，相同內容或不確定寫入後的 reconciliation 返回 exact `200` replay。Browser 對 transport／stream／deadline／`408`／`5xx` 最多以同一 revision 重試一次，其他狀態及 non-canonical success 不重送；
 - 使用者可把單一品牌快照套用回工作台，這只帶回品牌欄位並立即令本機 Agent 批准及 Campaign Pack idempotency key 失效，必須配合目前商品及來源圖重新規劃。單筆 DELETE 維持 workspace-scoped `404`、`204` 及不確定結果 reconciliation；刪除品牌庫記錄不會改寫目前 Campaign Brief；
+- 私人商品資料庫只列出目前 workspace 最近 20 個具 canonical digest 及正整數批准 revision 的快照；每項只返回 UUID、十個已核准商品欄位、revision 及 UTC 建立時間，不返回 workspace／user identity、digest、品牌、圖片或 Agent 其他 brief；
+- 商品資料 POST 只接受 exact `{ approvedRevision }`；Worker 重讀目前 workspace Agent state，只保存完全相符的 `approved` canonical product。相同內容以 digest-backed unique identity 去重；Browser 用 15 秒 deadline、64 KiB list 及 16 KiB save acknowledgement，只對 transport／stream／deadline／`408`／`5xx` 以同一 revision 最多重試一次；
+- 選用商品資料快照只會取代商品欄位，保留目前品牌與圖片，並立即令本機 Agent 批准及 Campaign Pack idempotency key 失效。單筆 DELETE 維持 workspace scope 及不確定結果 reconciliation；舊商品 row 不會自動轉成核准快照；
 - 新邀請 workspace 取得六個技術性可用輸出，足以建立兩套 Campaign Pack。
 
 詳情見 [`BETA_ACCESS.md`](BETA_ACCESS.md)。
@@ -162,9 +165,9 @@ Preview／已批准 download 的成功 SVG body 使用 `private, no-store` 及 `
 
 Browser generation list 在任何 JSON parse 前要求 exact `200 application/json`，成功亦只接受 exact `{ generations }` envelope，再套用最多 20 項、唯一 ID、完整 review／provenance 與同源 route normalizer；額外 outer fields 不會進入 workspace。
 
-Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、workspace activity／output usage／product-source／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate 或任何既有可信 snapshot。
+Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session 16 KiB、workspace activity／output usage／product-source／product profile／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate 或任何既有可信 snapshot。
 
-Session、health、workspace activity、output usage、product-source list、brand snapshot list、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading；on-demand view 則保留上一次可信 snapshot 並顯示固定雙語錯誤，不以 GET timeout 猜測任何 mutation 是否已提交。
+Session、health、workspace activity、output usage、product-source list、product profile list、brand snapshot list、generation list 及 Agent state GET 都有 15 秒 browser deadline。到期後初始 bootstrap 會離開 loading；on-demand view 則保留上一次可信 snapshot 並顯示固定雙語錯誤，不以 GET timeout 猜測任何 mutation 是否已提交。
 
 同一個 mounted workspace 的並行初始 bootstrap 會共用一個 in-flight request coordinator：session／health 各一次，只有確認登入後才讀 generation list／Agent state。完成或失敗後立即清除 promise，不跨 reload 保留私人 cache；effect teardown、登出及較新 session hydration 會使舊 epoch 失效，舊輸出或 Agent 快照不可重新進入畫面。
 

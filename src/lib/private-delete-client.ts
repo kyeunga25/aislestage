@@ -1,6 +1,6 @@
 import { fetchWithTimeout } from './fetch-with-timeout'
 
-export type PrivateResourceKind = 'product-asset' | 'generation' | 'brand-pack'
+export type PrivateResourceKind = 'product-asset' | 'generation' | 'brand-pack' | 'product-profile'
 
 type ResourceConfig = {
   path: string
@@ -27,6 +27,12 @@ const resourceConfigs: Record<PrivateResourceKind, ResourceConfig> = {
     invalidIdentityMessage: '品牌快照識別資料無效，請重新載入。 Brand snapshot identity is invalid; reload it.',
     invalidResponseMessage: '未能確認品牌快照刪除結果。 Unable to verify the brand snapshot deletion.',
     unavailableMessage: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.'
+  },
+  'product-profile': {
+    path: '/api/product-profiles',
+    invalidIdentityMessage: '商品資料快照識別資料無效，請重新載入。 Product profile identity is invalid; reload it.',
+    invalidResponseMessage: '未能確認商品資料快照刪除結果。 Unable to verify the product profile deletion.',
+    unavailableMessage: '商品資料快照刪除暫時無法使用。 Product profile deletion is temporarily unavailable.'
   }
 }
 

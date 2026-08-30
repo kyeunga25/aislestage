@@ -32,6 +32,9 @@ export default defineConfig({
     })
   ],
   test: {
+    // Several browser-client suites intentionally advance fake timers. Keep the
+    // Cloudflare pool runner serial so those clocks cannot affect peer startup.
+    fileParallelism: false,
     restoreMocks: true,
     setupFiles: ['./tests/setup.ts']
   }

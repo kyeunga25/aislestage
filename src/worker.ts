@@ -8,7 +8,7 @@ import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, MA
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
-import type { BrandPack, CampaignAgentState, GenerationInput } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationInput, Product } from './lib/types'
 
 export { CampaignAgent }
 
@@ -71,6 +71,7 @@ const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_BRAND_PACK_BODY_BYTES = 1_024
+const MAX_PRODUCT_PROFILE_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -1251,6 +1252,267 @@ async function deleteBrandPack(env: Env, session: SessionContext, brandPackId: s
       console.error('brand-pack-delete-reconciliation-failed')
     }
     return json({ error: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.' }, { status: 503 })
+  }
+}
+
+type ProductProfileRow = {
+  id: string
+  name: string
+  nameEn: string
+  category: string
+  benefitsJson: string
+  benefitsEnJson: string
+  specifications: string
+  price: string
+  promotion: string
+  promotionEn: string
+  channelsJson: string
+  approvedRevision: number
+  snapshotSha256: string
+  createdAt: string
+}
+
+type SavedProductProfilePayload = Product & {
+  id: string
+  approvedRevision: number
+  createdAt: string
+}
+
+function canonicalProductSnapshot(product: Product) {
+  return JSON.stringify({
+    name: product.name,
+    nameEn: product.nameEn,
+    category: product.category,
+    benefits: product.benefits,
+    benefitsEn: product.benefitsEn,
+    specifications: product.specifications,
+    price: product.price,
+    promotion: product.promotion,
+    promotionEn: product.promotionEn,
+    channels: product.channels
+  })
+}
+
+function isApprovedProduct(product: Product) {
+  return Boolean(
+    product.name
+    && product.nameEn
+    && product.category
+    && product.price
+    && product.promotion
+    && product.promotionEn
+    && product.benefits.length >= 2
+    && product.benefitsEn.length >= 2
+  )
+}
+
+function isCanonicalProductProfileTime(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value.replace(/Z$/, '.000Z')
+}
+
+async function productProfilePayload(row: ProductProfileRow): Promise<SavedProductProfilePayload | null> {
+  let benefits: unknown
+  let benefitsEn: unknown
+  let channels: unknown
+  try {
+    benefits = JSON.parse(row.benefitsJson)
+    benefitsEn = JSON.parse(row.benefitsEnJson)
+    channels = JSON.parse(row.channelsJson)
+  } catch {
+    return null
+  }
+  const product: Product = {
+    name: row.name,
+    nameEn: row.nameEn,
+    category: row.category,
+    benefits: benefits as string[],
+    benefitsEn: benefitsEn as string[],
+    specifications: row.specifications,
+    price: row.price,
+    promotion: row.promotion,
+    promotionEn: row.promotionEn,
+    channels: channels as string[]
+  }
+  if (!UUID_V4_PATTERN.test(row.id)
+    || !Number.isSafeInteger(row.approvedRevision)
+    || row.approvedRevision <= 0
+    || !isCanonicalProductProfileTime(row.createdAt)
+    || validateCampaignBrief({ product }).length
+    || !isApprovedProduct(product)
+    || JSON.stringify(sanitizeCampaignBrief({ product }).product) !== JSON.stringify(product)
+    || await sha256(canonicalProductSnapshot(product)) !== row.snapshotSha256) return null
+  return {
+    id: row.id,
+    ...product,
+    approvedRevision: row.approvedRevision,
+    createdAt: row.createdAt
+  }
+}
+
+const productProfileSelect = `
+  SELECT id, name, name_en AS nameEn, category, benefits_json AS benefitsJson,
+    benefits_en_json AS benefitsEnJson, specifications, price, promotion,
+    promotion_en AS promotionEn, channels_json AS channelsJson,
+    approved_revision AS approvedRevision, snapshot_sha256 AS snapshotSha256,
+    strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt
+  FROM products
+`
+
+function productProfileUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人商品資料暫時無法讀取。 Private product library is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function productProfileBySnapshot(env: Env, workspaceId: string, snapshotSha256: string) {
+  const row = await env.DB.prepare(`${productProfileSelect}
+    WHERE workspace_id = ? AND snapshot_sha256 = ?
+    LIMIT 1
+  `).bind(workspaceId, snapshotSha256).first<ProductProfileRow>()
+  return row ? productProfilePayload(row) : null
+}
+
+async function listProductProfiles(env: Env, session: SessionContext) {
+  try {
+    const result = await env.DB.prepare(`${productProfileSelect}
+      WHERE workspace_id = ? AND snapshot_sha256 IS NOT NULL AND approved_revision > 0
+      ORDER BY created_at DESC, id DESC
+      LIMIT 20
+    `).bind(session.currentWorkspace.id).all<ProductProfileRow>()
+    const productProfiles: SavedProductProfilePayload[] = []
+    for (const row of result.results) {
+      const productProfile = await productProfilePayload(row)
+      if (!productProfile) throw new TypeError('Invalid stored product profile')
+      productProfiles.push(productProfile)
+    }
+    return json({ productProfiles })
+  } catch {
+    console.error('product-profile-list-read-failed')
+    return productProfileUnavailable()
+  }
+}
+
+async function saveProductProfile(request: Request, env: Env, session: SessionContext) {
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const { body, tooLarge } = await readBody(request, MAX_PRODUCT_PROFILE_BODY_BYTES)
+  if (tooLarge) return json({ error: '商品資料請求過大。 Product profile request is too large.' }, { status: 413 })
+  if (!hasExactKeys(body, ['approvedRevision'])) {
+    return json({ error: '商品資料批准版本格式無效。 Product approval revision is invalid.' }, { status: 400 })
+  }
+  const approvedRevision = (body as { approvedRevision?: unknown }).approvedRevision
+  if (!Number.isSafeInteger(approvedRevision) || Number(approvedRevision) <= 0) {
+    return json({ error: '商品資料批准版本格式無效。 Product approval revision is invalid.' }, { status: 400 })
+  }
+
+  let state: CampaignAgentState
+  try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
+    state = await agent.getPlan()
+  } catch {
+    console.error('product-profile-agent-read-failed')
+    return json({ error: '商品資料儲存暫時無法使用。 Saving the product profile is temporarily unavailable.' }, { status: 503 })
+  }
+  if (state.stage !== 'approved' || state.revision !== approvedRevision || !state.brief) {
+    return json({ error: '商品資料批准版本已改變。 Product approval changed.' }, { status: 409 })
+  }
+  const canonicalBrief = sanitizeCampaignBrief(state.brief)
+  if (validateCampaignBrief(state.brief).length
+    || JSON.stringify(canonicalBrief) !== JSON.stringify(state.brief)
+    || !isApprovedProduct(canonicalBrief.product)) {
+    console.error('product-profile-agent-state-invalid')
+    return json({ error: '商品資料儲存暫時無法使用。 Saving the product profile is temporarily unavailable.' }, { status: 503 })
+  }
+  const product = canonicalBrief.product
+  const snapshotSha256 = await sha256(canonicalProductSnapshot(product))
+  try {
+    const existing = await productProfileBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (existing) return json({ productProfile: existing, replayed: true })
+  } catch {
+    console.error('product-profile-preflight-read-failed')
+    return productProfileUnavailable()
+  }
+
+  const id = crypto.randomUUID()
+  let changes = 0
+  try {
+    const inserted = await env.DB.prepare(`
+      INSERT OR IGNORE INTO products (
+        id, workspace_id, name, name_en, category, benefits_json, benefits_en_json,
+        specifications, price, promotion, promotion_en, channels_json,
+        approved_revision, snapshot_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      session.currentWorkspace.id,
+      product.name,
+      product.nameEn,
+      product.category,
+      JSON.stringify(product.benefits),
+      JSON.stringify(product.benefitsEn),
+      product.specifications,
+      product.price,
+      product.promotion,
+      product.promotionEn,
+      JSON.stringify(product.channels),
+      approvedRevision,
+      snapshotSha256
+    ).run()
+    changes = inserted.meta.changes
+  } catch {
+    console.error('product-profile-insert-response-failed')
+  }
+
+  try {
+    const committed = await productProfileBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (!committed) {
+      console.error('product-profile-insert-not-confirmed')
+      return productProfileUnavailable()
+    }
+    return json({ productProfile: committed, replayed: changes !== 1 }, { status: changes === 1 ? 201 : 200 })
+  } catch {
+    console.error('product-profile-insert-reconciliation-failed')
+    return productProfileUnavailable()
+  }
+}
+
+async function deleteProductProfile(env: Env, session: SessionContext, productProfileId: string) {
+  if (!UUID_V4_PATTERN.test(productProfileId)) return json({ error: 'Product profile not found.' }, { status: 404 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  try {
+    const existing = await env.DB.prepare(`
+      SELECT 1 AS present
+      FROM products
+      WHERE id = ? AND workspace_id = ? AND snapshot_sha256 IS NOT NULL AND approved_revision > 0
+      LIMIT 1
+    `).bind(productProfileId, session.currentWorkspace.id).first<{ present: number }>()
+    if (!existing) return json({ error: 'Product profile not found.' }, { status: 404 })
+  } catch {
+    console.error('product-profile-delete-preflight-read-failed')
+    return json({ error: '商品資料快照刪除暫時無法使用。 Product profile deletion is temporarily unavailable.' }, { status: 503 })
+  }
+
+  try {
+    await env.DB.prepare('DELETE FROM products WHERE id = ? AND workspace_id = ?')
+      .bind(productProfileId, session.currentWorkspace.id)
+      .run()
+    return deletedResponse()
+  } catch {
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM products
+        WHERE id = ? AND workspace_id = ?
+        LIMIT 1
+      `).bind(productProfileId, session.currentWorkspace.id).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('product-profile-delete-reconciliation-pending')
+    } catch {
+      console.error('product-profile-delete-reconciliation-failed')
+    }
+    return json({ error: '商品資料快照刪除暫時無法使用。 Product profile deletion is temporarily unavailable.' }, { status: 503 })
   }
 }
 
@@ -3177,6 +3439,22 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       if (request.method === 'DELETE') return deleteBrandPack(env, session, brandPackMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'DELETE' } })
+    }
+    if (url.pathname === '/api/product-profiles') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listProductProfiles(env, session)
+      if (request.method === 'POST') return saveProductProfile(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const productProfileMatch = url.pathname.match(/^\/api\/product-profiles\/([^/]+)$/)
+    if (productProfileMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'DELETE') return deleteProductProfile(env, session, productProfileMatch[1])
       await cancelRequestBody(request)
       return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'DELETE' } })
     }

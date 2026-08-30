@@ -43,6 +43,12 @@ export type Product = {
   channels: string[]
 }
 
+export type SavedProductProfile = Product & {
+  id: string
+  approvedRevision: number
+  createdAt: string
+}
+
 export type GenerationInput = {
   workspaceId: string
   workflowId: WorkflowId

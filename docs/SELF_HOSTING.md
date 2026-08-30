@@ -199,6 +199,7 @@ Migration 是受保護的 state change：
 - 引入 asset／output checksum contract 的版本不會盲目回填舊物件；缺少已驗證 checksum 的既有來源圖會保持不可預覽／批准／生成，既有輸出則不可核准／交付，應在升級後由授權使用者重新建立；
 - 引入工作區活動記錄的版本只會由 migration 套用後開始收集最小必要事件 metadata，不會由既有商品、brief、檔案或輸出內容推算或回填歷史；
 - 引入核准品牌快照庫的版本不會從舊 brief 或既有欄位推算、回填或自動保存品牌；升級後必須由授權使用者重新核對 Agent 計劃並明確保存；
+- 引入核准商品資料庫的版本同樣不會把舊商品資料自動標示為已批准；升級後必須由授權使用者以目前 Agent revision 明確保存；
 - 程式 rollback 不代表 schema rollback，不能以刪除 database 作復原方法。
 
 本公開文件不列出資料表、欄位、索引、row 或實際資料組織；唯一 schema source 是已審核的 repository migrations。

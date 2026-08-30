@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { CollectionView } from '../src/components/CollectionView'
 import { starterBrand, starterProduct } from '../src/lib/demo-data'
-import type { GenerationResult, ProductAssetListItem, SavedBrandPack } from '../src/lib/types'
+import type { GenerationResult, ProductAssetListItem, SavedBrandPack, SavedProductProfile } from '../src/lib/types'
 
 const results: GenerationResult[] = [
   {
@@ -73,6 +73,20 @@ const brandPacks: SavedBrandPack[] = [{
   name: 'Secondary Brand',
   approvedRevision: 3,
   createdAt: '2026-08-30T05:15:00Z'
+}]
+
+const productProfiles: SavedProductProfile[] = [{
+  ...starterProduct,
+  id: '123e4567-e89b-42d3-a456-426614174030',
+  approvedRevision: 2,
+  createdAt: '2026-08-30T06:10:00Z'
+}, {
+  ...starterProduct,
+  id: '123e4567-e89b-42d3-a456-426614174031',
+  name: 'Secondary Product',
+  nameEn: 'Secondary Product',
+  approvedRevision: 3,
+  createdAt: '2026-08-30T06:15:00Z'
 }]
 
 describe('Collection View private output deletion state', () => {
@@ -178,5 +192,38 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('使用第 2 個品牌快照')
     expect(markup).toContain('正在刪除第 2 個品牌快照 · Deleting brand snapshot 2')
     expect(markup).toContain('Private brand library is temporarily unavailable.')
+  })
+
+  it('renders approved reusable product profiles alongside private source images', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="products"
+      brand={starterBrand}
+      product={starterProduct}
+      results={results}
+      imageUrl="/api/assets/product-source"
+      productAssets={productAssets}
+      productProfiles={productProfiles}
+      selectedProductProfileId={productProfiles[0].id}
+      deletingProductProfileId={productProfiles[1].id}
+      isSavingProductProfile
+      isRefreshingProductProfiles
+      canSaveProductProfile
+      productProfileNotice="私人商品資料暫時無法讀取。 Private product library is temporarily unavailable."
+      onSaveProductProfile={vi.fn()}
+      onSelectProductProfile={vi.fn()}
+      onDeleteProductProfile={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('已保存商品資料')
+    expect(markup).toContain('Approved product profiles')
+    expect(markup).toContain('2 個')
+    expect(markup).toContain('儲存已核准商品')
+    expect(markup).toContain('目前使用第 1 個商品資料快照')
+    expect(markup).toContain('使用第 2 個商品資料快照')
+    expect(markup).toContain('正在刪除第 2 個商品資料快照 · Deleting product profile 2')
+    expect(markup).toContain('Private product library is temporarily unavailable.')
+    expect(markup).toContain('已保存來源圖')
   })
 })
