@@ -1,5 +1,6 @@
 import { Check, Download, FileImage, FileUp, ImagePlus, LoaderCircle, Plus, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
 import { useRef, useState, type ChangeEvent } from 'react'
+import { brandColorForDisplay, fallbackBrandColor, isSafeBrandColor } from '../lib/brand-color'
 import { campaignBriefLimits } from '../lib/campaign-agent'
 import { commercialUseRightsAttestation, type CommercialUseRightsAttestation } from '../lib/product-asset-client'
 import type { BrandPack, CampaignAgentState, Product, ProductAsset } from '../lib/types'
@@ -65,9 +66,16 @@ export function CampaignWorkspace(props: Props) {
   const imageMutationBusy = image.status === 'uploading' || imageDeleteBusy || campaignIdentityBusy
   const imageSelectionDisabled = imageMutationBusy || !rightsConfirmed
   const agentReady = agentState.stage === 'awaiting-approval' || agentState.stage === 'approved'
+  const visibleBrandColors = brand.colors.length ? brand.colors : [fallbackBrandColor]
+  const visibleChannels = product.channels.length ? product.channels : ['']
 
-  const setProduct = (key: keyof Product, value: string | string[]) => onProductChange({ ...product, [key]: value })
-  const setBrand = (key: keyof BrandPack, value: string) => onBrandChange({ ...brand, [key]: value })
+  function setProduct<Key extends keyof Product>(key: Key, value: Product[Key]) {
+    onProductChange({ ...product, [key]: value })
+  }
+
+  function setBrand<Key extends keyof BrandPack>(key: Key, value: BrandPack[Key]) {
+    onBrandChange({ ...brand, [key]: value })
+  }
 
   function updateBenefit(index: number, value: string) {
     const next = [...product.benefits]
@@ -79,6 +87,38 @@ export function CampaignWorkspace(props: Props) {
     const next = [...product.benefitsEn]
     next[index] = value
     setProduct('benefitsEn', next)
+  }
+
+  function updateBrandColor(index: number, value: string) {
+    if (!isSafeBrandColor(value)) return
+    const next = [...visibleBrandColors]
+    next[index] = value
+    setBrand('colors', next)
+  }
+
+  function addBrandColor() {
+    if (visibleBrandColors.length >= campaignBriefLimits.brand.colors.items) return
+    setBrand('colors', [...visibleBrandColors, fallbackBrandColor])
+  }
+
+  function removeBrandColor(index: number) {
+    if (visibleBrandColors.length <= 1) return
+    setBrand('colors', visibleBrandColors.filter((_color, colorIndex) => colorIndex !== index))
+  }
+
+  function updateChannel(index: number, value: string) {
+    const next = [...visibleChannels]
+    next[index] = value
+    setProduct('channels', next)
+  }
+
+  function addChannel() {
+    if (visibleChannels.length >= campaignBriefLimits.product.channels.items || visibleChannels.some((channel) => !channel.trim())) return
+    setProduct('channels', [...visibleChannels, ''])
+  }
+
+  function removeChannel(index: number) {
+    setProduct('channels', visibleChannels.filter((_channel, channelIndex) => channelIndex !== index))
   }
 
   function chooseImage(event: ChangeEvent<HTMLInputElement>) {
@@ -138,6 +178,31 @@ export function CampaignWorkspace(props: Props) {
           <label><span>商品規格（選填）</span><textarea value={product.specifications} maxLength={campaignBriefLimits.product.specifications} onChange={(event) => setProduct('specifications', event.target.value)} placeholder="例如：尺寸、物料、連接方式或相容型號" /></label>
           <label><span>品牌語氣</span><input value={brand.tone} maxLength={campaignBriefLimits.brand.tone} onChange={(event) => setBrand('tone', event.target.value)} /></label>
           <label><span>行動呼籲 CTA</span><input value={brand.cta} maxLength={campaignBriefLimits.brand.cta} onChange={(event) => setBrand('cta', event.target.value)} /></label>
+          <details className="advanced-brief-fields">
+            <summary>品牌色、限制字詞與渠道 <small>Brand controls</small></summary>
+            <div>
+              <label><span>主要語言 · Primary language</span><select aria-label="主要語言" value={brand.locale} onChange={(event) => setBrand('locale', event.target.value as BrandPack['locale'])}><option value="zh-Hant">繁體中文</option><option value="en">English</option></select></label>
+              <fieldset className="brand-color-fields"><legend>品牌色（1–8） · Brand colors</legend>
+                {visibleBrandColors.map((color, index) => {
+                  const displayColor = brandColorForDisplay(color)
+                  return <div className="brand-color-field" key={`${index}-${displayColor}`}>
+                    <input type="color" aria-label={`品牌色 ${index + 1}`} value={displayColor} onChange={(event) => updateBrandColor(index, event.target.value)} />
+                    <code>{displayColor}</code>
+                    <button type="button" className="compact-icon-button" aria-label={`移除品牌色 ${index + 1}`} onClick={() => removeBrandColor(index)} disabled={visibleBrandColors.length <= 1}><X size={15} /></button>
+                  </div>
+                })}
+                <button type="button" className="add-brief-field" aria-label="新增品牌色" onClick={addBrandColor} disabled={visibleBrandColors.length >= campaignBriefLimits.brand.colors.items}><Plus size={15} />新增品牌色 · Add color</button>
+              </fieldset>
+              <label><span>限制字詞（選填） · Forbidden words</span><textarea value={brand.forbiddenWords} maxLength={campaignBriefLimits.brand.forbiddenWords} aria-label="限制字詞" onChange={(event) => setBrand('forbiddenWords', event.target.value)} placeholder="以逗號、頓號或換行分隔不可使用的宣稱與字詞" /></label>
+              <fieldset className="channel-fields"><legend>目標渠道（最多 12 個） · Target channels</legend><small className="brief-field-hint">只作 Campaign Brief 分發記錄；不會自動發佈或改變固定三個輸出。</small>
+                {visibleChannels.map((channel, index) => <div className="channel-field" key={index}>
+                  <input aria-label={`渠道 ${index + 1}`} value={channel} maxLength={campaignBriefLimits.product.channels.itemLength} onChange={(event) => updateChannel(index, event.target.value)} placeholder="例如：Shopify、Instagram、EDM" />
+                  <button type="button" className="compact-icon-button" aria-label={`移除渠道 ${index + 1}`} onClick={() => removeChannel(index)} disabled={visibleChannels.length === 1 && !product.channels.length}><X size={15} /></button>
+                </div>)}
+                <button type="button" className="add-brief-field" aria-label="新增渠道" onClick={addChannel} disabled={visibleChannels.length >= campaignBriefLimits.product.channels.items || visibleChannels.some((channel) => !channel.trim())}><Plus size={15} />新增渠道 · Add channel</button>
+              </fieldset>
+            </div>
+          </details>
           <details className="bilingual-fields">
             <summary>{englishReady ? '英文文案資料已填寫' : '填寫英文文案資料'} <small>English copy</small></summary>
             <div>

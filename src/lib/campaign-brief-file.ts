@@ -1,4 +1,5 @@
 import { sanitizeCampaignBrief, validateCampaignBrief } from './campaign-agent'
+import { isSafeBrandColorList } from './brand-color'
 import type { BrandPack, Product } from './types'
 
 export const campaignBriefFileContractVersion = 'aislestage-campaign-brief-v1' as const
@@ -52,7 +53,7 @@ function normalizeFileData(value: unknown, envelope = false): CampaignBriefFileD
   if (!campaignBriefFileIntents.includes(normalized.intent as typeof campaignBriefFileIntents[number])) {
     throw new Error(campaignBriefFileInvalidMessage)
   }
-  if (normalized.brand.colors.some((color) => !/^#[0-9a-f]{6}$/i.test(color))
+  if (!isSafeBrandColorList(normalized.brand.colors, 8)
     || normalized.product.benefits.length > 3
     || normalized.product.benefitsEn.length > 3) {
     throw new Error(campaignBriefFileInvalidMessage)

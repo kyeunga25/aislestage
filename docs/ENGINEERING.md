@@ -58,6 +58,13 @@ npm run cf:types:check
 - import 期間 brief、圖片 mutation、Agent、Campaign Pack、重複 import／export 及 workspace switch 保持鎖定。完成前若 hydration identity 改變，epoch guard 會丟棄舊本機結果；成功只取代 brand／product／intent，保留目前已授權圖片，但清除 snapshot selection、舊 Agent approval 及 generation idempotency key；
 - serializer 由目前 runtime state 重建 exact known fields，不接受會被截短、未知推廣目的、超過三個賣點或非 hex 品牌色；下載 Object URL 在觸發後撤銷。商品規格在主表單直接可見及可編輯，避免匯入或已恢復 brief 的確定性輸出欄位藏在批准流程之外。
 
+## Brand and channel controls
+
+- 工作台以原生 color input 管理 1–8 個品牌色，並直接顯示 canonical `#RRGGBB`；主要語言只接受 `zh-Hant`／`en`，限制字詞沿用 500 字元上限，目標渠道最多 12 個且每項最多 80 字元。新增空渠道只屬本機編輯狀態，送出前仍經 canonical Brief normalization；渠道只作分發 metadata，不會自動發佈或改變固定三個輸出；
+- `brand-color.ts` 是 browser、Agent loader／validator、Campaign Brief file、品牌庫、Campaign Pack compositor 與 Worker generation input 的共享邊界。完整品牌色清單必須非空且每項符合 exact six-digit hex；compositor 與品牌預覽另外以固定安全色作 defence-in-depth，不反射不合規 runtime 值；
+- 限制字詞以換行、逗號、全形逗號、頓號或分號切分；比較前只作 NFKC、空白及大小寫 normalization，然後核對所有繁中／英文商業 copy。任何命中只產生固定雙語 issue，不回顯限制字詞，並阻止 Agent approval 及 deterministic composition；
+- 修改上述任何欄位沿用現有 brief change path，立即失效舊 Agent approval、snapshot selection 與 Campaign Pack idempotency identity。這些控制只管理確定性商業 metadata，不會接觸外部 AI、付款或發佈 API。
+
 ## Authentication and workspace boundary
 
 - 公開 `/` 與私人 `/app` 分開；正式 Access policy 亦保護受保護 API；

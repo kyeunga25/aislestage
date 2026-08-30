@@ -1142,7 +1142,9 @@ describe('workspace Campaign Agent', () => {
       { value: { ...brief, product: { ...brief.product, price: '9'.repeat(121) } }, error: /價格.*120/ },
       { value: { ...brief, product: { ...brief.product, benefits: Array.from({ length: 9 }, (_, index) => `賣點 ${index + 1}`) } }, error: /產品賣點.*8/ },
       { value: { ...brief, product: { ...brief.product, name: 42 } }, error: /商品名稱格式無效/ },
-      { value: { ...brief, brand: { ...brief.brand, locale: 'fr' } }, error: /語言設定格式無效/ }
+      { value: { ...brief, brand: { ...brief.brand, locale: 'fr' } }, error: /語言設定格式無效/ },
+      { value: { ...brief, brand: { ...brief.brand, colors: ['url(x)'] } }, error: /品牌顏色.*#RRGGBB/ },
+      { value: { ...brief, brand: { ...brief.brand, colors: [] } }, error: /品牌顏色.*#RRGGBB/ }
     ]
 
     for (const invalidBrief of invalidBriefs) {
@@ -1203,6 +1205,41 @@ describe('workspace Campaign Agent', () => {
     expect(correctedApproval.status).toBe(200)
     expect(await correctedApproval.json()).toMatchObject({ state: { stage: 'approved', revision: correctedState.revision } })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('keeps configured forbidden words out of approval and supports correction', async () => {
+    const owner = await registerAccount('Agent Forbidden Copy')
+    const uploaded = await uploadPng(owner.cookie, 'forbidden-copy-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const brief = validBrief(asset.id)
+    const blocked = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: { ...brief, product: { ...brief.product, promotion: '保證耐用' } } })
+    })
+
+    expect(blocked.status).toBe(200)
+    const { state } = await blocked.json() as { state: { stage: string; revision: number; checks: Array<{ id: string; status: string; detail: string }> } }
+    expect(state.stage).toBe('needs-input')
+    expect(state.checks.find((check) => check.id === 'claims')).toMatchObject({
+      status: 'action',
+      detail: expect.stringMatching(/限制字詞出現在商業文案.*Forbidden words appear in the commercial copy/)
+    })
+
+    const approval = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: state.revision })
+    })
+    expect(approval.status).toBe(409)
+
+    const corrected = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief })
+    })
+    const { state: correctedState } = await corrected.json() as { state: { stage: string; revision: number } }
+    expect(correctedState).toMatchObject({ stage: 'awaiting-approval', revision: state.revision + 1 })
   })
 
   it('refuses approval until missing commercial facts and the product asset are supplied', async () => {

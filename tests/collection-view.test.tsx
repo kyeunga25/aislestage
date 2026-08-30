@@ -306,11 +306,11 @@ describe('Collection View private output deletion state', () => {
   it('renders approved reusable brand snapshots with serialized save, select, and delete controls', () => {
     const markup = renderToStaticMarkup(<CollectionView
       section="brands"
-      brand={starterBrand}
+      brand={{ ...starterBrand, colors: ['url(x)'] }}
       product={starterProduct}
       results={results}
       imageUrl=""
-      brandPacks={brandPacks}
+      brandPacks={[brandPacks[0], { ...brandPacks[1], colors: ['url(x)'] }]}
       selectedBrandPackId={brandPacks[0].id}
       deletingBrandPackId={brandPacks[1].id}
       isSavingBrandPack
@@ -333,6 +333,8 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('使用第 2 個品牌快照')
     expect(markup).toContain('正在刪除第 2 個品牌快照 · Deleting brand snapshot 2')
     expect(markup).toContain('Private brand library is temporarily unavailable.')
+    expect(markup).not.toContain('url(x)')
+    expect(markup).toContain('background-color:#155eef')
   })
 
   it('renders approved reusable product profiles alongside private source images', () => {

@@ -29,6 +29,15 @@ describe('Campaign Workspace product contract', () => {
 
     expect(markup).toContain('商品類別')
     expect(markup).toContain('商品規格（選填）')
+    expect(markup).toContain('品牌色、限制字詞與渠道')
+    expect(markup).toContain('Brand controls')
+    expect(markup).toMatch(/<select[^>]+aria-label="主要語言"/)
+    expect(markup).toMatch(/<input[^>]+type="color"[^>]+aria-label="品牌色 1"[^>]+value="#155eef"/)
+    expect(markup).toMatch(new RegExp(`<textarea[^>]+maxLength="${campaignBriefLimits.brand.forbiddenWords}"[^>]+aria-label="限制字詞"`))
+    expect(markup).toMatch(/<input[^>]+aria-label="渠道 1"/)
+    expect(markup).toMatch(/<button[^>]+aria-label="新增品牌色"/)
+    expect(markup).toMatch(/<button[^>]+aria-label="新增渠道"/)
+    expect(markup).toContain('不會自動發佈或改變固定三個輸出')
     expect(markup).toMatch(new RegExp(`<textarea[^>]+maxLength="${campaignBriefLimits.product.specifications}"`))
     expect(markup).toContain('value="synthetic-category"')
     expect(markup).toContain(`maxLength="${campaignBriefLimits.product.category}" value="synthetic-category"`)
@@ -214,7 +223,7 @@ describe('Campaign Workspace product contract', () => {
       intent: 'i'.repeat(campaignBriefLimits.intent),
       brand: {
         name: 'b'.repeat(campaignBriefLimits.brand.name),
-        colors: Array.from({ length: campaignBriefLimits.brand.colors.items }, () => 'c'.repeat(campaignBriefLimits.brand.colors.itemLength)),
+        colors: Array.from({ length: campaignBriefLimits.brand.colors.items }, (_, index) => `#${index.toString(16).padStart(6, '0')}`),
         locale: 'en'
       },
       product: {
@@ -222,6 +231,36 @@ describe('Campaign Workspace product contract', () => {
         benefits: Array.from({ length: campaignBriefLimits.product.benefits.items }, () => 'x'.repeat(campaignBriefLimits.product.benefits.itemLength))
       }
     })).toEqual([])
+  })
+
+  it('rejects empty or non-hex brand colors and withholds local plan approval', () => {
+    for (const colors of [[], ['url(//example.test/color)'], ['#fff'], ['#155eef ']]) {
+      expect(validateCampaignBrief({ brand: { colors } })).toEqual(expect.arrayContaining([
+        expect.stringMatching(/品牌顏色.*#RRGGBB|brand color.*#RRGGBB/i)
+      ]))
+    }
+
+    const state = buildCampaignPlan({
+      assetId: 'synthetic-asset',
+      intent: '新品推廣',
+      brand: { ...starterBrand, colors: ['url(//example.test/color)'] },
+      product: starterProduct
+    })
+    expect(state.stage).toBe('needs-input')
+    expect(state.checks.find((check) => check.id === 'claims')).toMatchObject({
+      status: 'action',
+      detail: expect.stringMatching(/品牌顏色.*#RRGGBB|brand color.*#RRGGBB/i)
+    })
+
+    const { colors: _colors, ...brandWithoutColors } = starterBrand
+    const missingColorState = buildCampaignPlan({
+      assetId: 'synthetic-asset',
+      intent: '新品推廣',
+      brand: brandWithoutColors,
+      product: starterProduct
+    })
+    expect(missingColorState.stage).toBe('needs-input')
+    expect(missingColorState.checks.find((check) => check.id === 'claims')?.detail).toMatch(/品牌顏色.*#RRGGBB|brand color.*#RRGGBB/i)
   })
 
   it('rejects unknown Campaign Brief, brand, and product fields', () => {

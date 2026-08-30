@@ -2,6 +2,7 @@ import { getAgentByName } from 'agents'
 import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
+import { isSafeBrandColorList } from './lib/brand-color'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
 import { hasPrivateImageMetadata, hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, hasValidProductImageSignature, hasValidWebpStructure, productImageDimensions } from './lib/image-validation'
@@ -491,6 +492,7 @@ function validInput(value: unknown): value is GenerationInput {
     && boundedString(input.brand?.name, campaignBriefLimits.brand.name)
     && boundedString(input.brand?.tone, campaignBriefLimits.brand.tone, false)
     && boundedStringArray(input.brand?.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength)
+    && isSafeBrandColorList(input.brand?.colors, campaignBriefLimits.brand.colors.items)
     && boundedString(input.brand?.forbiddenWords, campaignBriefLimits.brand.forbiddenWords, false)
     && (input.brand?.locale === 'zh-Hant' || input.brand?.locale === 'en')
     && boundedString(input.brand?.cta, campaignBriefLimits.brand.cta, false)

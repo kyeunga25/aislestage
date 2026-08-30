@@ -1,4 +1,5 @@
 import type { BrandPack, CampaignAgentCheck, CampaignAgentState, CampaignBrief, CampaignPlanItem, Product } from './types'
+import { isSafeBrandColor, isSafeBrandColorList } from './brand-color'
 import { validateCampaignCopy } from './campaign-copy'
 
 export const campaignBriefLimits = {
@@ -93,6 +94,12 @@ export function validateCampaignBrief(value: unknown) {
   validateTextField(issues, brand, 'name', campaignBriefLimits.brand.name, '品牌名稱', 'Brand name')
   validateTextField(issues, brand, 'tone', campaignBriefLimits.brand.tone, '品牌語氣', 'Brand tone')
   validateTextList(issues, brand, 'colors', campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength, '品牌顏色', 'Brand colors')
+  if (Array.isArray(brand.colors)
+    && brand.colors.length <= campaignBriefLimits.brand.colors.items
+    && brand.colors.every((color) => typeof color === 'string')
+    && !isSafeBrandColorList(brand.colors, campaignBriefLimits.brand.colors.items)) {
+    issues.push('品牌顏色必須包含 1 至 8 個 #RRGGBB 十六進位色值。 Brand colors must contain 1 to 8 #RRGGBB hex values.')
+  }
   validateTextField(issues, brand, 'forbiddenWords', campaignBriefLimits.brand.forbiddenWords, '限制字詞', 'Forbidden words')
   validateTextField(issues, brand, 'cta', campaignBriefLimits.brand.cta, '行動呼籲', 'Call to action')
   validateTextField(issues, brand, 'ctaEn', campaignBriefLimits.brand.ctaEn, '英文行動呼籲', 'English call to action')
@@ -122,7 +129,7 @@ export function sanitizeCampaignBrief(value: unknown): CampaignBrief {
     brand: {
       name: clean(brand.name, campaignBriefLimits.brand.name),
       tone: clean(brand.tone, campaignBriefLimits.brand.tone),
-      colors: cleanList(brand.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength),
+      colors: cleanList(brand.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength).filter(isSafeBrandColor),
       forbiddenWords: clean(brand.forbiddenWords, campaignBriefLimits.brand.forbiddenWords),
       locale: brand.locale === 'en' ? 'en' : 'zh-Hant',
       cta: clean(brand.cta, campaignBriefLimits.brand.cta),
@@ -165,7 +172,8 @@ export function campaignStateAfterAssetDeletion(state: CampaignAgentState, delet
 
 export function buildCampaignPlan(briefValue: unknown, revision = 1, mode: CampaignAgentState['mode'] = 'deterministic'): CampaignAgentState {
   const brief = sanitizeCampaignBrief(briefValue)
-  const copyIssues = validateCampaignCopy(brief.brand, brief.product)
+  const briefIssues = [...new Set([...validateCampaignBrief(briefValue), ...validateCampaignBrief(brief)])]
+  const copyIssues = [...briefIssues, ...validateCampaignCopy(brief.brand, brief.product)]
   const missingFacts = [
     !brief.brand.name && '品牌名稱',
     !brief.product.name && '商品名稱',

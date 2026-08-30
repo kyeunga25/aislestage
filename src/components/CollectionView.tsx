@@ -1,5 +1,6 @@
 import { ArrowLeft, Box, Check, ChevronDown, Image as ImageIcon, Layers3, PackageCheck, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { brandColorForDisplay } from '../lib/brand-color'
 import type { NavigationSection } from './Icon'
 import { GenerationLibraryCard } from './GenerationLibraryCard'
 import type { BrandPack, GenerationResult, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile } from '../lib/types'
@@ -255,7 +256,7 @@ export function CollectionView({
       </section>
     </> : null}
     {section === 'brands' ? <>
-      {brand.name ? <div className="library-grid"><article className="library-card"><span>目前工作品牌</span><h2>{brand.name}</h2><dl><div><dt>品牌語氣</dt><dd>{brand.tone}</dd></div><div><dt>繁中 CTA</dt><dd>{brand.cta}</dd></div><div><dt>English CTA</dt><dd>{brand.ctaEn}</dd></div><div><dt>限制字詞</dt><dd>{brand.forbiddenWords || '未設定'}</dd></div></dl><div className="color-row">{brand.colors.map((color) => <i style={{ background: color }} title={color} key={color} />)}</div></article><article className="library-note"><h2>{canSaveBrandPack ? '已可保存核准快照' : '先完成 Agent 批准'}</h2><p>{canSaveBrandPack ? '只保存目前已核准 revision 的品牌欄位；相同內容會安全重用同一快照。' : '品牌資料須先連同商品及來源圖完成規劃與批准，才可寫入工作區品牌庫。'}</p></article></div> : <div className="empty-library compact"><Layers3 size={24} /><strong>尚未準備品牌資料</strong><p>回工作台填寫雙語品牌資料並完成 Agent 規劃。</p></div>}
+      {brand.name ? <div className="library-grid"><article className="library-card"><span>目前工作品牌</span><h2>{brand.name}</h2><dl><div><dt>品牌語氣</dt><dd>{brand.tone}</dd></div><div><dt>繁中 CTA</dt><dd>{brand.cta}</dd></div><div><dt>English CTA</dt><dd>{brand.ctaEn}</dd></div><div><dt>限制字詞</dt><dd>{brand.forbiddenWords || '未設定'}</dd></div></dl><div className="color-row">{brand.colors.map((color, index) => <i style={{ backgroundColor: brandColorForDisplay(color) }} title={brandColorForDisplay(color)} key={`${index}-${brandColorForDisplay(color)}`} />)}</div></article><article className="library-note"><h2>{canSaveBrandPack ? '已可保存核准快照' : '先完成 Agent 批准'}</h2><p>{canSaveBrandPack ? '只保存目前已核准 revision 的品牌欄位；相同內容會安全重用同一快照。' : '品牌資料須先連同商品及來源圖完成規劃與批准，才可寫入工作區品牌庫。'}</p></article></div> : <div className="empty-library compact"><Layers3 size={24} /><strong>尚未準備品牌資料</strong><p>回工作台填寫雙語品牌資料並完成 Agent 規劃。</p></div>}
       <section className="brand-pack-library" aria-labelledby="brand-pack-library-title">
         <div className="data-head"><div><strong id="brand-pack-library-title">已保存品牌快照</strong><small>Approved brand snapshots · 只保存已核准的確定性品牌欄位</small></div><span>{brandPacks.length} 個</span></div>
         <p className="brand-pack-privacy"><ShieldCheck size={17} /><span>選用快照只會帶回品牌欄位；現有 Agent 批准會失效，必須配合目前商品重新規劃。</span></p>
@@ -270,7 +271,7 @@ export function CollectionView({
             <h2>{savedBrand.name}</h2>
             <p>{savedBrand.tone || '未設定品牌語氣'}</p>
             <dl><div><dt>CTA</dt><dd>{savedBrand.cta}</dd></div><div><dt>English</dt><dd>{savedBrand.ctaEn}</dd></div></dl>
-            <div className="color-row">{savedBrand.colors.map((color) => <i style={{ background: color }} title={color} key={color} />)}</div>
+            <div className="color-row">{savedBrand.colors.map((color, colorIndex) => <i style={{ backgroundColor: brandColorForDisplay(color) }} title={brandColorForDisplay(color)} key={`${colorIndex}-${brandColorForDisplay(color)}`} />)}</div>
             <small>{productAssetTime.format(new Date(savedBrand.createdAt))}</small>
             <div className="brand-pack-actions">
               {onSelectBrandPack ? <button type="button" onClick={() => onSelectBrandPack(savedBrand)} disabled={selected || controlsLocked} aria-label={selected ? `目前使用第 ${itemNumber} 個品牌快照` : `使用第 ${itemNumber} 個品牌快照`}>{selected ? '目前使用' : '使用此品牌'}</button> : null}

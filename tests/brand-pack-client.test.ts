@@ -41,6 +41,8 @@ describe('brand pack client', () => {
     { brandPacks: [{ ...canonicalBrandPack, workspaceId: 'private-workspace' }] },
     { brandPacks: [{ ...canonicalBrandPack, id: 'unsafe-id' }] },
     { brandPacks: [{ ...canonicalBrandPack, colors: ['#155eef', 3] }] },
+    { brandPacks: [{ ...canonicalBrandPack, colors: ['url(//example.test/color)'] }] },
+    { brandPacks: [{ ...canonicalBrandPack, colors: [] }] },
     { brandPacks: [{ ...canonicalBrandPack, locale: 'zh-Hans' }] },
     { brandPacks: [{ ...canonicalBrandPack, approvedRevision: 0 }] },
     { brandPacks: [{ ...canonicalBrandPack, createdAt: '2026-02-31T05:00:00Z' }] },

@@ -78,6 +78,37 @@ function fitsEveryCampaignLayout(check: (ratio: CampaignCompositionRatio) => voi
   })
 }
 
+function comparableCampaignText(value: string) {
+  return normalizeCampaignText(value).normalize('NFKC').toLowerCase()
+}
+
+function campaignForbiddenTerms(value: string) {
+  return value
+    .split(/[\n\r,，、;；]+/u)
+    .map(comparableCampaignText)
+    .filter(Boolean)
+}
+
+function containsForbiddenCampaignTerm(brand: BrandPack, product: Product) {
+  const forbiddenTerms = campaignForbiddenTerms(brand.forbiddenWords)
+  if (!forbiddenTerms.length) return false
+  const commercialCopy = comparableCampaignText([
+    brand.name,
+    brand.cta,
+    brand.ctaEn,
+    product.name,
+    product.nameEn,
+    product.category,
+    product.price,
+    product.promotion,
+    product.promotionEn,
+    ...product.benefits,
+    ...product.benefitsEn,
+    product.specifications
+  ].join('\n'))
+  return forbiddenTerms.some((term) => commercialCopy.includes(term))
+}
+
 export function validateCampaignCopy(brand: BrandPack, product: Product) {
   const issues: string[] = []
   const benefits = product.benefits.filter(Boolean)
@@ -95,5 +126,6 @@ export function validateCampaignCopy(brand: BrandPack, product: Product) {
   if (detailUnits > 85 || !fitsEveryCampaignLayout((ratio) => {
     campaignDetailLines(product, ratio)
   })) issues.push('商品賣點與規格超出素材安全區。 Product benefits and specifications exceed the composition safe area.')
+  if (containsForbiddenCampaignTerm(brand, product)) issues.push('限制字詞出現在商業文案；請修正後重新規劃。 Forbidden words appear in the commercial copy; revise it before planning again.')
   return issues
 }
