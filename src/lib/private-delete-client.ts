@@ -1,6 +1,6 @@
 import { fetchWithTimeout } from './fetch-with-timeout'
 
-export type PrivateResourceKind = 'product-asset' | 'generation'
+export type PrivateResourceKind = 'product-asset' | 'generation' | 'brand-pack'
 
 type ResourceConfig = {
   path: string
@@ -21,6 +21,12 @@ const resourceConfigs: Record<PrivateResourceKind, ResourceConfig> = {
     invalidIdentityMessage: '私人輸出識別資料無效，請重新載入。 Private output identity is invalid; reload it.',
     invalidResponseMessage: '未能確認私人輸出刪除結果。 Unable to verify the private output deletion.',
     unavailableMessage: '私人輸出刪除暫時無法使用。 Private output deletion is temporarily unavailable.'
+  },
+  'brand-pack': {
+    path: '/api/brand-packs',
+    invalidIdentityMessage: '品牌快照識別資料無效，請重新載入。 Brand snapshot identity is invalid; reload it.',
+    invalidResponseMessage: '未能確認品牌快照刪除結果。 Unable to verify the brand snapshot deletion.',
+    unavailableMessage: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.'
   }
 }
 

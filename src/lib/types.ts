@@ -24,6 +24,12 @@ export type BrandPack = {
   ctaEn: string
 }
 
+export type SavedBrandPack = BrandPack & {
+  id: string
+  approvedRevision: number
+  createdAt: string
+}
+
 export type Product = {
   name: string
   nameEn: string

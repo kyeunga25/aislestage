@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { CollectionView } from '../src/components/CollectionView'
 import { starterBrand, starterProduct } from '../src/lib/demo-data'
-import type { GenerationResult, ProductAssetListItem } from '../src/lib/types'
+import type { GenerationResult, ProductAssetListItem, SavedBrandPack } from '../src/lib/types'
 
 const results: GenerationResult[] = [
   {
@@ -61,6 +61,19 @@ const productAssets: ProductAssetListItem[] = [
     createdAt: '2026-08-30T05:05:00Z'
   }
 ]
+
+const brandPacks: SavedBrandPack[] = [{
+  ...starterBrand,
+  id: '123e4567-e89b-42d3-a456-426614174020',
+  approvedRevision: 2,
+  createdAt: '2026-08-30T05:10:00Z'
+}, {
+  ...starterBrand,
+  id: '123e4567-e89b-42d3-a456-426614174021',
+  name: 'Secondary Brand',
+  approvedRevision: 3,
+  createdAt: '2026-08-30T05:15:00Z'
+}]
 
 describe('Collection View private output deletion state', () => {
   it('serializes delete controls and identifies the output being deleted', () => {
@@ -133,5 +146,37 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('正在刪除第 2 張私人商品圖 · Deleting private product source 2')
     expect(markup).toContain('role="alert"')
     expect(markup).toContain('Private product sources are temporarily unavailable.')
+  })
+
+  it('renders approved reusable brand snapshots with serialized save, select, and delete controls', () => {
+    const markup = renderToStaticMarkup(<CollectionView
+      section="brands"
+      brand={starterBrand}
+      product={starterProduct}
+      results={results}
+      imageUrl=""
+      brandPacks={brandPacks}
+      selectedBrandPackId={brandPacks[0].id}
+      deletingBrandPackId={brandPacks[1].id}
+      isSavingBrandPack
+      isRefreshingBrandPacks
+      canSaveBrandPack
+      brandPackNotice="私人品牌資料暫時無法讀取。 Private brand library is temporarily unavailable."
+      onSaveBrandPack={vi.fn()}
+      onRefreshBrandPacks={vi.fn()}
+      onSelectBrandPack={vi.fn()}
+      onDeleteBrandPack={vi.fn()}
+      onBack={vi.fn()}
+      onDeleteResult={vi.fn()}
+    />)
+
+    expect(markup).toContain('已保存品牌快照')
+    expect(markup).toContain('Approved brand snapshots')
+    expect(markup).toContain('2 個')
+    expect(markup).toContain('儲存已核准品牌')
+    expect(markup).toContain('目前使用第 1 個品牌快照')
+    expect(markup).toContain('使用第 2 個品牌快照')
+    expect(markup).toContain('正在刪除第 2 個品牌快照 · Deleting brand snapshot 2')
+    expect(markup).toContain('Private brand library is temporarily unavailable.')
   })
 })

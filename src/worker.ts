@@ -8,7 +8,7 @@ import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, MA
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
 import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
-import type { GenerationInput } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationInput } from './lib/types'
 
 export { CampaignAgent }
 
@@ -69,6 +69,7 @@ const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
+const MAX_BRAND_PACK_BODY_BYTES = 1_024
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -1026,6 +1027,230 @@ type ProductAssetListRow = {
   contentType: 'image/png' | 'image/jpeg' | 'image/webp'
   sizeBytes: number
   createdAt: string
+}
+
+type BrandPackRow = {
+  id: string
+  name: string
+  tone: string
+  colorsJson: string
+  forbiddenWords: string
+  locale: BrandPack['locale']
+  cta: string
+  ctaEn: string
+  approvedRevision: number
+  snapshotSha256: string
+  createdAt: string
+}
+
+type SavedBrandPackPayload = BrandPack & {
+  id: string
+  approvedRevision: number
+  createdAt: string
+}
+
+function canonicalBrandSnapshot(brand: BrandPack) {
+  return JSON.stringify({
+    name: brand.name,
+    tone: brand.tone,
+    colors: brand.colors,
+    forbiddenWords: brand.forbiddenWords,
+    locale: brand.locale,
+    cta: brand.cta,
+    ctaEn: brand.ctaEn
+  })
+}
+
+async function brandPackPayload(row: BrandPackRow): Promise<SavedBrandPackPayload | null> {
+  let colors: unknown
+  try {
+    colors = JSON.parse(row.colorsJson)
+  } catch {
+    return null
+  }
+  const brand: BrandPack = {
+    name: row.name,
+    tone: row.tone,
+    colors: colors as string[],
+    forbiddenWords: row.forbiddenWords,
+    locale: row.locale,
+    cta: row.cta,
+    ctaEn: row.ctaEn
+  }
+  if (!UUID_V4_PATTERN.test(row.id)
+    || !Number.isSafeInteger(row.approvedRevision)
+    || row.approvedRevision <= 0
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(row.createdAt)
+    || validateCampaignBrief({ brand }).length
+    || !brand.name
+    || !brand.ctaEn
+    || JSON.stringify(sanitizeCampaignBrief({ brand }).brand) !== JSON.stringify(brand)
+    || await sha256(canonicalBrandSnapshot(brand)) !== row.snapshotSha256) return null
+  return {
+    id: row.id,
+    ...brand,
+    approvedRevision: row.approvedRevision,
+    createdAt: row.createdAt
+  }
+}
+
+const brandPackSelect = `
+  SELECT id, name, tone, colors_json AS colorsJson, forbidden_words AS forbiddenWords,
+    locale, default_cta AS cta, default_cta_en AS ctaEn,
+    approved_revision AS approvedRevision, snapshot_sha256 AS snapshotSha256,
+    strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt
+  FROM brand_packs
+`
+
+function brandPackUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人品牌資料暫時無法讀取。 Private brand library is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function brandPackBySnapshot(env: Env, workspaceId: string, snapshotSha256: string) {
+  const row = await env.DB.prepare(`${brandPackSelect}
+    WHERE workspace_id = ? AND snapshot_sha256 = ?
+    LIMIT 1
+  `).bind(workspaceId, snapshotSha256).first<BrandPackRow>()
+  return row ? brandPackPayload(row) : null
+}
+
+async function listBrandPacks(env: Env, session: SessionContext) {
+  try {
+    const result = await env.DB.prepare(`${brandPackSelect}
+      WHERE workspace_id = ? AND snapshot_sha256 IS NOT NULL AND approved_revision > 0
+      ORDER BY created_at DESC, id DESC
+      LIMIT 20
+    `).bind(session.currentWorkspace.id).all<BrandPackRow>()
+    const brandPacks: SavedBrandPackPayload[] = []
+    for (const row of result.results) {
+      const brandPack = await brandPackPayload(row)
+      if (!brandPack) throw new TypeError('Invalid stored brand snapshot')
+      brandPacks.push(brandPack)
+    }
+    return json({ brandPacks })
+  } catch {
+    console.error('brand-pack-list-read-failed')
+    return brandPackUnavailable()
+  }
+}
+
+async function saveBrandPack(request: Request, env: Env, session: SessionContext) {
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const { body, tooLarge } = await readBody(request, MAX_BRAND_PACK_BODY_BYTES)
+  if (tooLarge) return json({ error: '品牌資料請求過大。 Brand snapshot request is too large.' }, { status: 413 })
+  if (!hasExactKeys(body, ['approvedRevision'])) {
+    return json({ error: '品牌資料批准版本格式無效。 Brand approval revision is invalid.' }, { status: 400 })
+  }
+  const approvedRevision = (body as { approvedRevision?: unknown }).approvedRevision
+  if (!Number.isSafeInteger(approvedRevision) || Number(approvedRevision) <= 0) {
+    return json({ error: '品牌資料批准版本格式無效。 Brand approval revision is invalid.' }, { status: 400 })
+  }
+
+  let state: CampaignAgentState
+  try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
+    state = await agent.getPlan()
+  } catch {
+    console.error('brand-pack-agent-read-failed')
+    return json({ error: '品牌資料儲存暫時無法使用。 Saving the brand snapshot is temporarily unavailable.' }, { status: 503 })
+  }
+  if (state.stage !== 'approved' || state.revision !== approvedRevision || !state.brief) {
+    return json({ error: '品牌資料批准版本已改變。 Brand approval changed.' }, { status: 409 })
+  }
+  const canonicalBrief = sanitizeCampaignBrief(state.brief)
+  if (validateCampaignBrief(state.brief).length
+    || JSON.stringify(canonicalBrief) !== JSON.stringify(state.brief)) {
+    console.error('brand-pack-agent-state-invalid')
+    return json({ error: '品牌資料儲存暫時無法使用。 Saving the brand snapshot is temporarily unavailable.' }, { status: 503 })
+  }
+  const brand = canonicalBrief.brand
+  const snapshotSha256 = await sha256(canonicalBrandSnapshot(brand))
+  try {
+    const existing = await brandPackBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (existing) return json({ brandPack: existing, replayed: true })
+  } catch {
+    console.error('brand-pack-preflight-read-failed')
+    return brandPackUnavailable()
+  }
+
+  const id = crypto.randomUUID()
+  let changes = 0
+  try {
+    const inserted = await env.DB.prepare(`
+      INSERT OR IGNORE INTO brand_packs (
+        id, workspace_id, name, tone, colors_json, forbidden_words, locale,
+        default_cta, default_cta_en, approved_revision, snapshot_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      session.currentWorkspace.id,
+      brand.name,
+      brand.tone,
+      JSON.stringify(brand.colors),
+      brand.forbiddenWords,
+      brand.locale,
+      brand.cta,
+      brand.ctaEn,
+      approvedRevision,
+      snapshotSha256
+    ).run()
+    changes = inserted.meta.changes
+  } catch {
+    console.error('brand-pack-insert-response-failed')
+  }
+
+  try {
+    const committed = await brandPackBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (!committed) {
+      console.error('brand-pack-insert-not-confirmed')
+      return brandPackUnavailable()
+    }
+    return json({ brandPack: committed, replayed: changes !== 1 }, { status: changes === 1 ? 201 : 200 })
+  } catch {
+    console.error('brand-pack-insert-reconciliation-failed')
+    return brandPackUnavailable()
+  }
+}
+
+async function deleteBrandPack(env: Env, session: SessionContext, brandPackId: string) {
+  if (!UUID_V4_PATTERN.test(brandPackId)) return json({ error: 'Brand snapshot not found.' }, { status: 404 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  try {
+    const existing = await env.DB.prepare(`
+      SELECT 1 AS present
+      FROM brand_packs
+      WHERE id = ? AND workspace_id = ? AND snapshot_sha256 IS NOT NULL
+      LIMIT 1
+    `).bind(brandPackId, session.currentWorkspace.id).first<{ present: number }>()
+    if (!existing) return json({ error: 'Brand snapshot not found.' }, { status: 404 })
+  } catch {
+    console.error('brand-pack-delete-preflight-read-failed')
+    return json({ error: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.' }, { status: 503 })
+  }
+
+  try {
+    await env.DB.prepare('DELETE FROM brand_packs WHERE id = ? AND workspace_id = ?')
+      .bind(brandPackId, session.currentWorkspace.id)
+      .run()
+    return deletedResponse()
+  } catch {
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM brand_packs
+        WHERE id = ? AND workspace_id = ?
+        LIMIT 1
+      `).bind(brandPackId, session.currentWorkspace.id).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('brand-pack-delete-reconciliation-pending')
+    } catch {
+      console.error('brand-pack-delete-reconciliation-failed')
+    }
+    return json({ error: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.' }, { status: 503 })
+  }
 }
 
 function productAssetListUnavailable() {
@@ -2824,6 +3049,22 @@ export default {
         return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
       }
       return listWorkspaceActivity(env, session)
+    }
+    if (url.pathname === '/api/brand-packs') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listBrandPacks(env, session)
+      if (request.method === 'POST') return saveBrandPack(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const brandPackMatch = url.pathname.match(/^\/api\/brand-packs\/([^/]+)$/)
+    if (brandPackMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'DELETE') return deleteBrandPack(env, session, brandPackMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'DELETE' } })
     }
     if (url.pathname === '/api/assets/product') {
       const session = await requireSession(request, env)

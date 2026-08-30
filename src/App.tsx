@@ -12,6 +12,7 @@ import { LandingPage } from './components/LandingPage'
 import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { WorkspaceActivityView } from './components/WorkspaceActivityView'
+import { loadBrandPackListSnapshot, saveApprovedBrandPack } from './lib/brand-pack-client'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
 import { submitCampaignAgentAction } from './lib/campaign-agent-client'
 import { loadCampaignAgentSnapshot, loadCampaignAgentState } from './lib/campaign-agent-loader'
@@ -31,7 +32,7 @@ import {
 import { loadProductAssetListSnapshot } from './lib/product-asset-list-loader'
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
-import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAssetListItem, WorkspaceActivityEvent } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, WorkspaceActivityEvent } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
@@ -56,6 +57,20 @@ const demoProductAssets: ProductAssetListItem[] = [{
   previewUrl: demoSpeaker,
   createdAt: '2026-08-30T03:55:00Z'
 }]
+const demoBrandPacks: SavedBrandPack[] = [{
+  ...starterBrand,
+  id: '123e4567-e89b-42d3-a456-426614174110',
+  approvedRevision: 1,
+  createdAt: '2026-08-30T04:10:00Z'
+}]
+
+function brandFromSavedBrandPack({ id: _id, approvedRevision: _approvedRevision, createdAt: _createdAt, ...brand }: SavedBrandPack): BrandPack {
+  return brand
+}
+
+function savedBrandMatches(saved: SavedBrandPack, brand: BrandPack) {
+  return JSON.stringify(brandFromSavedBrandPack(saved)) === JSON.stringify(brand)
+}
 
 function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const previewMode = import.meta.env.DEV || demoMode
@@ -84,6 +99,12 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [productAssetNotice, setProductAssetNotice] = useState('')
   const [isRefreshingProductAssets, setIsRefreshingProductAssets] = useState(false)
   const [deletingProductAssetId, setDeletingProductAssetId] = useState<string | null>(null)
+  const [brandPacks, setBrandPacks] = useState<SavedBrandPack[]>(demoMode ? demoBrandPacks : [])
+  const [selectedBrandPackId, setSelectedBrandPackId] = useState<string | null>(null)
+  const [brandPackNotice, setBrandPackNotice] = useState('')
+  const [isRefreshingBrandPacks, setIsRefreshingBrandPacks] = useState(false)
+  const [isSavingBrandPack, setIsSavingBrandPack] = useState(false)
+  const [deletingBrandPackId, setDeletingBrandPackId] = useState<string | null>(null)
   const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivityEvent[]>(demoMode ? demoActivity : [])
   const [activityNotice, setActivityNotice] = useState('')
   const [isRefreshingActivity, setIsRefreshingActivity] = useState(false)
@@ -96,6 +117,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const generationRefreshEpoch = useRef(0)
   const productAssetRefreshLock = useRef(false)
   const productAssetRefreshEpoch = useRef(0)
+  const brandPackMutationLock = useRef(false)
+  const brandPackRefreshLock = useRef(false)
+  const brandPackRefreshEpoch = useRef(0)
   const activityRefreshLock = useRef(false)
   const activityRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
@@ -111,11 +135,16 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       setProduct(emptyProduct)
       setIntent('限時優惠')
       setImage({ name: '尚未選擇圖片', url: '', asset: null, status: 'error', error: '請上傳商品原圖' })
+      setSelectedBrandPackId(null)
       return
     }
     setBrand(nextState.brief.brand)
     setProduct(nextState.brief.product)
     setIntent(nextState.brief.intent || '限時優惠')
+    setSelectedBrandPackId((current) => {
+      const selected = brandPacks.find((saved) => saved.id === current)
+      return selected && savedBrandMatches(selected, nextState.brief!.brand) ? current : null
+    })
     if (nextState.brief.assetId) {
       const previewUrl = `/api/assets/${nextState.brief.assetId}`
       setImage({
@@ -216,6 +245,31 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  async function refreshBrandPacks() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || brandPackRefreshLock.current
+      || brandPackMutationLock.current) return
+    brandPackRefreshLock.current = true
+    const refreshEpoch = ++brandPackRefreshEpoch.current
+    setIsRefreshingBrandPacks(true)
+    setBrandPackNotice('')
+    try {
+      const snapshot = await loadBrandPackListSnapshot()
+      if (refreshEpoch !== brandPackRefreshEpoch.current) return
+      if (snapshot.brandPacks !== null) {
+        setBrandPacks(snapshot.brandPacks)
+        setSelectedBrandPackId((current) => current && snapshot.brandPacks?.some((saved) => saved.id === current) ? current : null)
+      }
+      if (snapshot.error) setBrandPackNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === brandPackRefreshEpoch.current) {
+        brandPackRefreshLock.current = false
+        setIsRefreshingBrandPacks(false)
+      }
+    }
+  }
+
   async function refreshWorkspaceActivity() {
     if (!session
       || session.user.id === 'demo-user'
@@ -244,6 +298,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       void refreshGenerationResults()
     }
     if (nextSection === 'products') void refreshProductAssets()
+    if (nextSection === 'brands') void refreshBrandPacks()
     if (nextSection === 'activity') void refreshWorkspaceActivity()
   }
 
@@ -297,6 +352,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   function changeBrand(next: BrandPack) {
     if (campaignIdentityLocked()) return
     setBrand(next)
+    setSelectedBrandPackId(null)
     invalidatePlan()
   }
 
@@ -475,6 +531,77 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     }
   }
 
+  function selectBrandPackFromLibrary(savedBrand: SavedBrandPack) {
+    if (campaignIdentityLocked() || brandPackMutationLock.current || brandPackRefreshLock.current) return
+    setBrand(brandFromSavedBrandPack(savedBrand))
+    setSelectedBrandPackId(savedBrand.id)
+    generationRequestKey.current = null
+    setAgentState(initialCampaignAgentState())
+    setNotice('已套用品牌快照；請配合目前商品重新規劃及批准。 Brand snapshot applied; re-plan and approve it with the current product.')
+    setActiveSection('workspace')
+  }
+
+  async function saveBrandPackToLibrary() {
+    if (!session
+      || agentState.stage !== 'approved'
+      || !agentState.brief
+      || campaignIdentityLocked()
+      || brandPackMutationLock.current
+      || brandPackRefreshLock.current) return
+    brandPackMutationLock.current = true
+    const mutationEpoch = workspaceHydrationEpoch.current
+    setIsSavingBrandPack(true)
+    setBrandPackNotice('')
+    try {
+      let savedBrand: SavedBrandPack
+      if (session.user.id === 'demo-user') {
+        savedBrand = brandPacks.find((saved) => savedBrandMatches(saved, agentState.brief!.brand)) || {
+          ...agentState.brief.brand,
+          id: crypto.randomUUID(),
+          approvedRevision: agentState.revision,
+          createdAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+        }
+      } else {
+        savedBrand = await saveApprovedBrandPack(agentState.revision)
+      }
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setBrandPacks((current) => [savedBrand, ...current.filter((item) => item.id !== savedBrand.id)].slice(0, 20))
+      setSelectedBrandPackId(savedBrand.id)
+      setBrandPackNotice('已保存核准品牌快照；相同內容不會建立重複記錄。 Approved brand snapshot saved without duplicating identical content.')
+    } catch (error) {
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setBrandPackNotice(error instanceof Error ? error.message : '品牌資料儲存暫時無法使用。 Saving the brand snapshot is temporarily unavailable.')
+    } finally {
+      if (mutationEpoch === workspaceHydrationEpoch.current) {
+        brandPackMutationLock.current = false
+        setIsSavingBrandPack(false)
+      }
+    }
+  }
+
+  async function deleteBrandPackFromLibrary(savedBrand: SavedBrandPack) {
+    if (brandPackMutationLock.current || brandPackRefreshLock.current) return
+    if (!window.confirm('刪除這個已保存的品牌快照？ Delete this saved brand snapshot?')) return
+    brandPackMutationLock.current = true
+    const mutationEpoch = workspaceHydrationEpoch.current
+    setDeletingBrandPackId(savedBrand.id)
+    setBrandPackNotice('')
+    try {
+      if (session?.user.id !== 'demo-user') await deletePrivateResource('brand-pack', savedBrand.id)
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setBrandPacks((current) => current.filter((item) => item.id !== savedBrand.id))
+      setSelectedBrandPackId((current) => current === savedBrand.id ? null : current)
+    } catch (error) {
+      if (mutationEpoch !== workspaceHydrationEpoch.current) return
+      setBrandPackNotice(error instanceof Error ? error.message : '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.')
+    } finally {
+      if (mutationEpoch === workspaceHydrationEpoch.current) {
+        brandPackMutationLock.current = false
+        setDeletingBrandPackId(null)
+      }
+    }
+  }
+
   async function deleteGeneration(result: GenerationResult) {
     if (generationDeleteLock.current) return
     if (!window.confirm(`刪除 ${result.aspectRatio} 私人輸出？`)) return
@@ -650,12 +777,17 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceHydrationEpoch.current += 1
     generationRefreshEpoch.current += 1
     productAssetRefreshEpoch.current += 1
+    brandPackRefreshEpoch.current += 1
     activityRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
+    brandPackRefreshLock.current = false
+    brandPackMutationLock.current = false
     activityRefreshLock.current = false
     setIsRefreshingResults(false)
     setIsRefreshingProductAssets(false)
+    setIsRefreshingBrandPacks(false)
+    setIsSavingBrandPack(false)
     setIsRefreshingActivity(false)
     setSession(null)
     setReviewingId(null)
@@ -664,6 +796,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setProductAssets([])
     setProductAssetNotice('')
     setDeletingProductAssetId(null)
+    setBrandPacks([])
+    setSelectedBrandPackId(null)
+    setBrandPackNotice('')
+    setDeletingBrandPackId(null)
     setWorkspaceActivity([])
     setActivityNotice('')
     setAgentState(initialCampaignAgentState())
@@ -713,7 +849,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           ? <WorkspaceActivityView activity={workspaceActivity} isRefreshing={isRefreshingActivity} notice={activityNotice} onRefresh={session.user.id === 'demo-user' ? undefined : () => void refreshWorkspaceActivity()} onBack={() => setActiveSection('workspace')} />
           : <CollectionView
             section={activeSection}
-            brand={agentState.brief?.brand || emptyBrand}
+            brand={brand}
             product={agentState.brief?.product || emptyProduct}
             results={serverResults}
             imageUrl={session.user.id === 'demo-user' ? image.url : agentState.brief?.assetId ? `/api/assets/${agentState.brief.assetId}` : ''}
@@ -730,6 +866,18 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
             onRefreshProductAssets={session.user.id === 'demo-user' ? undefined : () => void refreshProductAssets()}
             onSelectProductAsset={selectProductAssetFromLibrary}
             onDeleteProductAsset={(asset) => void deleteProductAssetFromLibrary(asset)}
+            brandPacks={brandPacks}
+            selectedBrandPackId={selectedBrandPackId}
+            deletingBrandPackId={deletingBrandPackId}
+            isRefreshingBrandPacks={isRefreshingBrandPacks}
+            isSavingBrandPack={isSavingBrandPack}
+            canSaveBrandPack={agentState.stage === 'approved' && Boolean(agentState.brief) && !agentBusy && !isGenerating}
+            brandInteractionDisabled={agentBusy || isGenerating}
+            brandPackNotice={brandPackNotice}
+            onRefreshBrandPacks={session.user.id === 'demo-user' ? undefined : () => void refreshBrandPacks()}
+            onSaveBrandPack={() => void saveBrandPackToLibrary()}
+            onSelectBrandPack={selectBrandPackFromLibrary}
+            onDeleteBrandPack={(savedBrand) => void deleteBrandPackFromLibrary(savedBrand)}
             onBack={() => setActiveSection('workspace')}
             onDeleteResult={(result) => void deleteGeneration(result)}
           />}
