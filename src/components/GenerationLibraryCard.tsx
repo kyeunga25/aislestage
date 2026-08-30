@@ -1,5 +1,7 @@
-import { ArrowDownToLine, Image as ImageIcon, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
+import { Image as ImageIcon, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import type { GenerationResult } from '../lib/types'
+import { ApprovedOutputDownloads } from './ApprovedOutputDownloads'
 
 type Props = {
   result: GenerationResult
@@ -46,18 +48,18 @@ export function GenerationLibraryCard({
   onReviewResult,
   onDeleteResult
 }: Props) {
+  const [pngExportBusy, setPngExportBusy] = useState(false)
   const reviewStatus = result.reviewStatus || 'draft'
   const status = outputStatus(result, demoMode)
   const hasPreview = Boolean(result.imageUrl)
   const completedOutput = !demoMode && result.status === 'completed' && hasPreview
   const reviewBusy = reviewingId === result.id
   const deleting = deletingResultId === result.id
-  const mutationLocked = controlsDisabled || reviewingId !== null || deletingResultId !== null
+  const mutationLocked = controlsDisabled || reviewingId !== null || deletingResultId !== null || pngExportBusy
   const approveBusy = reviewBusy && reviewingDecision === 'approve'
   const rejectBusy = reviewBusy && reviewingDecision === 'reject'
-  const extension = result.contentType === 'image/svg+xml' ? 'svg' : 'png'
 
-  return <article className="generation-library-card" aria-busy={reviewBusy || deleting}>
+  return <article className="generation-library-card" aria-busy={reviewBusy || deleting || pngExportBusy}>
     <div className="generation-library-preview">
       {result.imageUrl
         ? <a href={result.imageUrl} target="_blank" rel="noreferrer" aria-label={`開啟 ${result.aspectRatio} ${result.title} 預覽`}><img src={result.imageUrl} alt={result.title} loading="lazy" /></a>
@@ -75,7 +77,7 @@ export function GenerationLibraryCard({
       {completedOutput && reviewStatus === 'draft' && onReviewResult && !canReview ? <p className="review-guidance">等待 owner 或 admin 核准</p> : null}
       {completedOutput && reviewStatus === 'rejected' ? <p className="review-guidance rejected">此草稿不會交付；請按已批准計劃重新生成。</p> : null}
       {hasPreview ? <div className="generation-library-footer">
-        {completedOutput && reviewStatus === 'approved' && result.downloadUrl ? <a className="approved-download" href={result.downloadUrl} download={`aislestage-${result.aspectRatio.replace(':', 'x')}.${extension}`}><ArrowDownToLine size={16} />下載已核准素材</a> : null}
+        {completedOutput && reviewStatus === 'approved' && result.downloadUrl ? <ApprovedOutputDownloads result={result} controlsDisabled={controlsDisabled || deleting} onBusyChange={setPngExportBusy} /> : null}
         <button className="generation-delete" type="button" onClick={() => onDeleteResult(result)} aria-label={deleting ? `正在刪除 ${result.title} · Deleting ${result.title}` : `刪除 ${result.title}`} disabled={mutationLocked}><Trash2 size={15} />{deleting ? <>刪除中…<span className="visually-hidden"> Deleting…</span></> : '刪除'}</button>
       </div> : null}
     </div>

@@ -14,7 +14,7 @@ const results: GenerationResult[] = [
     workflowId: 'product-hero',
     status: 'completed',
     reviewStatus: 'draft',
-    imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174000/preview',
+    imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174000/image',
     downloadUrl: null,
     contentType: 'image/svg+xml',
     byteSize: 1024,
@@ -36,7 +36,7 @@ const results: GenerationResult[] = [
     workflowId: 'social-ad',
     status: 'completed',
     reviewStatus: 'draft',
-    imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174003/preview',
+    imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174003/image',
     downloadUrl: null,
     contentType: 'image/svg+xml',
     byteSize: 1024,
@@ -53,7 +53,7 @@ const approvedResult: GenerationResult = {
   title: 'Synthetic portrait approved',
   reviewStatus: 'approved',
   reviewedAt: '2026-08-10T00:05:00.000Z',
-  imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174004/preview',
+  imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174004/image',
   downloadUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174004/download',
   provenance: {
     approvedRevision: 1,
@@ -68,7 +68,7 @@ const historicalApprovedResult: GenerationResult = {
   campaignPackId: '123e4567-e89b-42d3-a456-426614174006',
   title: 'Historical approved output',
   aspectRatio: '9:16',
-  imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174005/preview',
+  imageUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174005/image',
   downloadUrl: '/api/generations/123e4567-e89b-42d3-a456-426614174005/download',
   createdAt: '2026-08-09T00:00:00.000Z'
 }
@@ -167,7 +167,8 @@ describe('Collection View private output deletion state', () => {
     expect(markup).toContain('已核准')
     expect(markup).toContain('href="/api/generations/123e4567-e89b-42d3-a456-426614174004/download"')
     expect(markup).toContain('download="aislestage-4x5.svg"')
-    expect(markup).toContain('下載已核准素材')
+    expect(markup).toContain('下載 SVG 原件')
+    expect(markup).toContain('另存本機 PNG')
   })
 
   it('serializes historical review and delete mutations across all visible outputs', () => {

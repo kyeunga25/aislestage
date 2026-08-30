@@ -273,12 +273,19 @@ a { color: inherit; }
 .result-review-panel { display: grid; align-content: start; gap: 7px; min-height: 77px; border-top: 1px solid #edf0f4; padding-top: 8px; }
 .result-provenance { overflow-wrap: anywhere; color: var(--subtle); font-size: 11px; line-height: 1.45; }
 .result-review-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.result-review-actions button,.approved-download { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border-radius: 6px; padding: 7px 9px; font-size: 12px; line-height: 1.35; font-weight: 700; }
+.result-review-actions button,.approved-download,.approved-png-download { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border-radius: 6px; padding: 7px 9px; font-size: 12px; line-height: 1.35; font-weight: 700; }
 .result-review-actions button { border: 1px solid #ccd6e4; background: #fff; }
 .result-review-actions .approve { border-color: #a9d8c7; color: #247057; }
 .result-review-actions .reject { border-color: #e4c5c5; color: #994545; }
 .result-review-actions button:disabled { cursor: wait; opacity: .6; }
 .approved-download { border: 1px solid #a9d8c7; background: var(--mint-soft); color: #247057; text-decoration: none; }
+.approved-output-download-section { min-width: 0; display: grid; gap: 6px; }
+.approved-output-downloads { min-width: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
+.approved-png-download { border: 1px solid #b9cdf1; background: #fff; color: var(--blue); cursor: pointer; }
+.approved-png-download:disabled { cursor: wait; opacity: .6; }
+.approved-output-local-note { color: var(--subtle); font-size: 10px; line-height: 1.45; }
+.approved-output-local-note span { display: block; }
+.approved-output-download-error { margin: 0; border-radius: 6px; background: #fff3f3; color: #8b4545; padding: 7px 8px; font-size: 11px; line-height: 1.45; }
 .review-guidance { margin: 0; border-radius: 6px; background: #f4f6f9; color: var(--muted); padding: 8px 9px; font-size: 12px; line-height: 1.45; }
 .review-guidance.rejected { background: #fff3f3; color: #8b4545; }
 .copy-panel { border-left: 1px solid var(--line); padding-left: 24px; }
@@ -368,8 +375,9 @@ a { color: inherit; }
 .generation-library-review-actions .approve { border-color: #a9d8c7; color: #247057; }
 .generation-library-review-actions .reject { border-color: #e4c5c5; color: #994545; }
 .generation-library-review-actions button:disabled { cursor: wait; opacity: .6; }
-.generation-library-footer { display: flex; align-items: stretch; gap: 7px; margin-top: 2px; }
-.generation-library-footer .approved-download { min-width: 0; flex: 1; }
+.generation-library-footer { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: stretch; gap: 7px; margin-top: 2px; }
+.generation-library-footer .approved-output-download-section { grid-column: 1 / -1; }
+.generation-library-footer .approved-download { min-width: 0; }
 .generation-delete { min-height: 38px; display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 5px; margin-left: auto; border: 1px solid #efd0d0; border-radius: 6px; background: #fff; color: #994545; padding: 7px 9px; font-size: 12px; line-height: 1.35; font-weight: 700; }
 .generation-delete:disabled { cursor: wait; opacity: .55; }
 .empty-library { min-height: 220px; display: grid; place-content: center; gap: 6px; text-align: center; color: var(--blue); }
@@ -640,7 +648,9 @@ a { color: inherit; }
   .campaign-pack-chevron { grid-column: 3; grid-row: 1/3; }
   .campaign-pack-output-grid,.asset-library { grid-template-columns: 1fr; }
   .campaign-pack-output-grid { padding: 12px; }
-  .generation-library-footer { align-items: stretch; flex-direction: column; }
+  .approved-output-downloads,.generation-library-footer { grid-template-columns: 1fr; }
+  .generation-library-footer { align-items: stretch; }
+  .generation-library-footer .approved-output-download-section,.generation-delete { grid-column: 1; }
   .generation-delete { width: 100%; margin-left: 0; }
   .product-source-grid,.product-profile-grid,.brand-pack-grid { grid-template-columns: 1fr; padding: 12px; }
   .product-source-privacy,.product-profile-privacy,.brand-pack-privacy { padding: 10px 14px; }

@@ -52,8 +52,8 @@ Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；r
 - Workspace-scoped Campaign Agent 與人工批准 revision；
 - 原子、具冪等鍵的三比例 Campaign Pack 建立；
 - Queue 重送安全、失敗回復及輸出額度核算；
-- 私人 SVG 草稿、逐一人工審核、受控下載及繁中／英文文案；
-- Campaign Packs 與素材庫可重開歷史私人預覽、核對 provenance、由 owner／admin 審批草稿、下載已核准成品及逐項刪除；
+- 私人 SVG 草稿、逐一人工審核、受控下載及繁中／英文文案；已核准的 canonical SVG 可保留原件，並在瀏覽器本機另存固定尺寸 PNG，衍生檔不會上傳或改寫正式輸出；
+- Campaign Packs 與素材庫可重開歷史私人預覽、核對 provenance、由 owner／admin 審批草稿、下載已核准 SVG 原件、本機另存 PNG 及逐項刪除；
 - 本機合成 demo 與隔離 Workers integration tests。
 
 詳細產品、資料及執行合約見 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) 與 [`docs/ENGINEERING.md`](docs/ENGINEERING.md)。公開文件只描述必要的技術界面，不記錄真實帳戶、資源拓撲、資料表內容、營運資料或內部部署映射。

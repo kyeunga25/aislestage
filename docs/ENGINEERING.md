@@ -58,6 +58,13 @@ npm run cf:types:check
 - import 期間 brief、圖片 mutation、Agent、Campaign Pack、重複 import／export 及 workspace switch 保持鎖定。完成前若 hydration identity 改變，epoch guard 會丟棄舊本機結果；成功只取代 brand／product／intent，保留目前已授權圖片，但清除 snapshot selection、舊 Agent approval 及 generation idempotency key；
 - serializer 由目前 runtime state 重建 exact known fields，不接受會被截短、未知推廣目的、超過三個賣點或非 hex 品牌色；下載 Object URL 在觸發後撤銷。商品規格在主表單直接可見及可編輯，避免匯入或已恢復 brief 的確定性輸出欄位藏在批准流程之外。
 
+## Local approved PNG derivatives
+
+- R2 及 D1 的正式輸出仍是人工核准的 canonical SVG；PNG 只是在使用者明確按下按鈕後，由同一瀏覽器建立的固定尺寸衍生檔，不新增 server route、儲存記錄、用量事件、provider request 或發布動作；
+- 入口只接受 completed／approved、exact same-origin image／download route、相同 approved revision，以及 `deterministic-svg-v1` deterministic／assisted provenance 的 1:1、4:5 或 9:16 SVG。其他 MIME、legacy composition、demo、draft 或 rejected output 只保留原有行為；
+- browser 以 workspace-aware same-origin fetch 讀取 approved download，完整 response 使用 30 秒 deadline、18 MiB actual-byte、1,024 chunk、exact SVG MIME／attachment filename 及 fatal UTF-8 邊界。SVG lexer 只接受 compositor 所需的窄 tag／attribute／ID／fragment grammar、固定 1080×1080／1080×1350／1080×1920 尺寸及最多兩張內嵌 PNG／JPEG／WebP data image；script、event handler、doctype／entity、external href、arbitrary CSS URL、foreign object 或未知結構全部在 Image／Canvas 前拒絕；
+- Canvas 產物必須是非空、最多 16 MiB 且具 PNG signature 的 Blob；SVG rasterization 及最終下載的 Object URL 均會撤銷。失敗只顯示固定雙語錯誤，不反映 response body；SVG 原件及其人工審核狀態保持不變。
+
 ## Brand and channel controls
 
 - 工作台以原生 color input 管理 1–8 個品牌色，並直接顯示 canonical `#RRGGBB`；主要語言只接受 `zh-Hant`／`en`，限制字詞沿用 500 字元上限，目標渠道最多 12 個且每項最多 80 字元。新增空渠道只屬本機編輯狀態，送出前仍經 canonical Brief normalization；渠道只作分發 metadata，不會自動發佈或改變固定三個輸出；

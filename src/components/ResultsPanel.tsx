@@ -1,7 +1,8 @@
-import { ArrowDownToLine, CheckCircle2, Copy, PackageCheck, RotateCcw, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, Copy, PackageCheck, RotateCcw, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import campaignScene from '../assets/campaign-speaker-scene.png'
 import type { CampaignAgentState, GenerationResult, Product } from '../lib/types'
+import { ApprovedOutputDownloads } from './ApprovedOutputDownloads'
 
 type Props = {
   results: GenerationResult[]
@@ -63,7 +64,6 @@ export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGener
           const approveBusy = reviewBusy && reviewingDecision === 'approve'
           const rejectBusy = reviewBusy && reviewingDecision === 'reject'
           const statusLabel = result?.status === 'failed' ? '生成失敗' : result?.status === 'processing' ? '處理中' : result?.status === 'queued' ? '排隊中' : demoMode && result ? '示範預覽' : '待生成'
-          const extension = result?.contentType === 'image/svg+xml' ? 'svg' : 'png'
           const reviewLabel = reviewStatus === 'approved' ? '已核准' : reviewStatus === 'rejected' ? '需要修改' : '草稿待審核'
           return <article className="result-card" key={output.ratio}>
             <div className={`result-image ${output.className}`}>
@@ -82,7 +82,7 @@ export function ResultsPanel({ results, product, cta, ctaEn, agentState, isGener
                 <button className="reject" type="button" aria-label={`標記 ${output.ratio} ${output.label}需要修改`} onClick={() => onReview(result, 'reject')} disabled={reviewMutationBusy}><RotateCcw size={15} />{rejectBusy ? <>處理中…<span className="visually-hidden"> Processing…</span></> : '需要修改'}</button>
               </div> : null}
               {reviewStatus === 'draft' && !canReview ? <p className="review-guidance">等待 owner 或 admin 核准</p> : null}
-              {reviewStatus === 'approved' && result.downloadUrl ? <a className="approved-download" href={result.downloadUrl} download={`aislestage-${output.ratio.replace(':', 'x')}.${extension}`}><ArrowDownToLine size={16} />下載已核准素材</a> : null}
+              {reviewStatus === 'approved' && result.downloadUrl ? <ApprovedOutputDownloads result={result} /> : null}
               {reviewStatus === 'rejected' ? <p className="review-guidance rejected">此草稿不會交付；請按已批准計劃重新生成。</p> : null}
             </div> : null}
           </article>

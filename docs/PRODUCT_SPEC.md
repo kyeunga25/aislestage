@@ -179,6 +179,8 @@ Queue 完成及 allowance settlement 不等於可交付。每個輸出會保存�
 
 Preview／已批准 download 的成功 SVG body 使用 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin`，所有錯誤亦使用 `private, no-store`，避免跨來源子資源嵌入及 browser cache 跨 session 保留私人輸出。Scoped D1 generation metadata 或 R2 output object 暫時不可讀時回雙語 no-store `503 unavailable` 且不返回 SVG；真正不存在／跨 workspace 維持 `404`，canonical integrity 失配維持 `409`，固定 log 不包含私人識別資料。
 
+已核准的 `deterministic-svg-v1` 輸出可在工作台或素材庫另存本機 PNG。Browser 必須重新經同一 approved download route 取得 SVG，並綁定 completed／approved state、exact same-origin route、revision、provenance 及 1:1／4:5／9:16 固定尺寸；下載採 30 秒、18 MiB actual bytes、1,024 chunks、exact MIME／attachment 及 fatal UTF-8 邊界。只有 compositor 所需的 SVG tag、attribute、ID、fragment reference 及最多兩張內嵌 PNG／JPEG／WebP data image 可進入 Canvas；script、event attribute、doctype／entity、external URL、foreign object、arbitrary CSS URL、未知結構或尺寸失配均 fail closed。產物另以 16 MiB、PNG MIME／signature 驗收，暫存 Object URL 會撤銷。這個 PNG 是 user-triggered browser-local derivative，不寫入 D1／R2、用量、審核或 provider 流程，也不取代 SVG 原件。
+
 Browser generation list 在任何 JSON parse 前要求 exact `200 application/json`，成功亦只接受 exact `{ generations }` envelope，再套用最多 20 項、唯一 ID、完整 review／provenance 與同源 route normalizer；額外 outer fields 不會進入 workspace。
 
 Browser 對私人 hydration response 以 decoded stream 實際位元組數設定 parse 前上限：health 4 KiB、session／integration readiness 16 KiB、workspace activity／output usage／product-source／product profile／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只能預先拒絕，不取代實際 stream 計數；超限 response 不會改變登入、功能 gate 或任何既有可信 snapshot。
@@ -189,7 +191,7 @@ Session、health、integration readiness、workspace activity、output usage、p
 
 私人 mutation success response 同樣先限制 decoded stream：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB。超限回應只進入固定雙語錯誤，不會改變工作區狀態或人工決定。
 
-`deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。圖片 adapter 只接受 1–4,000 字元 prompt、空的 reference URL 清單及已知比例；其他輸入會在 provider egress 前拒絕。圖片比例由 server-side mapping 同時決定 provider request size 及預期 IHDR；回傳 PNG 尺寸必須精確相符，不能靠後續裁切修正。任何 provider PNG 回應在合成前都須通過 base64／8 MiB 壓縮資料上限、完整 PNG container CRC／次序／`tRNS` 語義／終止結構，以及與來源上載共用的單邊 8192 px／32 MP 尺寸和 EXIF／文字 metadata 拒絕規則。IDAT 另以最多 128 MiB 的 streaming decoded scanline 驗證 zlib、IHDR 長度與 filter；無效、不可解碼、超限、尺寸錯誤或帶 metadata 的回應 fail closed，不會寫入可審核輸出。SVG 是目前正式支援格式；PNG／JPEG 不屬於輸出合約。
+`deterministic` 不接觸外部 provider。`assisted` 只可加入背景方向，商品與文字仍經同一確定性合成。圖片 adapter 只接受 1–4,000 字元 prompt、空的 reference URL 清單及已知比例；其他輸入會在 provider egress 前拒絕。圖片比例由 server-side mapping 同時決定 provider request size 及預期 IHDR；回傳 PNG 尺寸必須精確相符，不能靠後續裁切修正。任何 provider PNG 回應在合成前都須通過 base64／8 MiB 壓縮資料上限、完整 PNG container CRC／次序／`tRNS` 語義／終止結構，以及與來源上載共用的單邊 8192 px／32 MP 尺寸和 EXIF／文字 metadata 拒絕規則。IDAT 另以最多 128 MiB 的 streaming decoded scanline 驗證 zlib、IHDR 長度與 filter；無效、不可解碼、超限、尺寸錯誤或帶 metadata 的回應 fail closed，不會寫入可審核輸出。SVG 是目前 server-side 正式輸出格式；browser-local PNG 只屬使用者下載的衍生檔，JPEG 不屬於輸出合約。
 
 ## 8. Cloudflare 架構
 
