@@ -39,6 +39,9 @@
 - [x] password auth client 採 6 KiB UTF-8 總量及逐欄界限；login 不傳註冊／邀請欄位，register 只在 invite mode 傳邀請碼；login／register 分別要求 exact `200`／`201 application/json` 再共用 active-session schema，任意 server error detail 不會反映到表單；
 - [x] password login／register 只作一次 30 秒 bounded POST，不自動重送 password、invite 或 account mutation；transport／stream／deadline／`408`／`5xx` 只以 bounded session GET 對帳 exact email，以及註冊的 name／workspace／owner identity；處理期間 tabs、credentials 及重複 submit 保持鎖定；
 - [x] session 授權後的 `/api/workspaces` 清單重讀失敗會回雙語 no-store `503 unavailable`，不洩漏 D1 錯誤、不改變 session，亦不回傳不完整清單；
+- [x] workspace selection 支援 password 與 Cloudflare Access：`PUT /api/workspaces/current` 只接受 exact bounded UUID、只選同一 user 的 active D1 membership，不修改 membership／role／Access policy；偽造、跨 workspace、錯誤 media type／origin、oversized body 及 D1 failure 均不設 cookie 並 fail closed；
+- [x] workspace browser client 只接受 1–50 個 unique active canonical items、first/current exact identity 及 exact switch acknowledgement；每次切換最多一次安全暫時故障重試。API 使用 per-tab header，headerless image／download 使用 HttpOnly cookie，跨分頁事件同步 reload；mutation pending 時控制鎖定，切換成功完整清除舊 workspace React state；
+- [x] workspace selector 的 1280×720／390×844 `/demo` browser QA 已驗證語義化 button／`aria-expanded`、開啟／收合／再開啟、sticky topbar 定位及面板視窗邊界；沒有水平溢出、framework overlay 或 console warning／error；
 - [x] `/api/generations` 的 active workspace scope 或最多 20-row 清單查詢不可讀時回雙語 no-store `503 unavailable`，不回傳空白／部分清單；跨 workspace 保持 `404`；
 - [x] 前端 generation list 先要求 exact `200 application/json` 及 exact `{ generations }` envelope；normalizer 只接受最多 20 項、唯一 ID、完整狀態／provenance 及 exact same-origin output routes，網絡、非 canonical status、額外欄位、外部 URL 或 malformed 回應保留 session／既有輸出；
 - [x] 私人 product-source GET 只列目前 workspace 最近 20 張具 digest 記錄的 PNG／JPEG／靜態 WebP，並只返回 UUID、canonical generic 名稱、MIME、大小、同源 preview route 及 UTC 時間；原始檔名、object／workspace／user identity 與 checksum 不進入清單；

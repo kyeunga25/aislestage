@@ -68,6 +68,8 @@ type StoredGenerationRow = GenerationRow & { outputKey: string | null }
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislestage_session'
+const WORKSPACE_COOKIE = 'aislestage_workspace'
+const WORKSPACE_SELECTION_HEADER = 'x-aislestage-workspace-id'
 const SESSION_DAYS = 60
 const PASSWORD_ITERATIONS = 100_000
 const LOGIN_WINDOW_MINUTES = 15
@@ -82,6 +84,7 @@ const MAX_REVIEW_BODY_BYTES = 1_024
 const MAX_BRAND_PACK_BODY_BYTES = 1_024
 const MAX_PRODUCT_PROFILE_BODY_BYTES = 1_024
 const MAX_WORKSPACE_MEMBER_BODY_BYTES = 2_048
+const MAX_WORKSPACE_SELECTION_BODY_BYTES = 1_024
 const MAX_WORKSPACE_MEMBERS = 50
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
@@ -174,6 +177,19 @@ function expiredSessionCookie(request: Request) {
   const hostname = new URL(request.url).hostname
   const secure = hostname === 'localhost' || hostname === '127.0.0.1' ? '' : '; Secure'
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`
+}
+
+function workspaceSelectionCookie(workspaceId: string, request: Request) {
+  const hostname = new URL(request.url).hostname
+  const secure = hostname === 'localhost' || hostname === '127.0.0.1' ? '' : '; Secure'
+  return `${WORKSPACE_COOKIE}=${workspaceId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 24 * 60 * 60}${secure}`
+}
+
+function selectedWorkspaceId(request: Request) {
+  const headerValue = request.headers.get(WORKSPACE_SELECTION_HEADER)
+  if (headerValue && UUID_V4_PATTERN.test(headerValue)) return headerValue
+  const cookieValue = parseCookie(request, WORKSPACE_COOKIE)
+  return cookieValue && UUID_V4_PATTERN.test(cookieValue) ? cookieValue : null
 }
 
 function normalizeEmail(value: unknown) {
@@ -777,6 +793,13 @@ function workspaceListUnavailable() {
   }, { status: 503 })
 }
 
+function workspaceSelectionUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區暫時無法切換。 Workspace switch is temporarily unavailable.'
+  }, { status: 503 })
+}
+
 async function removeUndeliveredSession(env: Env, tokenHash: string) {
   try {
     await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run()
@@ -820,23 +843,58 @@ async function sessionResponse(env: Env, request: Request, userId: string, statu
     await removeUndeliveredSession(env, tokenHash)
     return sessionUnavailable()
   }
-  return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers: { 'set-cookie': sessionCookie(token, request) } })
+  const headers = new Headers()
+  headers.append('set-cookie', sessionCookie(token, request))
+  headers.append('set-cookie', workspaceSelectionCookie(session.currentWorkspace.id, request))
+  return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers })
 }
 
-async function workspacesForUser(env: Env, userId: string) {
+async function workspacesForUser(env: Env, userId: string, selectedId: string | null = null) {
   const result = await env.DB.prepare(`
     SELECT w.id, w.name, w.access_status AS accessStatus, wm.role, COALESCE(oa.available, 0) AS availableOutputs, COALESCE(oa.reserved, 0) AS reservedOutputs
     FROM workspace_memberships wm
     JOIN workspaces w ON w.id = wm.workspace_id
     LEFT JOIN output_allowances oa ON oa.workspace_id = w.id
     WHERE wm.user_id = ? AND w.access_status = 'active'
-    ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+    ORDER BY CASE WHEN w.id = ? THEN 0 ELSE 1 END,
+      CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
       wm.created_at ASC, w.created_at ASC, w.id ASC
-  `).bind(userId).all<Workspace>()
+    LIMIT 50
+  `).bind(userId, selectedId).all<Workspace>()
   return result.results
 }
 
-async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionContext | null> {
+async function selectCurrentWorkspace(request: Request, env: Env, session: SessionContext) {
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_WORKSPACE_SELECTION_BODY_BYTES)
+  if (parsed.tooLarge) {
+    return json({ error: '工作區切換請求過大。 Workspace switch request is too large.' }, { status: 413 })
+  }
+  if (!hasExactKeys(parsed.body, ['workspaceId'])) {
+    return json({ error: '工作區切換格式無效。 Workspace switch request is invalid.' }, { status: 400 })
+  }
+  const workspaceId = (parsed.body as { workspaceId: unknown }).workspaceId
+  if (typeof workspaceId !== 'string' || !UUID_V4_PATTERN.test(workspaceId)) {
+    return json({ error: '工作區切換格式無效。 Workspace switch request is invalid.' }, { status: 400 })
+  }
+
+  try {
+    const workspaces = await workspacesForUser(env, session.user.id, workspaceId)
+    const selected = workspaces[0]
+    if (!selected || selected.id !== workspaceId) {
+      return json({ error: 'Workspace not found.' }, { status: 404 })
+    }
+    return json(
+      { currentWorkspace: selected },
+      { headers: { 'set-cookie': workspaceSelectionCookie(workspaceId, request) } }
+    )
+  } catch {
+    console.error('workspace-selection-read-failed')
+    return workspaceSelectionUnavailable()
+  }
+}
+
+async function loadSessionByHash(env: Env, tokenHash: string, selectedId: string | null = null): Promise<SessionContext | null> {
   const user = await env.DB.prepare(`
     SELECT u.id, u.email, u.name, u.account_status AS accountStatus, u.account_type AS accountType
     FROM sessions s
@@ -844,7 +902,7 @@ async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionCo
     WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.account_status = 'active'
   `).bind(tokenHash).first<AuthUser>()
   if (!user) return null
-  const workspaces = await workspacesForUser(env, user.id)
+  const workspaces = await workspacesForUser(env, user.id, selectedId)
   if (!workspaces[0]) return null
   try {
     await env.DB.prepare('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
@@ -956,7 +1014,7 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
   if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AisleStage workspace.')
   let workspaces: Workspace[]
   try {
-    workspaces = await workspacesForUser(env, user.id)
+    workspaces = await workspacesForUser(env, user.id, selectedWorkspaceId(request))
   } catch {
     console.error('access-workspace-reconciliation-failed')
     return accessError('unavailable', 503, 'Access workspace membership is temporarily unavailable.')
@@ -987,7 +1045,7 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
   if (!token) return json({ error: 'Authentication required.' }, { status: 401 })
   let session: SessionContext | null
   try {
-    session = await loadSessionByHash(env, await sha256(token))
+    session = await loadSessionByHash(env, await sha256(token), selectedWorkspaceId(request))
   } catch {
     console.error('session-authorization-read-failed')
     return sessionAuthorizationUnavailable()
@@ -3816,11 +3874,22 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       try {
-        return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+        const workspaces = await workspacesForUser(env, session.user.id, session.currentWorkspace.id)
+        if (!workspaces[0]) throw new TypeError('Active workspace list is empty')
+        return json({ workspaces, currentWorkspace: workspaces[0] })
       } catch {
         console.error('workspace-list-read-failed')
         return workspaceListUnavailable()
       }
+    }
+    if (url.pathname === '/api/workspaces/current') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'PUT') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'PUT' } })
+      }
+      return selectCurrentWorkspace(request, env, session)
     }
     if (url.pathname === '/api/workspace-members') {
       const session = await requireSession(request, env)

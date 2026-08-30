@@ -60,6 +60,8 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 - 工作區活動記錄只供目前 workspace 的 `owner`／`admin` 讀取，`member` 固定拒絕。每次最多返回最近 50 項，只包含安全事件 ID、操作類型、UTC 時間及可選的已知操作者名稱；不返回 subject ID、商品／輸出內容、原始檔名、Campaign Brief 或底層錯誤；
 - 工作區用量供目前 active membership 讀取；API 只返回 authoritative available／reserved output allowance、完成／退回總數，以及最多 50 項 `reservation`／`settlement`／`release` 類型、固定單位與 UTC 時間。不返回 workspace、user、generation、ledger、provider identity、note、失敗原因、付款資料或底層錯誤；任何 allowance、summary、event amount 或時間失配會整個 snapshot fail closed；
 - 已授權的 `/api/workspaces` 清單查詢不可讀時返回雙語 no-store `503 unavailable`，保留 session 並拒絕輸出不完整 workspace 資料；
+- workspace 清單只在使用者開啟頂部選單時讀取；browser 只接受 exact `{ workspaces, currentWorkspace }`、1–50 個唯一 active UUID、canonical 角色／額度，以及與第一項完全相同的 current identity。`PUT /api/workspaces/current` 只接受 exact bounded `{ workspaceId }`，以同一 authenticated user 的 active D1 membership 重新排序及核對，不建立 membership、改動 role 或寫入 D1 偏好；未知／跨 workspace 維持 `404`，讀取不可用固定回 no-store `503`；
+- 成功切換同時更新 HttpOnly／SameSite browser resource cookie，以及所有 browser API 自動附帶的 per-tab `x-aislestage-workspace-id`。Worker 以合法 per-tab header 為先、cookie 為 `<img>`／download fallback，兩者都只可在 active membership 集合內選擇；竄改值只會安全回落。切換是冪等 mutation，browser 對 transport／stream／deadline／`408`／`5xx` 最多重試一次，exact acknowledgement 後通知其他 AisleStage 分頁並完整 reload，避免舊 workspace 私人 state 或 mutation scope 殘留；
 - 私人 `/api/generations` 先重核 current workspace 與 active membership，再讀最多 20 個輸出；scope 或清單不可讀時返回雙語 no-store `503 unavailable`，不輸出部分／空白假結果，跨 workspace 維持 `404`；
 - 工作區前端只有收到最多 20 項、ID 唯一、完整且通過 runtime schema 的 `generations` array 才替換目前輸出；workflow、比例、狀態、review／provenance revision 及同網域 preview／download route 必須一致。清單 GET 與 Campaign Pack success response 共用此契約；網絡錯誤、`503`、外部 URL 或 malformed payload 均保留登入狀態與現有結果並顯示雙語提示，只有明確空 array 才顯示真正空清單；
 - 活動記錄不屬於初始 bootstrap；只有 owner／admin 進入或重新整理「活動記錄」時才發出一條 15 秒、64 KiB 有界 GET。前端只接受 exact `200 application/json`、exact `{ activity }` envelope、合法事件類型、唯一 ID 及嚴格 UTC 時間；故障或 malformed 回應保留上一次可信快照並顯示固定雙語提示；
@@ -78,13 +80,13 @@ AisleStage 是 contact-first、邀請制的 AI 電商素材工作台。它把一
 ## 4. Dashboard 資訊架構
 
 - 左側：工作台、Campaign Packs、商品庫、品牌庫、素材庫、用量；owner／admin 另可進入活動記錄及存取管理；
-- 頂部：可用輸出數、目前 workspace、使用者及登出；
+- 頂部：可用輸出數、可核對及切換的目前 workspace、使用者及登出；
 - 四步：商品資料、商品圖片、Agent 規劃、確認輸出；
 - 三欄：雙語商業資料、私人商品圖、Campaign Agent；
 - 成果區：三比例私人草稿、雙語文案、provenance、逐一審核、受控下載及重新建立；
 - 使用指引：完整三步流程與私隱提示。
 
-所有導覽都有實際 workspace view。沒有通知、workspace 切換或帳號選單功能時，不顯示假按鈕。示範預覽、排隊中、草稿待審核、已核准、需要修改及失敗狀態必須清楚區分。
+所有導覽都有實際 workspace view。workspace 選單只顯示由受保護 API 核實的真實 active memberships；仍未提供通知或帳號選單時不顯示假按鈕。示範預覽、排隊中、草稿待審核、已核准、需要修改及失敗狀態必須清楚區分。
 
 ### 視覺系統
 

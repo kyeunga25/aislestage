@@ -46,11 +46,11 @@ a { color: inherit; }
 .nav-item.active { color: var(--blue); background: #eaf1ff; }
 .sidebar-footer { display: grid; gap: 14px; }
 .help-link { display: flex; align-items: center; gap: 10px; color: var(--muted); text-decoration: none; padding: 9px; font-size: 14px; line-height: 1.45; }
-.workspace-switcher { width: 100%; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--text); padding: 10px; text-align: left; }
+.workspace-summary { width: 100%; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--text); padding: 10px; text-align: left; }
 .workspace-avatar { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: #20314c; color: #fff; font-size: 12px; font-weight: 700; }
-.workspace-switcher span:nth-child(2) { min-width: 0; display: grid; gap: 2px; flex: 1; }
-.workspace-switcher strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.4; }
-.workspace-switcher small { color: var(--subtle); font-size: 13px; line-height: 1.4; }
+.workspace-summary span:nth-child(2) { min-width: 0; display: grid; gap: 2px; flex: 1; }
+.workspace-summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.4; }
+.workspace-summary small { color: var(--subtle); font-size: 13px; line-height: 1.4; }
 
 .app-body { min-width: 0; }
 .topbar { min-height: 68px; display: flex; align-items: center; gap: 10px; padding: 0 32px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.97); position: sticky; top: 0; z-index: 20; }
@@ -64,6 +64,33 @@ a { color: inherit; }
 .workspace-chip { min-height: 40px; display: flex; align-items: center; gap: 9px; border: 0; background: transparent; color: var(--text); padding: 3px 8px; }
 .workspace-chip > span { width: 33px; height: 33px; display: grid; place-items: center; border-radius: 50%; background: #697386; color: #fff; font-size: 12px; }
 .workspace-chip strong { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 650; }
+.workspace-menu { position: relative; }
+.workspace-menu > .workspace-chip { cursor: pointer; border-radius: 8px; }
+.workspace-menu > .workspace-chip:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.workspace-menu > .workspace-chip:disabled { cursor: not-allowed; opacity: .56; }
+.workspace-menu.open > .workspace-chip { background: var(--panel); color: var(--blue); }
+.workspace-menu-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 45; width: min(330px,calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: 10px; background: #fff; box-shadow: 0 18px 48px rgba(23,32,51,.16); padding: 10px; }
+.workspace-menu-head { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 5px 9px; color: var(--muted); }
+.workspace-menu-head > span:first-child { min-width: 0; display: grid; gap: 1px; }
+.workspace-menu-head strong { color: var(--ink); font-size: 14px; line-height: 1.4; }
+.workspace-menu-head small { color: var(--subtle); font-size: 12px; line-height: 1.4; }
+.workspace-menu-head > span:last-child { min-width: 26px; border-radius: 999px; background: var(--panel); color: var(--muted); padding: 3px 7px; text-align: center; font-size: 12px; }
+.workspace-menu-list { max-height: min(340px,55vh); display: grid; gap: 4px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.workspace-menu-list > li { min-width: 0; }
+.workspace-menu-option { width: 100%; min-height: 58px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); padding: 7px; text-align: left; }
+.workspace-menu-option:hover:not(:disabled) { background: var(--blue-soft); color: var(--blue); }
+.workspace-menu-option.current { background: #f5f8fd; }
+.workspace-menu-option.current:disabled { cursor: default; opacity: 1; }
+.workspace-menu-avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: #20314c; color: #fff; font-size: 12px; font-weight: 700; }
+.workspace-menu-option > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.workspace-menu-option strong { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.4; }
+.workspace-menu-option small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.45; }
+.workspace-menu-option > svg { color: var(--blue); }
+.workspace-menu-status,.workspace-menu-notice,.workspace-menu-boundary { margin: 7px 4px 0; border-radius: 6px; padding: 8px 9px; font-size: 12px; line-height: 1.5; }
+.workspace-menu-status { display: flex; align-items: center; gap: 7px; background: var(--panel); color: var(--muted); }
+.workspace-menu-notice { background: #fff3f3; color: #914444; }
+.workspace-menu-boundary { border-top: 1px solid var(--line); border-radius: 0; color: var(--muted); padding-top: 10px; }
+.workspace-menu-boundary span { display: block; color: var(--subtle); }
 .user-avatar { width: 35px; height: 35px; display: grid; place-items: center; border: 0; border-radius: 50%; background: #dde5f2; color: var(--ink); font-size: 12px; font-weight: 700; }
 .main-content { width: 100%; max-width: 1600px; margin: 0 auto; padding: 32px 32px 58px; }
 .page-title { display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 0 0 19px; }
@@ -490,6 +517,8 @@ a { color: inherit; }
   .topbar { min-height: 62px; gap: 6px; }
   .allowance-chip,.workspace-chip strong,.workspace-chip svg,.logout-button { display: none; }
   .workspace-chip { padding: 0; }
+  .workspace-menu { position: static; }
+  .workspace-menu-panel { top: calc(100% + 6px); right: 12px; width: calc(100% - 24px); }
   .page-title { align-items: flex-start; }
   .page-title h1 { font-size: 26px; }
   .help-link-inline { display: none; }

@@ -38,6 +38,7 @@ Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；r
 - Session、帳號狀態及 workspace 授權；
 - 公開雙語產品主頁與獨立 `/app` 工作區；
 - Cloudflare Access JWT 驗證及受控 workspace membership；
+- active membership 的真實 workspace 切換：按需載入最多 50 個工作區，切換後完整重新載入私人圖片、Agent、用量及管理 state；per-tab API scope 與瀏覽器資源 cookie 都會再次由 Worker 核對 D1 membership，不會建立 membership 或改變角色；
 - owner／admin 專用的存取管理：owner 可加入 admin／member、調整非 owner 角色及移除非本人員；admin 只可加入／移除一般 member；所有操作只限目前 workspace，且不會改動 Cloudflare Access allow policy 或發送邀請電郵；
 - owner／admin 專用的工作區活動記錄；只顯示操作類型、時間及已知操作者，不輸出圖片、原始檔名或 Campaign Brief；
 - 全成員可讀的 workspace-scoped 用量 dashboard；只顯示目前可用／預留數、完成／退回總數及近期技術事件，不輸出 ledger、generation 或 provider identity；

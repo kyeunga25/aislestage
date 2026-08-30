@@ -13,6 +13,7 @@ import { ResultsPanel } from './components/ResultsPanel'
 import { Sidebar } from './components/Sidebar'
 import { WorkspaceActivityView } from './components/WorkspaceActivityView'
 import { WorkspaceAccessView, type WorkspaceAccessMutation } from './components/WorkspaceAccessView'
+import { WorkspaceSwitcher } from './components/WorkspaceSwitcher'
 import { WorkspaceUsageView } from './components/WorkspaceUsageView'
 import { loadBrandPackListSnapshot, saveApprovedBrandPack } from './lib/brand-pack-client'
 import { buildCampaignPlan, campaignStateAfterAssetDeletion, initialCampaignAgentState } from './lib/campaign-agent'
@@ -36,7 +37,7 @@ import { loadProductProfileListSnapshot, saveApprovedProductProfile } from './li
 import { deletePrivateResource } from './lib/private-delete-client'
 import { logoutPasswordSession, passwordLogoutUnavailableMessage } from './lib/password-logout-client'
 import { loadOutputUsageSnapshot } from './lib/output-usage-loader'
-import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent, WorkspaceMember } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationResult, OutputUsageSnapshot, PlatformStatus, Product, ProductAssetListItem, SavedBrandPack, SavedProductProfile, WorkspaceActivityEvent, WorkspaceMember, WorkspaceSummary } from './lib/types'
 import { createWorkspaceBootstrapLoader } from './lib/workspace-bootstrap'
 import { loadWorkspaceActivitySnapshot } from './lib/workspace-activity-loader'
 import {
@@ -46,6 +47,8 @@ import {
   updateWorkspaceMemberRole as submitWorkspaceMemberRole
 } from './lib/workspace-access-client'
 import { loadSession, type AuthedSession } from './lib/workspace-bootstrap-loader'
+import { loadWorkspaceListSnapshot, selectCurrentWorkspace, workspaceSelectionUnavailableMessage } from './lib/workspace-selection-client'
+import { persistSelectedWorkspaceId, workspaceIdFromSelectionEvent } from './lib/workspace-selection-storage'
 
 const demoSession: AuthedSession = {
   user: { id: 'demo-user', email: 'demo@example.test', name: 'Demo User', accountStatus: 'active', accountType: 'test' },
@@ -131,6 +134,10 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const [accessFailure, setAccessFailure] = useState<AccessFailureReason>('authentication-required')
   const [isLoadingSession, setIsLoadingSession] = useState(!demoMode)
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus>(demoMode ? demoPlatformStatus : import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>(demoMode ? [demoSession.currentWorkspace] : [])
+  const [workspaceListNotice, setWorkspaceListNotice] = useState('')
+  const [isRefreshingWorkspaceList, setIsRefreshingWorkspaceList] = useState(false)
+  const [isSwitchingWorkspace, setIsSwitchingWorkspace] = useState(false)
   const [activeSection, setActiveSection] = useState<NavigationSection>('workspace')
   const [brand, setBrand] = useState<BrandPack>(previewMode ? starterBrand : emptyBrand)
   const [product, setProduct] = useState<Product>(previewMode ? starterProduct : emptyProduct)
@@ -195,6 +202,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
   const workspaceAccessRefreshEpoch = useRef(0)
   const workspaceAccessMutationLock = useRef(false)
   const workspaceAccessMutationEpoch = useRef(0)
+  const workspaceListRefreshLock = useRef(false)
+  const workspaceListRefreshEpoch = useRef(0)
+  const workspaceSwitchLock = useRef(false)
   const outputUsageRefreshLock = useRef(false)
   const outputUsageRefreshEpoch = useRef(0)
   const workspaceHydrationEpoch = useRef(0)
@@ -261,11 +271,97 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     applyWorkspaceSnapshots(generationSnapshot, campaignAgentSnapshot, hydrationEpoch, generationEpoch)
   }
 
+  function mergeCurrentWorkspaceSummary(nextWorkspace: WorkspaceSummary) {
+    setWorkspaces((current) => {
+      const remaining = current.filter((workspace) => workspace.id !== nextWorkspace.id)
+      return [nextWorkspace, ...remaining]
+    })
+  }
+
   async function refreshSessionState() {
     const refreshedSession = await loadSession().catch(() => null)
     if (!refreshedSession?.session) return false
     setSession(refreshedSession.session)
+    mergeCurrentWorkspaceSummary(refreshedSession.session.currentWorkspace)
     return true
+  }
+
+  async function refreshWorkspaceList() {
+    if (!session
+      || session.user.id === 'demo-user'
+      || workspaceListRefreshLock.current
+      || workspaceSwitchLock.current) return
+    workspaceListRefreshLock.current = true
+    const refreshEpoch = ++workspaceListRefreshEpoch.current
+    const hydrationEpoch = workspaceHydrationEpoch.current
+    const currentWorkspaceId = session.currentWorkspace.id
+    setIsRefreshingWorkspaceList(true)
+    setWorkspaceListNotice('')
+    try {
+      const snapshot = await loadWorkspaceListSnapshot()
+      if (refreshEpoch !== workspaceListRefreshEpoch.current
+        || hydrationEpoch !== workspaceHydrationEpoch.current) return
+      if (snapshot.workspaceList) {
+        if (snapshot.workspaceList.currentWorkspace.id !== currentWorkspaceId) {
+          persistSelectedWorkspaceId(snapshot.workspaceList.currentWorkspace.id)
+          window.location.reload()
+          return
+        }
+        setWorkspaces(snapshot.workspaceList.workspaces)
+      }
+      if (snapshot.error) setWorkspaceListNotice(snapshot.error)
+    } finally {
+      if (refreshEpoch === workspaceListRefreshEpoch.current) {
+        workspaceListRefreshLock.current = false
+        setIsRefreshingWorkspaceList(false)
+      }
+    }
+  }
+
+  function workspaceMutationPending() {
+    return agentBusy
+      || isGenerating
+      || isLoggingOut
+      || isDeletingProductImage
+      || image.status === 'uploading'
+      || deletingGenerationId !== null
+      || reviewingId !== null
+      || deletingProductAssetId !== null
+      || isSavingProductProfile
+      || deletingProductProfileId !== null
+      || isSavingBrandPack
+      || deletingBrandPackId !== null
+      || workspaceAccessMutation !== null
+      || campaignPackLock.current
+      || campaignAgentLock.current
+      || productProfileMutationLock.current
+      || brandPackMutationLock.current
+      || workspaceAccessMutationLock.current
+  }
+
+  async function switchWorkspace(workspaceId: string) {
+    if (!session
+      || session.user.id === 'demo-user'
+      || workspaceId === session.currentWorkspace.id
+      || workspaceSwitchLock.current
+      || workspaceMutationPending()) return
+    workspaceSwitchLock.current = true
+    setIsSwitchingWorkspace(true)
+    setWorkspaceListNotice('')
+    let switched = false
+    try {
+      const selected = await selectCurrentWorkspace(workspaceId)
+      if (selected.id !== workspaceId) throw new Error(workspaceSelectionUnavailableMessage)
+      switched = true
+      window.location.reload()
+    } catch (error) {
+      setWorkspaceListNotice(error instanceof Error ? error.message : workspaceSelectionUnavailableMessage)
+    } finally {
+      if (!switched) {
+        workspaceSwitchLock.current = false
+        setIsSwitchingWorkspace(false)
+      }
+    }
   }
 
   async function refreshGenerationResults() {
@@ -437,6 +533,11 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       if (refreshEpoch !== outputUsageRefreshEpoch.current || hydrationEpoch !== workspaceHydrationEpoch.current) return
       if (snapshot.usage !== null) {
         setOutputUsage(snapshot.usage)
+        setWorkspaces((current) => current.map((workspace) => workspace.id === workspaceId ? {
+          ...workspace,
+          availableOutputs: snapshot.usage!.allowance.availableOutputs,
+          reservedOutputs: snapshot.usage!.allowance.reservedOutputs
+        } : workspace))
         setSession((current) => current?.currentWorkspace.id === workspaceId ? {
           ...current,
           currentWorkspace: {
@@ -597,6 +698,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       if (!active || hydrationEpoch !== workspaceHydrationEpoch.current) return
       const nextSession = sessionResult.session
       setSession(nextSession)
+      setWorkspaces(nextSession ? [nextSession.currentWorkspace] : [])
       if (sessionResult.failure) setAccessFailure(sessionResult.failure)
       setPlatformStatus(nextPlatformStatus)
       if (nextSession && generationSnapshot && campaignAgentSnapshot) {
@@ -604,7 +706,9 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       }
     }).catch(() => {
       if (!active || hydrationEpoch !== workspaceHydrationEpoch.current) return
-      setSession(import.meta.env.DEV ? demoSession : null)
+      const fallbackSession = import.meta.env.DEV ? demoSession : null
+      setSession(fallbackSession)
+      setWorkspaces(fallbackSession ? [fallbackSession.currentWorkspace] : [])
       setPlatformStatus(import.meta.env.DEV ? localPlatformStatus : restrictedPlatformStatus)
       if (!import.meta.env.DEV) setAccessFailure('unavailable')
     }).finally(() => {
@@ -615,6 +719,21 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
       active = false
     }
   }, [demoMode])
+
+  useEffect(() => {
+    if (demoMode || !session) return
+    const currentWorkspaceId = session.currentWorkspace.id
+    const handleWorkspaceSelection = (event: Event) => {
+      const selectedWorkspaceId = workspaceIdFromSelectionEvent(event as unknown as { key: string | null; newValue: string | null })
+      if (!selectedWorkspaceId || selectedWorkspaceId === currentWorkspaceId) return
+      persistSelectedWorkspaceId(selectedWorkspaceId)
+      workspaceSwitchLock.current = true
+      setIsSwitchingWorkspace(true)
+      window.location.reload()
+    }
+    window.addEventListener('storage', handleWorkspaceSelection)
+    return () => window.removeEventListener('storage', handleWorkspaceSelection)
+  }, [demoMode, session?.currentWorkspace.id])
 
   function campaignBrief() {
     return {
@@ -1064,6 +1183,11 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
           setNotice('Campaign Pack 已恢復，但暫時未能重新載入額度。 Campaign Pack recovered, but allowance could not be reloaded.')
         }
       } else {
+        setWorkspaces((current) => current.map((workspace) => workspace.id === session.currentWorkspace.id ? {
+          ...workspace,
+          availableOutputs: Math.max(0, workspace.availableOutputs - created.length),
+          reservedOutputs: workspace.reservedOutputs + created.length
+        } : workspace))
         setSession((current) => current ? {
           ...current,
           currentWorkspace: {
@@ -1157,6 +1281,7 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceAccessRefreshEpoch.current += 1
     workspaceAccessMutationEpoch.current += 1
     outputUsageRefreshEpoch.current += 1
+    workspaceListRefreshEpoch.current += 1
     generationRefreshLock.current = false
     productAssetRefreshLock.current = false
     productProfileRefreshLock.current = false
@@ -1167,6 +1292,8 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     workspaceAccessRefreshLock.current = false
     workspaceAccessMutationLock.current = false
     outputUsageRefreshLock.current = false
+    workspaceListRefreshLock.current = false
+    workspaceSwitchLock.current = false
     setIsRefreshingResults(false)
     setIsRefreshingProductAssets(false)
     setIsRefreshingProductProfiles(false)
@@ -1177,7 +1304,11 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     setIsRefreshingWorkspaceMembers(false)
     setWorkspaceAccessMutation(null)
     setIsRefreshingOutputUsage(false)
+    setIsRefreshingWorkspaceList(false)
+    setIsSwitchingWorkspace(false)
     setSession(null)
+    setWorkspaces([])
+    setWorkspaceListNotice('')
     setReviewingId(null)
     setReviewingDecision(null)
     setServerResults([])
@@ -1210,11 +1341,14 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
     return <AccessLoginPage reason={accessFailure} returnTo={`${window.location.pathname}${window.location.search}${window.location.hash}`} />
   }
   if (!session) return <AuthPage registrationMode={platformStatus.registrationMode} onAuthenticated={(nextSession) => {
+    persistSelectedWorkspaceId(nextSession.currentWorkspace.id)
     setSession(nextSession)
+    setWorkspaces([nextSession.currentWorkspace])
     void hydrateWorkspace(nextSession)
   }} />
 
   const userInitial = session.user.name.trim().charAt(0).toUpperCase() || session.user.email.charAt(0).toUpperCase()
+  const workspaceSwitchDisabled = workspaceMutationPending()
 
   return <div className="app-shell" id="workspace">
     <Sidebar workspace={session.currentWorkspace} active={activeSection} onNavigate={navigateToSection} />
@@ -1223,7 +1357,16 @@ function WorkspaceApp({ demoMode = false }: { demoMode?: boolean }) {
         <a className="mobile-brand" href="#workspace" aria-label="AisleStage"><BrandMark /><strong>AisleStage</strong></a>
         <div className="topbar-spacer" />
         <span className="allowance-chip"><Sparkles size={15} />可用輸出 <strong>{session.currentWorkspace.availableOutputs}</strong></span>
-        <span className="workspace-chip"><span>{session.currentWorkspace.name.charAt(0)}</span><strong>{session.currentWorkspace.name}</strong></span>
+        <WorkspaceSwitcher
+          currentWorkspace={session.currentWorkspace}
+          workspaces={workspaces.length ? workspaces : [session.currentWorkspace]}
+          isLoading={isRefreshingWorkspaceList}
+          isSwitching={isSwitchingWorkspace}
+          disabled={workspaceSwitchDisabled}
+          notice={workspaceListNotice}
+          onOpen={() => void refreshWorkspaceList()}
+          onSelect={(workspaceId) => void switchWorkspace(workspaceId)}
+        />
         <span className="user-avatar" title={session.user.name}>{userInitial}</span>
         <button className="icon-button logout-button" type="button" aria-label={isLoggingOut ? '正在登出' : '登出'} onClick={logout} disabled={isLoggingOut}><LogOut size={17} /></button>
       </header>

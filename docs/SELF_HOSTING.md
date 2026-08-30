@@ -279,6 +279,7 @@ owner 可在私人工作區「存取管理」加入 admin／member、調整非 o
 | 匿名受保護 API | Access 或 Worker 拒絕，不返回資料庫／資源細節 |
 | 已受邀 `/api/session` | JWT 與 active membership 都通過後才成功 |
 | owner／admin `/api/workspace-members` | 只返回目前 workspace 的 bounded canonical 清單；member 被拒絕，新增 membership 不會改動 Access policy |
+| 多 workspace 帳戶 | 選單只列 active memberships；切換後 session、私人圖片、用量及管理 route 都指向同一 workspace，其他分頁會同步 reload |
 | 已受邀 `/api/output-usage` | 只返回目前 workspace 的技術 allowance／事件摘要；沒有 identity、note、provider 或付款資料 |
 | 私人 R2 內容 | 只經授權 Worker route 返回，帶 private／no-store 等 headers |
 | Generation | 初次部署保持 disabled；不能排隊或扣用量 |
