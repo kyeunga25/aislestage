@@ -41,7 +41,8 @@ function dependencies() {
     loadSession: vi.fn(async (): Promise<SessionLoadResult> => activeSessionResult),
     loadPlatformStatus: vi.fn(async () => platformStatus),
     loadGenerationSnapshot: vi.fn(async () => ({ results: [], error: null })),
-    loadCampaignAgentSnapshot: vi.fn(async () => ({ state: initialCampaignAgentState(), error: null }))
+    loadCampaignAgentSnapshot: vi.fn(async () => ({ state: initialCampaignAgentState(), error: null })),
+    loadProductAssetListSnapshot: vi.fn(async () => ({ assets: [], error: null }))
   }
 }
 
@@ -57,19 +58,22 @@ describe('workspace bootstrap coordination', () => {
       sessionResult: activeSessionResult,
       platformStatus,
       generationSnapshot: { results: [], error: null },
-      campaignAgentSnapshot: { state: initialCampaignAgentState(), error: null }
+      campaignAgentSnapshot: { state: initialCampaignAgentState(), error: null },
+      productAssetSnapshot: { assets: [], error: null }
     })
     expect(loaders.loadSession).toHaveBeenCalledTimes(1)
     expect(loaders.loadPlatformStatus).toHaveBeenCalledTimes(1)
     expect(loaders.loadGenerationSnapshot).toHaveBeenCalledTimes(1)
     expect(loaders.loadGenerationSnapshot).toHaveBeenCalledWith('workspace-bootstrap-coordinator')
     expect(loaders.loadCampaignAgentSnapshot).toHaveBeenCalledTimes(1)
+    expect(loaders.loadProductAssetListSnapshot).toHaveBeenCalledTimes(1)
 
     await loadWorkspaceBootstrap()
     expect(loaders.loadSession).toHaveBeenCalledTimes(2)
     expect(loaders.loadPlatformStatus).toHaveBeenCalledTimes(2)
     expect(loaders.loadGenerationSnapshot).toHaveBeenCalledTimes(2)
     expect(loaders.loadCampaignAgentSnapshot).toHaveBeenCalledTimes(2)
+    expect(loaders.loadProductAssetListSnapshot).toHaveBeenCalledTimes(2)
   })
 
   it('does not read private workspace resources for an unauthenticated session', async () => {
@@ -81,10 +85,12 @@ describe('workspace bootstrap coordination', () => {
       sessionResult: { session: null, failure: 'authentication-required' },
       platformStatus,
       generationSnapshot: null,
-      campaignAgentSnapshot: null
+      campaignAgentSnapshot: null,
+      productAssetSnapshot: null
     })
     expect(loaders.loadGenerationSnapshot).not.toHaveBeenCalled()
     expect(loaders.loadCampaignAgentSnapshot).not.toHaveBeenCalled()
+    expect(loaders.loadProductAssetListSnapshot).not.toHaveBeenCalled()
   })
 
   it('clears a rejected bootstrap so a later attempt can recover', async () => {
@@ -97,5 +103,6 @@ describe('workspace bootstrap coordination', () => {
     expect(loaders.loadSession).toHaveBeenCalledTimes(2)
     expect(loaders.loadGenerationSnapshot).toHaveBeenCalledTimes(1)
     expect(loaders.loadCampaignAgentSnapshot).toHaveBeenCalledTimes(1)
+    expect(loaders.loadProductAssetListSnapshot).toHaveBeenCalledTimes(1)
   })
 })

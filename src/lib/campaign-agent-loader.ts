@@ -1,4 +1,5 @@
 import { campaignBriefLimits } from './campaign-agent'
+import { isSafeBrandColorList } from './brand-color'
 import { readBoundedJsonResponse } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
 import type { CampaignAgentState, CampaignBrief } from './types'
@@ -45,6 +46,7 @@ function isCampaignBrief(value: unknown): value is CampaignBrief {
     && isText(brand.name, campaignBriefLimits.brand.name)
     && isText(brand.tone, campaignBriefLimits.brand.tone)
     && isTextList(brand.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength)
+    && isSafeBrandColorList(brand.colors, campaignBriefLimits.brand.colors.items)
     && isText(brand.forbiddenWords, campaignBriefLimits.brand.forbiddenWords)
     && (brand.locale === 'zh-Hant' || brand.locale === 'en')
     && isText(brand.cta, campaignBriefLimits.brand.cta)

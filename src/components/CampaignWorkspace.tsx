@@ -1,6 +1,8 @@
-import { Check, FileImage, ImagePlus, LoaderCircle, Plus, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
-import { useRef, type ChangeEvent } from 'react'
+import { Check, Download, FileImage, FileUp, ImagePlus, LoaderCircle, Plus, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react'
+import { useRef, useState, type ChangeEvent } from 'react'
+import { brandColorForDisplay, fallbackBrandColor, isSafeBrandColor } from '../lib/brand-color'
 import { campaignBriefLimits } from '../lib/campaign-agent'
+import { commercialUseRightsAttestation, type CommercialUseRightsAttestation } from '../lib/product-asset-client'
 import type { BrandPack, CampaignAgentState, Product, ProductAsset } from '../lib/types'
 import { CampaignAgentPanel } from './CampaignAgentPanel'
 
@@ -22,10 +24,14 @@ type Props = {
   agentState: CampaignAgentState
   agentBusy: boolean
   generationAvailable: boolean
+  briefFileBusy?: boolean
+  briefFileNotice?: string
   onBrandChange: (next: BrandPack) => void
   onProductChange: (next: Product) => void
   onIntentChange: (next: string) => void
-  onImageSelected: (file: File) => void
+  onBriefFileImport?: (file: File) => void
+  onBriefFileExport?: () => void
+  onImageSelected: (file: File, rightsAttestation: CommercialUseRightsAttestation) => void
   onImageDelete: () => void
   onPlan: () => void
   onApprove: () => void
@@ -35,8 +41,10 @@ type Props = {
 export type { ImageState }
 
 export function CampaignWorkspace(props: Props) {
-  const { brand, product, intent, image, imageDeleteBusy = false, generationBusy = false, agentState, agentBusy, generationAvailable, onBrandChange, onProductChange, onIntentChange, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
+  const { brand, product, intent, image, imageDeleteBusy = false, generationBusy = false, agentState, agentBusy, generationAvailable, briefFileBusy = false, briefFileNotice = '', onBrandChange, onProductChange, onIntentChange, onBriefFileImport, onBriefFileExport, onImageSelected, onImageDelete, onPlan, onApprove, onGenerate } = props
   const inputRef = useRef<HTMLInputElement>(null)
+  const briefFileRef = useRef<HTMLInputElement>(null)
+  const [rightsConfirmed, setRightsConfirmed] = useState(false)
   const englishReady = Boolean(
     product.nameEn
     && product.promotionEn
@@ -52,13 +60,22 @@ export function CampaignWorkspace(props: Props) {
     && product.benefits.filter(Boolean).length >= 2
     && englishReady
   )
-  const imageReady = image.status === 'ready' || image.status === 'demo'
-  const campaignIdentityBusy = agentBusy || generationBusy
+  const imageReady = image.status === 'demo'
+    || (image.status === 'ready' && image.asset?.rightsStatus === 'confirmed')
+  const campaignIdentityBusy = agentBusy || generationBusy || briefFileBusy
   const imageMutationBusy = image.status === 'uploading' || imageDeleteBusy || campaignIdentityBusy
+  const imageSelectionDisabled = imageMutationBusy || !rightsConfirmed
   const agentReady = agentState.stage === 'awaiting-approval' || agentState.stage === 'approved'
+  const visibleBrandColors = brand.colors.length ? brand.colors : [fallbackBrandColor]
+  const visibleChannels = product.channels.length ? product.channels : ['']
 
-  const setProduct = (key: keyof Product, value: string | string[]) => onProductChange({ ...product, [key]: value })
-  const setBrand = (key: keyof BrandPack, value: string) => onBrandChange({ ...brand, [key]: value })
+  function setProduct<Key extends keyof Product>(key: Key, value: Product[Key]) {
+    onProductChange({ ...product, [key]: value })
+  }
+
+  function setBrand<Key extends keyof BrandPack>(key: Key, value: BrandPack[Key]) {
+    onBrandChange({ ...brand, [key]: value })
+  }
 
   function updateBenefit(index: number, value: string) {
     const next = [...product.benefits]
@@ -72,13 +89,58 @@ export function CampaignWorkspace(props: Props) {
     setProduct('benefitsEn', next)
   }
 
+  function updateBrandColor(index: number, value: string) {
+    if (!isSafeBrandColor(value)) return
+    const next = [...visibleBrandColors]
+    next[index] = value
+    setBrand('colors', next)
+  }
+
+  function addBrandColor() {
+    if (visibleBrandColors.length >= campaignBriefLimits.brand.colors.items) return
+    setBrand('colors', [...visibleBrandColors, fallbackBrandColor])
+  }
+
+  function removeBrandColor(index: number) {
+    if (visibleBrandColors.length <= 1) return
+    setBrand('colors', visibleBrandColors.filter((_color, colorIndex) => colorIndex !== index))
+  }
+
+  function updateChannel(index: number, value: string) {
+    const next = [...visibleChannels]
+    next[index] = value
+    setProduct('channels', next)
+  }
+
+  function addChannel() {
+    if (visibleChannels.length >= campaignBriefLimits.product.channels.items || visibleChannels.some((channel) => !channel.trim())) return
+    setProduct('channels', [...visibleChannels, ''])
+  }
+
+  function removeChannel(index: number) {
+    setProduct('channels', visibleChannels.filter((_channel, channelIndex) => channelIndex !== index))
+  }
+
   function chooseImage(event: ChangeEvent<HTMLInputElement>) {
-    if (imageMutationBusy) {
+    if (imageSelectionDisabled) {
       event.target.value = ''
       return
     }
     const file = event.target.files?.[0]
-    if (file) onImageSelected(file)
+    if (file) {
+      onImageSelected(file, commercialUseRightsAttestation)
+      setRightsConfirmed(false)
+    }
+    event.target.value = ''
+  }
+
+  function chooseBriefFile(event: ChangeEvent<HTMLInputElement>) {
+    if (campaignIdentityBusy) {
+      event.target.value = ''
+      return
+    }
+    const file = event.target.files?.[0]
+    if (file) onBriefFileImport?.(file)
     event.target.value = ''
   }
 
@@ -97,6 +159,15 @@ export function CampaignWorkspace(props: Props) {
     <div className="studio-grid">
       <section className="brief-panel" aria-labelledby="brief-title" aria-busy={campaignIdentityBusy}>
         <div className="panel-heading"><h2 id="brief-title">品牌與商品資料</h2><p>只使用已核實、可以公開宣傳的資料。</p></div>
+        {onBriefFileImport && onBriefFileExport ? <div className="brief-file-tools" aria-label="Campaign Brief 檔案">
+          <div><strong>Campaign Brief 檔案</strong><small>JSON v1 · 本機匯入／匯出，不含圖片或工作區識別</small></div>
+          <div className="brief-file-actions">
+            <button type="button" className="outline-button" aria-label="匯入 Campaign Brief JSON" onClick={() => briefFileRef.current?.click()} disabled={campaignIdentityBusy}>{briefFileBusy ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}{briefFileBusy ? '匯入中…' : '匯入 JSON'}</button>
+            <button type="button" className="outline-button" aria-label="匯出 Campaign Brief JSON" onClick={onBriefFileExport} disabled={campaignIdentityBusy}><Download size={15} />匯出 JSON</button>
+            <input ref={briefFileRef} className="visually-hidden" type="file" accept=".json,application/json,text/json" onChange={chooseBriefFile} disabled={campaignIdentityBusy} />
+          </div>
+          {briefFileNotice ? <p className="brief-file-notice" role="status">{briefFileNotice}</p> : null}
+        </div> : null}
         <fieldset className="compact-fields" disabled={campaignIdentityBusy}>
           <label><span>品牌名稱</span><input value={brand.name} maxLength={campaignBriefLimits.brand.name} onChange={(event) => setBrand('name', event.target.value)} /></label>
           <label><span>商品名稱</span><input value={product.name} maxLength={campaignBriefLimits.product.name} onChange={(event) => setProduct('name', event.target.value)} /></label>
@@ -104,8 +175,34 @@ export function CampaignWorkspace(props: Props) {
           <div className="field-row"><label><span>價格（HKD）</span><input value={product.price} maxLength={campaignBriefLimits.product.price} onChange={(event) => setProduct('price', event.target.value)} /></label><label><span>推廣目的</span><select value={intent} onChange={(event) => onIntentChange(event.target.value)}><option>限時優惠</option><option>新品推廣</option><option>日常銷售</option><option>節日活動</option></select></label></div>
           <label><span>促銷資訊</span><input value={product.promotion} maxLength={campaignBriefLimits.product.promotion} onChange={(event) => setProduct('promotion', event.target.value)} /></label>
           <fieldset className="selling-points"><legend>產品賣點（最多 3 點）</legend>{[0, 1, 2].map((index) => <label key={index}><b>{index + 1}</b><input value={product.benefits[index] || ''} maxLength={campaignBriefLimits.product.benefits.itemLength} onChange={(event) => updateBenefit(index, event.target.value)} placeholder={`賣點 ${index + 1}`} />{product.benefits[index] ? <X size={13} /> : <Plus size={13} />}</label>)}</fieldset>
+          <label><span>商品規格（選填）</span><textarea value={product.specifications} maxLength={campaignBriefLimits.product.specifications} onChange={(event) => setProduct('specifications', event.target.value)} placeholder="例如：尺寸、物料、連接方式或相容型號" /></label>
           <label><span>品牌語氣</span><input value={brand.tone} maxLength={campaignBriefLimits.brand.tone} onChange={(event) => setBrand('tone', event.target.value)} /></label>
           <label><span>行動呼籲 CTA</span><input value={brand.cta} maxLength={campaignBriefLimits.brand.cta} onChange={(event) => setBrand('cta', event.target.value)} /></label>
+          <details className="advanced-brief-fields">
+            <summary>品牌色、限制字詞與渠道 <small>Brand controls</small></summary>
+            <div>
+              <label><span>主要語言 · Primary language</span><select aria-label="主要語言" value={brand.locale} onChange={(event) => setBrand('locale', event.target.value as BrandPack['locale'])}><option value="zh-Hant">繁體中文</option><option value="en">English</option></select></label>
+              <fieldset className="brand-color-fields"><legend>品牌色（1–8） · Brand colors</legend>
+                {visibleBrandColors.map((color, index) => {
+                  const displayColor = brandColorForDisplay(color)
+                  return <div className="brand-color-field" key={`${index}-${displayColor}`}>
+                    <input type="color" aria-label={`品牌色 ${index + 1}`} value={displayColor} onChange={(event) => updateBrandColor(index, event.target.value)} />
+                    <code>{displayColor}</code>
+                    <button type="button" className="compact-icon-button" aria-label={`移除品牌色 ${index + 1}`} onClick={() => removeBrandColor(index)} disabled={visibleBrandColors.length <= 1}><X size={15} /></button>
+                  </div>
+                })}
+                <button type="button" className="add-brief-field" aria-label="新增品牌色" onClick={addBrandColor} disabled={visibleBrandColors.length >= campaignBriefLimits.brand.colors.items}><Plus size={15} />新增品牌色 · Add color</button>
+              </fieldset>
+              <label><span>限制字詞（選填） · Forbidden words</span><textarea value={brand.forbiddenWords} maxLength={campaignBriefLimits.brand.forbiddenWords} aria-label="限制字詞" onChange={(event) => setBrand('forbiddenWords', event.target.value)} placeholder="以逗號、頓號或換行分隔不可使用的宣稱與字詞" /></label>
+              <fieldset className="channel-fields"><legend>目標渠道（最多 12 個） · Target channels</legend><small className="brief-field-hint">只作 Campaign Brief 分發記錄；不會自動發佈或改變固定三個輸出。</small>
+                {visibleChannels.map((channel, index) => <div className="channel-field" key={index}>
+                  <input aria-label={`渠道 ${index + 1}`} value={channel} maxLength={campaignBriefLimits.product.channels.itemLength} onChange={(event) => updateChannel(index, event.target.value)} placeholder="例如：Shopify、Instagram、EDM" />
+                  <button type="button" className="compact-icon-button" aria-label={`移除渠道 ${index + 1}`} onClick={() => removeChannel(index)} disabled={visibleChannels.length === 1 && !product.channels.length}><X size={15} /></button>
+                </div>)}
+                <button type="button" className="add-brief-field" aria-label="新增渠道" onClick={addChannel} disabled={visibleChannels.length >= campaignBriefLimits.product.channels.items || visibleChannels.some((channel) => !channel.trim())}><Plus size={15} />新增渠道 · Add channel</button>
+              </fieldset>
+            </div>
+          </details>
           <details className="bilingual-fields">
             <summary>{englishReady ? '英文文案資料已填寫' : '填寫英文文案資料'} <small>English copy</small></summary>
             <div>
@@ -125,12 +222,16 @@ export function CampaignWorkspace(props: Props) {
           ? <img src={image.url} alt={`${product.name || '商品'} 商品原圖`} />
           : <div><ImagePlus size={28} /><strong>加入商品原圖</strong><span>圖片只會透過已授權的工作區路徑顯示</span></div>}
         </div>
-        <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={imageMutationBusy}>
+        <label className="product-rights-confirmation">
+          <input type="checkbox" checked={rightsConfirmed} onChange={(event) => setRightsConfirmed(event.target.checked)} disabled={imageMutationBusy} />
+          <span><strong>我確認擁有或已取得必要權利，可將此圖片用於預計的商業素材。</strong><small>I have the necessary rights to use this image in the intended commercial assets.</small></span>
+        </label>
+        <button className="upload-zone" type="button" onClick={() => inputRef.current?.click()} disabled={imageSelectionDisabled}>
           {image.status === 'uploading' || imageDeleteBusy || campaignIdentityBusy ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
-          <span><strong>{image.status === 'uploading' ? '正在安全上傳…' : imageDeleteBusy ? '正在安全刪除… Deleting securely…' : generationBusy ? '素材包建立中… Pack creation in progress…' : agentBusy ? 'Agent 正在處理… Agent action in progress…' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；最大 4 MB／8192 px／32 MP</small></span>
+          <span><strong>{image.status === 'uploading' ? '正在檢查並安全上載… · Checking and uploading securely…' : imageDeleteBusy ? '正在安全刪除… Deleting securely…' : generationBusy ? '素材包建立中… Pack creation in progress…' : agentBusy ? 'Agent 正在處理… Agent action in progress…' : !rightsConfirmed ? '先確認圖片使用權 · Confirm image rights' : '更換商品圖片'}</strong><small>JPG、PNG、靜態 WebP；先在本機預檢 · Local preflight first；最大 4 MB／8192 px／32 MP</small></span>
         </button>
-        <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} disabled={imageMutationBusy} />
-        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{imageDeleteBusy ? '正在刪除這張私人商品圖片 · Deleting this private product image' : generationBusy ? '商品圖片已鎖定至正在建立的素材包 · Product image locked to the Campaign Pack in progress' : agentBusy ? '商品圖片已鎖定至 Agent 動作 · Product image locked to the Agent action' : image.status === 'ready' ? '已儲存在此工作區的私人素材庫' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageMutationBusy}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label={imageDeleteBusy ? '正在刪除圖片 · Deleting image' : '刪除圖片'} disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
+        <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseImage} disabled={imageSelectionDisabled} />
+        <div className={`asset-row ${image.status}`}><FileImage size={17} /><span><strong>{image.name}</strong><small>{imageDeleteBusy ? '正在刪除這張私人商品圖片 · Deleting this private product image' : generationBusy ? '商品圖片已鎖定至正在建立的素材包 · Product image locked to the Campaign Pack in progress' : agentBusy ? '商品圖片已鎖定至 Agent 動作 · Product image locked to the Agent action' : image.status === 'ready' ? image.asset?.rightsStatus === 'confirmed' ? '已私人保存 · 商業使用權已確認' : '已私人保存 · 使用權未確認' : image.status === 'error' ? image.error : image.status === 'uploading' ? '正在處理檔案' : '本機示範素材'}</small></span><div className="asset-actions"><button type="button" onClick={() => inputRef.current?.click()} aria-label="更換圖片" disabled={imageSelectionDisabled}><ImagePlus size={16} /></button>{image.url ? <button type="button" onClick={onImageDelete} aria-label={imageDeleteBusy ? '正在刪除圖片 · Deleting image' : '刪除圖片'} disabled={imageMutationBusy}><Trash2 size={15} /></button> : null}</div></div>
       </section>
 
       <CampaignAgentPanel state={agentState} busy={agentBusy} generationBusy={generationBusy} generationAvailable={generationAvailable} onPlan={onPlan} onApprove={onApprove} onGenerate={onGenerate} />

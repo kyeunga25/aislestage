@@ -13,23 +13,23 @@ AisleStage is a contact-first, invite-only ecommerce asset workspace. It turns a
 Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；repository 不把
 這些方法標記成可由外部 WebSocket client 呼叫的 Agent SDK callable methods。
 
-| 可用性 / Availability | 成熟度 / Maturity | 證據 / Evidence |
-| --- | --- | --- |
-| 邀請制 closed beta；沒有自助註冊 / Invite-only; no self-service signup | Source `v0.6.0`; latest GitHub release `v0.5.1` | [項目入口 / Project portal](https://k-y.cc/#projects) · [產品規格 / Product spec](docs/PRODUCT_SPEC.md) · [安全政策 / Security](SECURITY.md) · [版權 / Copyright](COPYRIGHT.md) |
+| 可用性 / Availability                                                  | 成熟度 / Maturity                               | 證據 / Evidence                                                                                                                                                          |
+| ---------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 邀請制 closed beta；沒有自助註冊 / Invite-only; no self-service signup | Source `v0.6.0`; latest GitHub release `v0.5.1` | [項目入口 / Project portal](https://k-y.cc/#projects) · [產品規格 / Product spec](docs/PRODUCT_SPEC.md) · [安全政策 / Security](SECURITY.md) · [授權 / Licence](LICENSE) |
 
 ## 技術棧 / Technology stack
 
-| 層面 | 使用技術 | 用途 |
-| --- | --- | --- |
-| 前端 | React 19、TypeScript 7、Vite 8 | 雙語 SPA、建置與靜態資產 |
-| Edge runtime | Cloudflare Workers、Workers Static Assets、Wrangler 4 | API、SPA、Queue consumer、Cron 與部署 |
-| 身份與授權 | Cloudflare Access、`jose` | Edge identity、JWT 驗證及 workspace 授權 |
-| 受保護資料 | Cloudflare D1 | 應用資料；實際內容及內部組織不在公開概覽記錄 |
-| 私人檔案 | Cloudflare R2 | 只經授權 Worker route 讀取的來源及輸出檔案 |
-| 非同步處理 | Cloudflare Queues | Campaign Pack 輸出、重試及 dead-letter 隔離 |
-| 有狀態 Agent | Cloudflare Agents SDK、Durable Objects | Workspace-scoped 計劃與批准狀態 |
-| 測試 | Vitest、Cloudflare Vitest integration | 隔離的 Worker、D1、R2、Queue 與 Durable Object 測試 |
-| 可選 AI | OpenAI Responses API、Image API | 受閘門控制的 assisted adapter；預設停用 |
+| 層面         | 使用技術                                              | 用途                                                |
+| ------------ | ----------------------------------------------------- | --------------------------------------------------- |
+| 前端         | React 19、TypeScript 7、Vite 8                        | 雙語 SPA、建置與靜態資產                            |
+| Edge runtime | Cloudflare Workers、Workers Static Assets、Wrangler 4 | API、SPA、Queue consumer、Cron 與部署               |
+| 身份與授權   | Cloudflare Access、`jose`                             | Edge identity、JWT 驗證及 workspace 授權            |
+| 受保護資料   | Cloudflare D1                                         | 應用資料；實際內容及內部組織不在公開概覽記錄        |
+| 私人檔案     | Cloudflare R2                                         | 只經授權 Worker route 讀取的來源及輸出檔案          |
+| 非同步處理   | Cloudflare Queues                                     | Campaign Pack 輸出、重試及 dead-letter 隔離         |
+| 有狀態 Agent | Cloudflare Agents SDK、Durable Objects                | Workspace-scoped 計劃與批准狀態                     |
+| 測試         | Vitest、Cloudflare Vitest integration                 | 隔離的 Worker、D1、R2、Queue 與 Durable Object 測試 |
+| 可選 AI      | OpenAI Responses API、Image API                       | 受閘門控制的 assisted adapter；預設停用             |
 
 版本以 [`package.json`](package.json) 與 lockfile 為準。Cloudflare 方案、限制、模型可用性及價格會變動，部署前應重新核對官方文件。
 
@@ -38,11 +38,22 @@ Campaign Agent 的方法只供同一 Worker 內部 Durable Object RPC 使用；r
 - Session、帳號狀態及 workspace 授權；
 - 公開雙語產品主頁與獨立 `/app` 工作區；
 - Cloudflare Access JWT 驗證及受控 workspace membership；
-- 私人 R2 商品圖上傳、4 MB／8192 px／32 MP、格式／有界結構檢查及授權預覽；
+- active membership 的真實 workspace 切換：按需載入最多 50 個工作區，切換後完整重新載入私人圖片、Agent、用量及管理 state；per-tab API scope 與瀏覽器資源 cookie 都會再次由 Worker 核對 D1 membership，不會建立 membership 或改變角色；
+- owner／admin 專用的存取管理：owner 可加入 admin／member、調整非 owner 角色及移除非本人員；admin 只可加入／移除一般 member；所有操作只限目前 workspace，且不會改動 Cloudflare Access allow policy 或發送邀請電郵；
+- owner／admin 專用的工作區活動記錄；只顯示操作類型、時間及已知操作者，不輸出圖片、原始檔名或 Campaign Brief；
+- 全成員可讀的 workspace-scoped 用量 dashboard；只顯示目前可用／預留數、完成／退回總數及近期技術事件，不輸出 ledger、generation 或 provider identity；
+- owner／admin 專用的整合就緒度 dashboard；按需核對 Access、requested／effective Generation 與 Agent mode、workspace 併發、五個 assisted gate、server credential 是否存在，以及付款仍停用的固定邊界，不返回 secret、provider identity、workspace identity 或部署 mapping；
+- versioned Campaign Brief JSON 本機匯入／匯出；64 KiB、10 秒、strict UTF-8／exact schema／欄位上限及固定推廣目的預檢，不傳送網絡 request，亦不包含 workspace、user、圖片或 provider identity；匯入後必須重新核對及批准 Agent 計劃；
+- 工作台進階品牌控制：可直接管理主要語言、1–8 個 `#RRGGBB` 品牌色、限制字詞及最多 12 個目標渠道；品牌色由 browser、Agent／Campaign Pack client、Worker、私人品牌庫與 SVG compositor 共用同一 fail-closed 驗證，任意 CSS 色值不會進入顯示或輸出；逗號、頓號、分號或換行分隔的限制字詞會在批准前比對雙語商業文案，渠道只作 Brief 分發記錄，不會自動發佈或改變固定三個輸出；
+- 私人 R2 商品圖上傳；browser 先以 10 秒有界本機預檢核對 4 MB／8192 px／32 MP、格式、結構、metadata 與尺寸，通過後才建立 request，Worker 再獨立重驗並保存已驗證尺寸；另包括顯式商業使用權確認及授權預覽；
+- workspace-scoped 私人來源圖庫；可重用最近 20 張已驗收圖片並查看已驗證寬高及權利確認狀態，原始本機檔名、儲存 identity 與確認操作者不會進入列表；migration 前的舊資料會明確標示尺寸或使用權未確認；
+- workspace-scoped 核准商品資料庫；只保存 Agent 已批准的雙語商業欄位，相同內容去重，不連帶圖片或品牌；
+- workspace-scoped 品牌快照庫；只保存目前已由 Agent 核准的品牌欄位，相同內容會去重，選用後必須重新規劃；
 - Workspace-scoped Campaign Agent 與人工批准 revision；
 - 原子、具冪等鍵的三比例 Campaign Pack 建立；
 - Queue 重送安全、失敗回復及輸出額度核算；
-- 私人 SVG 草稿、逐一人工審核、受控下載及繁中／英文文案；
+- 私人 SVG 草稿、逐一人工審核、受控下載及繁中／英文文案；已核准的 canonical SVG 可保留原件，並在瀏覽器本機另存固定尺寸 PNG，衍生檔不會上傳或改寫正式輸出；
+- Campaign Packs 與素材庫可重開歷史私人預覽、核對 provenance、由 owner／admin 審批草稿、下載已核准 SVG 原件、本機另存 PNG 及逐項刪除；
 - 本機合成 demo 與隔離 Workers integration tests。
 
 詳細產品、資料及執行合約見 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) 與 [`docs/ENGINEERING.md`](docs/ENGINEERING.md)。公開文件只描述必要的技術界面，不記錄真實帳戶、資源拓撲、資料表內容、營運資料或內部部署映射。
@@ -74,7 +85,7 @@ npm run release:check
 
 ## 自部署快速步驟 / Self-hosting quick start
 
-自部署會在你的 Cloudflare 帳戶建立一套全新的 Worker、D1、R2、Queues、Durable Object 及 Access 設定；它不會連接 AisleStage 的任何既有環境或資料。開始前請確認你有權使用 repository、示範素材、網域與相關服務。Repository 可公開讀取不代表已取得軟件、媒體、品牌或商標授權；本指南只提供技術步驟。
+自部署會在你的 Cloudflare 帳戶建立一套全新的 Worker、D1、R2、Queues、Durable Object 及 Access 設定；它不會連接 AisleStage 的任何既有環境或資料。本版本庫採用[專有原始碼評估授權](LICENSE)，不是開源軟件；它只允許受條款限制的私人、非生產評估，正式部署、服務營運、再散布或商業使用須先取得獨立書面許可。商品圖、品牌、商標及第三方服務權利亦須另外核對。
 
 1. Fork／clone repository，在 Node.js 22+ 執行 `npm ci`。
 2. 執行 `npm run check`、`npm test`、`npm run build`、`npm run cf:dry-run` 及 `npm run release:check`。
@@ -101,12 +112,12 @@ ASSETS
 
 Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 binding 名稱及 fail-closed 預設值。它不是可直接連接正式環境的設定檔。
 
-| 可進 Git | 必須留在受保護設定 |
-| --- | --- |
-| 通用 binding 名稱、placeholder、公開模式說明 | Account／database identifier、實際資源名稱及 deployment URL |
-| 合成 fixture、公開測試、一般錯誤類別 | 真實使用者、商品、campaign、brief、營運及資料庫內容 |
-| 空白 secret 名稱示例 | API key、Access audience、team domain、cookie、JWT 及邀請碼 |
-| 官方文件 URL | Dashboard 截圖、CLI inventory、private object URL 及 provider payload |
+| 可進 Git                                     | 必須留在受保護設定                                                    |
+| -------------------------------------------- | --------------------------------------------------------------------- |
+| 通用 binding 名稱、placeholder、公開模式說明 | Account／database identifier、實際資源名稱及 deployment URL           |
+| 合成 fixture、公開測試、一般錯誤類別         | 真實使用者、商品、campaign、brief、營運及資料庫內容                   |
+| 空白 secret 名稱示例                         | API key、Access audience、team domain、cookie、JWT 及邀請碼           |
+| 官方文件 URL                                 | Dashboard 截圖、CLI inventory、private object URL 及 provider payload |
 
 正式值只可放在被忽略且限制權限的本機設定、Wrangler secret、Cloudflare Secrets Store 或同等受保護系統。不要把 secret 放進 `VITE_*` 變數、前端 bundle、`.env`、文件、commit、PR、issue、artifact 或 log。
 
@@ -133,9 +144,27 @@ Tracked [`wrangler.jsonc`](wrangler.jsonc) 只可保存 placeholder、通用 bin
 - [Provider-neutral 付款邊界](docs/PAYMENT_BOUNDARY.md)
 - [公開發佈外流閘門](docs/PUBLIC_RELEASE_GATE.md)
 - [安全與私隱](SECURITY.md)
+- [專有原始碼評估授權 / Licence](LICENSE)
 - [版權與使用權 / Copyright](COPYRIGHT.md)
+- [第三方告示 / Third-party notices](THIRD_PARTY_NOTICES.md)
 
 所有公開測試、截圖、commit、PR 及文件只可使用合成資料。執行 `npm run release:check` 只是其中一道閘門；發佈前仍需人工檢查 staged diff、commit／PR 文字及擬上傳 artifact。本次文件核對不代表任何實際部署狀態。
+
+## 授權 / Licence
+
+AisleStage 採用[專有原始碼評估授權](LICENSE)，不是開源軟件。該授權容許私人、
+非生產的內部技術評估、安全審查、相容性測試及概念驗證；不授權正式部署、公開
+或持續內部服務營運、再散布、代管或商業使用。
+
+AisleStage uses a [proprietary source evaluation licence](LICENSE), not an
+open-source licence. It permits limited private, non-production evaluation,
+but not production deployment, operation of a public or ongoing internal service,
+redistribution, hosting, or commercial use.
+
+商品圖片、產品資料、廣告文案、品牌、商標、模型及平台服務不在專案授權範圍內。
+介面的 rights confirmation 只記錄提交者聲明，不是授權保證。詳見
+[`COPYRIGHT.md`](COPYRIGHT.md) 及
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 ## 技術、AI 模型與參考資料 / Technology, AI models and references
 

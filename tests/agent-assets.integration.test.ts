@@ -41,6 +41,7 @@ async function uploadImage(
 ) {
   const form = new FormData()
   form.set('file', new File([new Uint8Array(bytes).buffer], name, { type: contentType }))
+  form.set('rightsAttestation', 'commercial-use-v1')
   return dispatch('/api/assets/product', {
     method: 'POST',
     headers: { cookie, origin: 'https://app.test', 'idempotency-key': idempotencyKey },
@@ -212,14 +213,15 @@ describe('private product assets', () => {
     const owner = await registerAccount('Asset Owner')
     const uploaded = await uploadPng(owner.cookie)
     expect(uploaded.status).toBe(201)
-    const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number } }
-    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: validPngBytes().byteLength })
+    const payload = await uploaded.json() as { asset: { id: string; previewUrl: string; contentType: string; sizeBytes: number; widthPx: number; heightPx: number } }
+    expect(payload.asset).toMatchObject({ contentType: 'image/png', sizeBytes: validPngBytes().byteLength, widthPx: 1, heightPx: 1 })
 
     const storedAsset = await env.DB.prepare(`
-      SELECT object_key AS objectKey, content_sha256 AS contentSha256, size_bytes AS sizeBytes
+      SELECT object_key AS objectKey, content_sha256 AS contentSha256, size_bytes AS sizeBytes,
+        width_px AS widthPx, height_px AS heightPx
       FROM media_assets WHERE id = ?
-    `).bind(payload.asset.id).first<{ objectKey: string; contentSha256: string; sizeBytes: number }>()
-    expect(storedAsset).toMatchObject({ sizeBytes: validPngBytes().byteLength, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })
+    `).bind(payload.asset.id).first<{ objectKey: string; contentSha256: string; sizeBytes: number; widthPx: number; heightPx: number }>()
+    expect(storedAsset).toMatchObject({ sizeBytes: validPngBytes().byteLength, contentSha256: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), widthPx: 1, heightPx: 1 })
     const storedObject = storedAsset ? await env.MEDIA_BUCKET.head(storedAsset.objectKey) : null
     expect(storedObject?.checksums.sha256?.byteLength).toBe(32)
     expect(base64Url(storedObject!.checksums.sha256!)).toBe(storedAsset!.contentSha256)
@@ -241,6 +243,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Asset Idempotency Required')
     const form = new FormData()
     form.set('file', new File([validPngBytes()], 'product.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
@@ -381,20 +384,10 @@ describe('private product assets', () => {
   it('reconciles an asset insert that commits before D1 reports failure', async () => {
     const owner = await registerAccount('Ambiguous Asset Commit')
     const ambiguousDb = {
-      prepare(query: string) {
-        const statement = env.DB.prepare(query)
-        if (!query.includes('INSERT INTO media_assets')) return statement
-        return {
-          bind: (...values: unknown[]) => {
-            const bound = statement.bind(...values)
-            return {
-              run: async () => {
-                await bound.run()
-                throw new Error('synthetic response failure after commit')
-              }
-            }
-          }
-        }
+      prepare: env.DB.prepare.bind(env.DB),
+      async batch(statements: D1PreparedStatement[]) {
+        await env.DB.batch(statements)
+        throw new Error('synthetic response failure after commit')
       }
     } as unknown as typeof env.DB
 
@@ -409,15 +402,8 @@ describe('private product assets', () => {
   it('removes the private object when an asset insert definitely does not commit', async () => {
     const owner = await registerAccount('Rejected Asset Insert')
     const rejectingDb = {
-      prepare(query: string) {
-        const statement = env.DB.prepare(query)
-        if (!query.includes('INSERT INTO media_assets')) return statement
-        return {
-          bind: () => ({
-            run: async () => { throw new Error('synthetic failure before commit') }
-          })
-        }
-      }
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: async () => { throw new Error('synthetic failure before commit') }
     } as unknown as typeof env.DB
 
     const uploaded = await uploadPng(owner.cookie, 'rejected-insert.png', { ...env, DB: rejectingDb })
@@ -466,6 +452,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Invalid Asset')
     const form = new FormData()
     form.set('file', new File(['not-a-png'], 'fake.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
     expect(response.status).toBe(415)
   })
@@ -496,6 +483,7 @@ describe('private product assets', () => {
     const owner = await registerAccount('Invalid PNG Structure')
     const form = new FormData()
     form.set('file', new File([bytes], 'invalid.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
 
     const response = await dispatch('/api/assets/product', {
       method: 'POST',
@@ -586,7 +574,9 @@ describe('private product assets', () => {
     const response = await uploadWebp(owner.cookie)
 
     expect(response.status).toBe(201)
-    expect(await response.json()).toMatchObject({ asset: { contentType: 'image/webp', sizeBytes: validWebpBytes().byteLength } })
+    expect(await response.json()).toMatchObject({
+      asset: { contentType: 'image/webp', sizeBytes: validWebpBytes().byteLength, widthPx: 1, heightPx: 1 }
+    })
   })
 
   it.each([
@@ -634,6 +624,7 @@ describe('private product assets', () => {
     ])
     const form = new FormData()
     form.set('file', new File([bytes], 'private-details.png', { type: 'image/png' }))
+    form.set('rightsAttestation', 'commercial-use-v1')
 
     const response = await dispatch('/api/assets/product', { method: 'POST', headers: { cookie: owner.cookie, origin: 'https://app.test', 'idempotency-key': crypto.randomUUID() }, body: form })
     expect(response.status).toBe(400)
@@ -656,7 +647,9 @@ describe('private product assets', () => {
 
     const response = await uploadJpeg(owner.cookie, bytes)
     expect(response.status).toBe(201)
-    expect(await response.json()).toMatchObject({ asset: { contentType: 'image/jpeg', sizeBytes: bytes.byteLength } })
+    expect(await response.json()).toMatchObject({
+      asset: { contentType: 'image/jpeg', sizeBytes: bytes.byteLength, widthPx: 1, heightPx: 1 }
+    })
   })
 
   it('rejects a JPEG with excessive marker work before storing the asset', async () => {
@@ -1149,7 +1142,9 @@ describe('workspace Campaign Agent', () => {
       { value: { ...brief, product: { ...brief.product, price: '9'.repeat(121) } }, error: /價格.*120/ },
       { value: { ...brief, product: { ...brief.product, benefits: Array.from({ length: 9 }, (_, index) => `賣點 ${index + 1}`) } }, error: /產品賣點.*8/ },
       { value: { ...brief, product: { ...brief.product, name: 42 } }, error: /商品名稱格式無效/ },
-      { value: { ...brief, brand: { ...brief.brand, locale: 'fr' } }, error: /語言設定格式無效/ }
+      { value: { ...brief, brand: { ...brief.brand, locale: 'fr' } }, error: /語言設定格式無效/ },
+      { value: { ...brief, brand: { ...brief.brand, colors: ['url(x)'] } }, error: /品牌顏色.*#RRGGBB/ },
+      { value: { ...brief, brand: { ...brief.brand, colors: [] } }, error: /品牌顏色.*#RRGGBB/ }
     ]
 
     for (const invalidBrief of invalidBriefs) {
@@ -1210,6 +1205,41 @@ describe('workspace Campaign Agent', () => {
     expect(correctedApproval.status).toBe(200)
     expect(await correctedApproval.json()).toMatchObject({ state: { stage: 'approved', revision: correctedState.revision } })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM output_ledger WHERE workspace_id = ?').bind(owner.currentWorkspace.id).first()).toEqual({ count: 0 })
+  })
+
+  it('keeps configured forbidden words out of approval and supports correction', async () => {
+    const owner = await registerAccount('Agent Forbidden Copy')
+    const uploaded = await uploadPng(owner.cookie, 'forbidden-copy-source.png')
+    const { asset } = await uploaded.json() as { asset: { id: string } }
+    const brief = validBrief(asset.id)
+    const blocked = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief: { ...brief, product: { ...brief.product, promotion: '保證耐用' } } })
+    })
+
+    expect(blocked.status).toBe(200)
+    const { state } = await blocked.json() as { state: { stage: string; revision: number; checks: Array<{ id: string; status: string; detail: string }> } }
+    expect(state.stage).toBe('needs-input')
+    expect(state.checks.find((check) => check.id === 'claims')).toMatchObject({
+      status: 'action',
+      detail: expect.stringMatching(/限制字詞出現在商業文案.*Forbidden words appear in the commercial copy/)
+    })
+
+    const approval = await dispatch('/api/campaign-agent/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ revision: state.revision })
+    })
+    expect(approval.status).toBe(409)
+
+    const corrected = await dispatch('/api/campaign-agent/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: owner.cookie, origin: 'https://app.test' },
+      body: JSON.stringify({ brief })
+    })
+    const { state: correctedState } = await corrected.json() as { state: { stage: string; revision: number } }
+    expect(correctedState).toMatchObject({ stage: 'awaiting-approval', revision: state.revision + 1 })
   })
 
   it('refuses approval until missing commercial facts and the product asset are supplied', async () => {

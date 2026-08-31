@@ -30,6 +30,10 @@ reversed
 
 付款成功不直接等於 Campaign Pack 交付成功。Generation reservation／settlement／release 仍由獨立 D1 ledger 管理，失敗或重送不得重複扣除可用輸出。
 
+工作區「用量」dashboard 只讀取這份技術 allowance／ledger 的隱私最小化摘要；它不是 invoice、checkout、subscription、付款狀態或價格介面。Browser 不會取得 ledger／generation／provider identity、note、失敗原因、交易 reference 或付款資料，因此新增這個 dashboard 不會改變付款保持 disabled 的邊界。
+
+Owner／admin 的「整合就緒度」只顯示固定 `payment enabled=false`、`checkoutAvailable=false`、`subscriptionAvailable=false` 及仍需另行批准；它不是付款設定介面，也不包含價格、商戶、交易、credential 或 provider mapping。這個 snapshot 不能啟用付款或證明付款環境存在。
+
 ## 上線阻擋條件
 
 未完成書面服務、費率、settlement、資料處理、PCI responsibility、webhook、退款／爭議、SLA、IP allowlist 與 sandbox failure-mode 核對前，付款保持 disabled。任何 provider-specific source disclosure、真實商戶 object、sandbox／production transaction 或 credential 變更都需要另一次明確批准。

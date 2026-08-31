@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../src/worker'
-import { dispatch } from './helpers'
+import { cookieFrom, dispatch, registerAccount } from './helpers'
 
 async function accessFixture(options: {
   autoProvision?: boolean
@@ -185,6 +185,47 @@ describe('Cloudflare Access authentication', () => {
     const repeated = await dispatch('/api/session', { headers: { 'cf-access-jwt-assertion': fixture.token } }, fixture.accessEnv)
     expect(await repeated.json()).toMatchObject({ currentWorkspace: { id: payload.currentWorkspace.id } })
     expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?').bind(fixture.email).first()).toEqual({ count: 1 })
+  })
+
+  it('uses the same membership-checked workspace selection in Access mode', async () => {
+    const fixture = await accessFixture()
+    const provisioned = await dispatch('/api/session', {
+      headers: { 'cf-access-jwt-assertion': fixture.token }
+    }, fixture.accessEnv)
+    const accessSession = await provisioned.json() as {
+      user: { id: string }
+      currentWorkspace: { id: string }
+    }
+    const sharedWorkspaceOwner = await registerAccount('Access Shared Workspace Owner')
+    await env.DB.prepare(`
+      INSERT INTO workspace_memberships (workspace_id, user_id, role)
+      VALUES (?, ?, 'member')
+    `).bind(sharedWorkspaceOwner.currentWorkspace.id, accessSession.user.id).run()
+
+    const switched = await dispatch('/api/workspaces/current', {
+      method: 'PUT',
+      headers: {
+        'cf-access-jwt-assertion': fixture.token,
+        origin: 'https://app.test',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ workspaceId: sharedWorkspaceOwner.currentWorkspace.id })
+    }, fixture.accessEnv)
+
+    expect(switched.status).toBe(200)
+    expect(await switched.json()).toMatchObject({
+      currentWorkspace: { id: sharedWorkspaceOwner.currentWorkspace.id, role: 'member' }
+    })
+    const selected = await dispatch('/api/session', {
+      headers: {
+        'cf-access-jwt-assertion': fixture.token,
+        cookie: cookieFrom(switched)
+      }
+    }, fixture.accessEnv)
+    expect(await selected.json()).toMatchObject({
+      authenticated: true,
+      currentWorkspace: { id: sharedWorkspaceOwner.currentWorkspace.id, role: 'member' }
+    })
   })
 
   it('reconciles Access auto-provision that commits before D1 reports failure', async () => {

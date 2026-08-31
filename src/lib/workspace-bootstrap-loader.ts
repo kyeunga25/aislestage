@@ -1,6 +1,7 @@
 import { normalizeAccessFailureReason, type AccessFailureReason } from './access-login'
 import { readBoundedJsonResponse } from './bounded-json-response'
 import { fetchWithTimeout } from './fetch-with-timeout'
+import { persistSelectedWorkspaceId } from './workspace-selection-storage'
 import type { AuthUser, PlatformStatus, WorkspaceSummary } from './types'
 
 export type AuthedSession = {
@@ -141,6 +142,11 @@ export async function loadSession(): Promise<SessionLoadResult> {
         }
         const session = normalizeAuthenticatedSession(data)
         if (!session) throw new Error(sessionDataUnavailableMessage)
+        try {
+          persistSelectedWorkspaceId(session.currentWorkspace.id)
+        } catch {
+          // Keep the established session contract even if selection persistence is unavailable.
+        }
         return { session, failure: null }
       }
     )

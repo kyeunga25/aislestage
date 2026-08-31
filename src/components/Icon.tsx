@@ -1,4 +1,4 @@
-import { Box, Images, LayoutDashboard, Layers3, MonitorCog, PackageCheck, PanelTop, RectangleHorizontal, Square, type LucideProps } from 'lucide-react'
+import { Box, Gauge, History, Images, LayoutDashboard, Layers3, ListChecks, MonitorCog, PackageCheck, PanelTop, RectangleHorizontal, ShieldCheck, Square, type LucideProps } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { Workflow } from '../lib/types'
 
@@ -20,7 +20,11 @@ export const navItems = [
   { id: 'campaigns', label: 'Campaign Packs', icon: PackageCheck },
   { id: 'products', label: '商品庫', icon: Box },
   { id: 'brands', label: '品牌庫', icon: Layers3 },
-  { id: 'assets', label: '素材庫', icon: Images }
+  { id: 'assets', label: '素材庫', icon: Images },
+  { id: 'usage', label: '用量', icon: Gauge },
+  { id: 'readiness', label: '整合就緒度', icon: ListChecks },
+  { id: 'activity', label: '活動記錄', icon: History },
+  { id: 'access', label: '存取管理', icon: ShieldCheck }
 ] as const
 
 export type NavigationSection = typeof navItems[number]['id']

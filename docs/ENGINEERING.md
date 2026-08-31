@@ -10,7 +10,7 @@ React SPA
   -> public `/` + Access-protected `/app*`
   -> /api/* Worker routes
        -> signed Access JWT validation
-       -> D1 metadata and authorization
+       -> D1 metadata, authorization and privacy-minimized activity events
        -> private R2 source/output objects
        -> CampaignAgent Durable Object
        -> Generation Queue
@@ -51,6 +51,27 @@ npm run cf:types:check
 
 目前 adapter 的 credential 是 Worker-side secret。只有 `GENERATION_MODE=assisted`、provider allowlist、資料政策、固定評估、預算及 secret 六項全部通過時才會使用。圖片 adapter 在網絡 request 前只接受 1–4,000 字元 prompt、空的 reference URL 清單及已知比例；未知或超限輸入不會靜默 fallback 或接觸 provider。文字 request 固定 output token 上限；success response 以實際串流位元組及 chunk 數限制讀取，不只信任 `Content-Length`。圖片比例由同一份 server-side mapping 選出 request size 及預期 IHDR（`1024x1024`、`1024x1280`、`1024x1536` 或 `1536x1024`），回傳尺寸在解壓前必須完全相符。本機 validator 會再核對 JSON MIME／UTF-8、exact schema、欄位長度及 base64 大小；解碼 PNG 另須通過與來源上載共用的 signature、chunk order／CRC、`tRNS` 色彩類型／長度／palette 關係、非空 IDAT、canonical IEND、單邊 8192 px／32 MP 尺寸上限及 EXIF／文字 metadata 拒絕規則。Provider IDAT 會以 `DecompressionStream` 串流驗證 IHDR 對應的 non-interlaced／Adam7 scanline 長度與 filter 0–4；預計 decoded scanline 超過 128 MiB 會在開始解壓前拒絕，亦不建立完整 decoded bitmap。拒絕、缺漏、超限、過度碎片或無效 response 均 fail closed。未使用的 error body 會立即取消。每個 provider request 連同完整 body 讀取及 PNG 解壓共用 30 秒 deadline；逾時中止後會映射為可重試的 408，Queue 以 60 秒延遲最多重試三次，終止時以冪等 ledger 釋放一次 reservation。
 
+## Local Campaign Brief files
+
+- Browser-only import／export 使用 `aislestage-campaign-brief-v1` exact JSON envelope，不呼叫 API、D1、R2 或 provider；檔案不包含 asset、workspace、user、deployment 或 provider identity，下載名固定為 generic `aislestage-campaign-brief.json`；
+- import 只接受 `.json` 與一致的 JSON MIME（或 browser 未提供 MIME），以 10 秒 deadline 讀取最多 64 KiB exact bytes，再以 fatal UTF-8 decoder、exact outer／brand／product key set、現有 Campaign Brief 欄位上限、四個已支援推廣目的、`#RRGGBB` 品牌色及三個雙語賣點上限驗證；任何失配都只返回固定雙語錯誤且不套用部分資料；
+- import 期間 brief、圖片 mutation、Agent、Campaign Pack、重複 import／export 及 workspace switch 保持鎖定。完成前若 hydration identity 改變，epoch guard 會丟棄舊本機結果；成功只取代 brand／product／intent，保留目前已授權圖片，但清除 snapshot selection、舊 Agent approval 及 generation idempotency key；
+- serializer 由目前 runtime state 重建 exact known fields，不接受會被截短、未知推廣目的、超過三個賣點或非 hex 品牌色；下載 Object URL 在觸發後撤銷。商品規格在主表單直接可見及可編輯，避免匯入或已恢復 brief 的確定性輸出欄位藏在批准流程之外。
+
+## Local approved PNG derivatives
+
+- R2 及 D1 的正式輸出仍是人工核准的 canonical SVG；PNG 只是在使用者明確按下按鈕後，由同一瀏覽器建立的固定尺寸衍生檔，不新增 server route、儲存記錄、用量事件、provider request 或發布動作；
+- 入口只接受 completed／approved、exact same-origin image／download route、相同 approved revision，以及 `deterministic-svg-v1` deterministic／assisted provenance 的 1:1、4:5 或 9:16 SVG。其他 MIME、legacy composition、demo、draft 或 rejected output 只保留原有行為；
+- browser 以 workspace-aware same-origin fetch 讀取 approved download，完整 response 使用 30 秒 deadline、18 MiB actual-byte、1,024 chunk、exact SVG MIME／attachment filename 及 fatal UTF-8 邊界。SVG lexer 只接受 compositor 所需的窄 tag／attribute／ID／fragment grammar、固定 1080×1080／1080×1350／1080×1920 尺寸及最多兩張內嵌 PNG／JPEG／WebP data image；script、event handler、doctype／entity、external href、arbitrary CSS URL、foreign object 或未知結構全部在 Image／Canvas 前拒絕；
+- Canvas 產物必須是非空、最多 16 MiB 且具 PNG signature 的 Blob；SVG rasterization 及最終下載的 Object URL 均會撤銷。失敗只顯示固定雙語錯誤，不反映 response body；SVG 原件及其人工審核狀態保持不變。
+
+## Brand and channel controls
+
+- 工作台以原生 color input 管理 1–8 個品牌色，並直接顯示 canonical `#RRGGBB`；主要語言只接受 `zh-Hant`／`en`，限制字詞沿用 500 字元上限，目標渠道最多 12 個且每項最多 80 字元。新增空渠道只屬本機編輯狀態，送出前仍經 canonical Brief normalization；渠道只作分發 metadata，不會自動發佈或改變固定三個輸出；
+- `brand-color.ts` 是 browser、Agent loader／validator、Campaign Brief file、品牌庫、Campaign Pack compositor 與 Worker generation input 的共享邊界。完整品牌色清單必須非空且每項符合 exact six-digit hex；compositor 與品牌預覽另外以固定安全色作 defence-in-depth，不反射不合規 runtime 值；
+- 限制字詞以換行、逗號、全形逗號、頓號或分號切分；比較前只作 NFKC、空白及大小寫 normalization，然後核對所有繁中／英文商業 copy。任何命中只產生固定雙語 issue，不回顯限制字詞，並阻止 Agent approval 及 deterministic composition；
+- 修改上述任何欄位沿用現有 brief change path，立即失效舊 Agent approval、snapshot selection 與 Campaign Pack idempotency identity。這些控制只管理確定性商業 metadata，不會接觸外部 AI、付款或發佈 API。
+
 ## Authentication and workspace boundary
 
 - 公開 `/` 與私人 `/app` 分開；正式 Access policy 亦保護受保護 API；
@@ -75,15 +96,33 @@ npm run cf:types:check
 - JSON／multipart 寫入會先精確核對大小寫不敏感的 base media type，再進入 bounded body parser；標準 charset／boundary 參數可用，substring lookalike 會取消未讀 stream，並在 password verification 或 endpoint mutation 前返回 `415`；受保護 route 仍會先完成必要的 session／membership 核對；
 - active user 必須同時擁有 active workspace membership；
 - session 授權完成後，`/api/workspaces` 的第二次 workspace 清單查詢若不可讀，回雙語 no-store `503 unavailable` 並保留既有 session；不輸出 D1 細節，亦不回傳不完整清單；
+- `GET /api/workspaces` 只返回同一 active user 的最多 50 個 active memberships，並把已核實 current workspace 放在第一項；`PUT /api/workspaces/current` 只接受 exact 1 KiB `{ workspaceId }`，以同一 D1 query scope 證實 target membership 才發出 resource-selection cookie。這個 endpoint 不寫 D1、不建立 membership、不改角色，未知 target 保持 `404`，query failure 固定回 no-store `503`；
+- browser API 經共用 bounded fetch helper 自動帶入 per-tab `x-aislestage-workspace-id`，Worker 只接受 UUID 並仍以 active membership 過濾；合法 header 優先於 browser-wide HttpOnly cookie，令其他分頁的延遲 request 不會錯投。Cookie 只為不能自訂 header 的私人圖片／下載提供同源 scope；exact switch acknowledgement 後 browser 以 bounded local marker 同步其他 AisleStage 分頁並完整 reload 所有 workspace state；
+- 初始 workspace bootstrap 在 session 成功後並行讀取 generation、Agent state 與 product-source metadata；同一 in-flight bootstrap 由 concurrent React 啟動共享。Product list 的 authoritative `rightsStatus` 會恢復現用 source；Agent state GET 會原子清除缺失或未確認來源圖的 stale plan，因此 browser 不從歷史 revision 推斷商業使用權；
 - `/api/generations` 先重核 requested workspace 與 session current workspace 一致，再讀 active membership scope 及最多 20 個輸出；scope／清單 D1 查詢不可讀時回雙語 no-store `503 unavailable`，不以空清單掩蓋，跨 workspace request 仍為 `404`；
+- `GET /api/workspace-members` 只容許目前 workspace 的 `owner`／`admin`，最多返回 50 個 canonical 成員，並重核唯一 user／email、單一 owner、workspace owner identity 及目前操作者仍在清單。回應不含 workspace ID、Access subject hash、password material 或其他 workspace identity；任何 row／owner invariant／D1 失配會整體回雙語 no-store `503`；
+- `POST /api/workspace-members` 只接受 exact `{ email, name, role }`：owner 可加入 admin／member，admin 只可加入 member。未知 email 以一個 D1 batch 建立 active beta Access-only user 及 membership；既有 active user 只增加目前 workspace membership。相同 email／role 可 replay，不同 role 或非 active account conflict；寫入回應不確定時必須以 canonical account 與 scoped membership post-read 證實，不只憑 email 宣稱成功；
+- `PATCH /api/workspace-members/:id` 只由 owner 對非 owner、非本人員提交 exact `{ role }`；`DELETE` 要求空 body，owner 可移除非 owner／非本人員，admin 只可移除一般 member。DELETE 只移除一筆 membership，以 scoped absence 對帳不確定 commit，不會刪 user、其他 workspace 或私人資產；
+- D1 `BEFORE INSERT` trigger 與 API capacity preflight 同時限制每 workspace 50 人，避免並發加入越界。加入、角色變更及移除由 membership trigger 原子寫入最小 access audit event；workspace cascade 不留下 event，日常 scheduled cleanup 在 180 日後刪除。這些 route 只管理 D1 membership，不呼叫或修改 Cloudflare Access application／Allow policy，也不發送電郵；
+- `/api/workspace-activity` 先完成 session 與目前 workspace scope，再只容許 `owner`／`admin` 讀取最近 50 項事件；D1 mutation trigger 讓商品圖上載／刪除、Campaign Pack 建立、輸出批准／拒絕／刪除與核心資料變更同一 transaction 記錄。公開 API 不返回 subject ID、檔案名、brief、input JSON、object identity 或底層錯誤；未知操作者保持 `null`，不會錯誤歸因；
+- `/api/output-usage` 只供目前 active workspace membership 讀取 authoritative allowance 與已知 technical output ledger summary；單一 D1 read batch 保持三個查詢同一 transaction 邊界，workspace／created-time index 支援最多 50 項近期事件，而公開資料只含 `reservation`／`settlement`／`release`、固定 amount 及 UTC 時間。Worker 會核對 allowance／summary 為非負 safe integer、事件 amount 與目前單位成本一致，以及 timestamp canonical；任何失配或 D1 故障回固定雙語 no-store `503`。回應不包含 workspace／user／generation／ledger／provider identity、note、失敗內容、價格或付款狀態；
+- `GET /api/integration-readiness` 只供目前 workspace 的 `owner`／`admin`，不讀寫 D1 業務資料，只從已生效 Worker config 建立 no-store snapshot。回應只含 Access／registration、requested／effective Generation 與 Agent mode、workspace 併發、五個 assisted gate 的布林值及固定停用的 payment／checkout／subscription boundary；credential 只回報是否存在，不返回 secret 名稱或內容、provider／workspace／deployment identity 或 mapping。其他 method 取消 body 後回 `405`；
+- integration readiness browser view 只在管理者進入或按重新載入時發出單一 15 秒、16 KiB bounded GET。Loader 要求 exact `200 application/json`、exact key set、受支援 enum、safe-integer concurrency、Access／registration、requested／effective mode、execution gate 及 payment boundary 的跨欄位一致性；malformed 或暫時失敗會保留先前可信 snapshot。Workspace hydration epoch、request epoch 及同步 ref lock 防止舊身份回應或重複 request 回寫；這份 snapshot 不替代 deployment、provider connectivity 或 live-route 驗收；
+- `GET /api/assets/product` 只列出目前 workspace 最近 20 張具 digest 記錄的 product source；回應只含 UUID、canonical 名稱、MIME、大小、已驗證寬高（migration 前舊 row 為 `null/null`）、`confirmed`／`unconfirmed` 權利狀態、同源 preview route 及 UTC 時間，不讀出 original filename、object key、workspace／user／確認操作者 identity、確認版本或 checksum。Worker 會拒絕半套或超限的 stored dimension pair；D1 清單不可讀或資料不一致時返回固定雙語 no-store `503`，不以空 array 掩蓋；
+- `POST /api/assets/:id/rights` 只接受目前 active workspace 內一張 UUID product source 及 exact 512-byte `{ attestation: "commercial-use-v1" }`；首次確認保存 immutable、版本化、具操作者及時間的最小 D1 記錄，並發／重送及 commit-response 不確定時以 scoped post-read 收斂。跨 workspace 保持 `404`，回應不含 workspace、user、版本或時間；
+- `GET /api/brand-packs` 只列出目前 workspace 最近 20 個 digest-backed approved snapshot；回應只含 UUID、canonical brand fields、approved revision 及 UTC 時間，不輸出 workspace／user identity、digest 或其餘 Campaign Brief。任何 row schema／digest 或 D1 讀取失配會以固定雙語 no-store `503` fail closed，不回傳部分清單；
+- `GET /api/product-profiles` 只列出目前 workspace 最近 20 個 digest-backed approved product snapshot；回應不含 workspace／user identity、digest、圖片、品牌或其他 brief。`POST` 只接受 exact positive approved revision，重核 Agent state 後按 canonical product digest 去重；`DELETE /api/product-profiles/:id` 只處理一個 workspace-scoped snapshot 並以 row absence reconciliation 收斂；
+- `POST /api/brand-packs` 只接受 exact positive approved revision，重新讀取 workspace-scoped Agent state 並只保存完全相符的 approved canonical brand。品牌內容 digest 提供同 workspace 去重；首次 insert、並發 duplicate 及 ambiguous response 都以 authoritative post-read 核對，只有 exact committed snapshot 才返回 `201`／`200 replay`。`DELETE /api/brand-packs/:id` 只刪除一個 scoped snapshot，寫入回應不確定時以 row absence reconciliation 收斂；
 - browser generation loader 在 JSON parse 前要求 exact `200 application/json`，並只接受 exact `{ generations }` outer envelope；normalizer 再只把最多 20 項、ID 唯一、欄位完整的 array 視為 authoritative snapshot，核對 workflow／比例／狀態、review／provenance revision 關係，以及與 generation ID 精確相符的同網域 preview／download route。清單 GET 與 Campaign Pack success response 共用內層契約；網絡失敗、非 canonical success status、額外 outer field、外部 URL 或 malformed payload 會保留現有 session／輸出並顯示固定雙語提示，不把後端故障渲染成真正空白 workspace；
-- 私人 hydration JSON 在 parse 前以共用 reader 計算實際 decoded stream bytes：health 4 KiB、session 16 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只作早期拒絕，不是唯一保護；宣稱較小但實際超限的 body 仍會被取消，不套用部分 snapshot；
-- session、health、generation list 及 Agent state 的可安全重試 GET 共用 15 秒 AbortController deadline；到期會進入同一固定雙語 unavailable 狀態、釋放 loading UI，並保留既有 workspace snapshot。Mutation 的 commit uncertainty 仍由各 endpoint reconciliation／retry 契約處理；
-- 同一個 mounted `WorkspaceApp` 的並行初始 bootstrap 只共用一個 in-flight coordinator：先並行讀 session／health，確認登入後才各讀一次 generation list／Agent state。Promise 無論成功或失敗都立即清除，不跨 reload 長期 cache 私人資料；effect cleanup、登出或較新的登入 hydration 會推進 epoch，舊 snapshot 不可回寫 identity、output 或 Agent state；
-- 私人 mutation acknowledgement 亦在 schema 驗證前共用 bounded reader：logout 1 KiB、product upload 4 KiB、password auth／output review 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB。超限 success body 不能確認登入、登出、上載、計劃、pack 或審核決定；
+- browser activity loader 只接受 exact `200 application/json` 及 exact `{ activity }` envelope；最多 50 項、唯一安全 ID、已知事件枚舉、bounded actor name 與嚴格 UTC timestamp 全部通過才替換可信快照，任意額外欄位、錯誤 MIME、非 canonical status、重複 ID 或 malformed payload 都只顯示固定雙語提示；
+- browser workspace-member loader 只接受 exact `200 application/json` 及 exact `{ members }` envelope；最多 50 項、唯一 UUID／標準化 email、單一 owner、合法角色／狀態／auth mode 與嚴格 UTC timestamp 全部通過才替換可信清單。POST／PATCH acknowledgement 只接受 exact member／replayed envelope，並綁定提交 email 或 member ID 與角色；暫時故障最多以同一自然 identity 重試一次；
+- 私人 hydration JSON 在 parse 前以共用 reader 計算實際 decoded stream bytes：health 4 KiB、session 16 KiB、workspace activity／workspace members／output usage／product-source／product profile／brand snapshot list 64 KiB、generation list 128 KiB、Agent state 256 KiB。`Content-Length` 只作早期拒絕，不是唯一保護；宣稱較小但實際超限的 body 仍會被取消，不套用部分 snapshot；
+- session、health、workspace activity、workspace members、output usage、product-source list、product profile list、brand snapshot list、generation list 及 Agent state 的可安全重試 GET 共用 15 秒 AbortController deadline；到期會進入同一固定雙語 unavailable 狀態、釋放 loading UI，並保留既有 workspace snapshot。workspace member／品牌／商品快照 mutation acknowledgement 另限制為 16 KiB，並只對可安全去重的暫時故障以同一 canonical identity 最多重試一次；
+- 同一個 mounted `WorkspaceApp` 的並行初始 bootstrap 只共用一個 in-flight coordinator：先並行讀 session／health，確認登入後才各讀一次 generation list／Agent state。活動記錄、workspace members、output usage、product-source list、product profile list 及 brand snapshot list 不加入 bootstrap，只在授權使用者明確進入或重新整理對應 view 時載入。Promise 無論成功或失敗都立即清除，不跨 reload 長期 cache 私人資料；effect cleanup、登出或較新的登入 hydration 會推進 epoch，舊 snapshot 或快照 mutation acknowledgement 不可回寫新的 identity／workspace state；
+- 私人 mutation acknowledgement 亦在 schema 驗證前共用 bounded reader：logout 1 KiB、product upload 4 KiB、password auth／output review／workspace member 16 KiB、Campaign Pack 64 KiB、Agent action 256 KiB。超限 success body 不能確認登入、登出、上載、成員變更、計劃、pack 或審核決定；
 - 無權資產與輸出一律返回 not found，避免跨 workspace 枚舉；
 - 登入／註冊短期限制只保存電郵與來源 IP 的單向 key；每個 auth event 另有 server-generated ID，INSERT 回應失敗時必須由該 ID 讀回完全相同的 email hash、IP hash 及 event type 才可繼續。同一主鍵與 exact fields 容許在 row 缺失或首輪 reconciliation 暫時不可讀時做一次有界重寫；首次其實已提交會由唯一鍵及 post-read 恢復，不會重複計數，衝突 row 亦不會覆寫。Event 最終未確認或 rate-limit count 暫時不可讀時，password auth route 以專用錯誤邊界返回雙語 no-store `503`；成功密碼不會取得 session，其他程式錯誤亦不會被這個邊界吞掉；
-- 定期 trigger 清理過期 session、7 日前的登入嘗試、已過期 pending／revoked invite hash，以及 30 日前已使用 invite 的 hash／account linkage。
+- 定期 trigger 清理過期 session、7 日前的登入嘗試、已過期 pending／revoked invite hash、30 日前已使用 invite 的 hash／account linkage，以及 180 日前的 workspace access audit event。
 
 ## Campaign Agent lifecycle
 
@@ -145,17 +184,18 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 ## Product fidelity
 
 - 上傳只接受 PNG、JPEG、靜態 WebP，最大 4 MB、單邊 8192 px 及 32 MP；
-- MIME type 與檔案 signature 必須相符；
+- browser 在建立 UUID、multipart 或 network request 前，以 10 秒 deadline 讀取不超過 4 MB 的 exact local bytes；MIME、signature、container、metadata 與尺寸任一失配或逾時都不發出 request。公開 demo 採相同本機預檢且不接觸私人 API；Worker 在 D1／R2 mutation 前使用同一 validator 再次獨立重驗；
 - PNG parser 以 bounded chunk walk 核對 IHDR／IDAT／IEND 次序、critical chunk、CRC、完整結尾、indexed-color PLTE 容量，以及 `tRNS` 按 color type 的 2／6／palette-bound 長度、唯一性與 IDAT／PLTE 次序；private PNG chunk 及未識別 WebP chunk 會在儲存前拒絕，已知公開 PNG color data、合法透明度及標準 extended WebP 結構仍可使用。WebP parser 另核對 RIFF declared size、chunk padding、靜態 VP8／VP8L bitstream header 及 image dimensions，不解壓或重新編碼私人圖片；
 - JPEG／PNG／WebP 的 EXIF、XMP 或文字 metadata 會被拒絕；PNG chunk、JPEG structural marker 與 WebP chunk 掃描均有固定 traversal-count 上限，原始檔名會改為 generic 名稱；
-- upload client 在 multipart 邊界已把本機檔名改成 MIME-derived generic 名稱，並附上 client-generated UUID v4 idempotency key；只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size 及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，hidden file input、主要上載、更換與刪除控制會一併鎖定，避免同一 UI 啟動競爭的私人 asset mutation；
+- upload client 只有在使用者勾選雙語商業使用權聲明後才開放 file chooser；預檢通過後，multipart 邊界把本機檔名改成 MIME-derived generic 名稱，只傳 exact `file`／`rightsAttestation`，並附上 client-generated UUID v4 idempotency key。Client 只接受 exact `201 application/json` asset envelope，並把回傳 asset ID 綁定該 key，再把 canonical 名稱、MIME、size、與本機解析一致的有效正整數寬高、`confirmed` 權利狀態及 exact same-origin preview path 綁定至本次 File。外部／不相符 URL、缺少／超限尺寸、未知權利狀態、額外欄位及任意 server error detail 均不會進入 workspace state；單次 upload pending 時，權利 checkbox、hidden file input、主要上載、更換與刪除控制會一併鎖定；
 - R2 object key 只由 server 生成；
 - 私人商品圖 GET 先做 workspace-scoped D1 metadata 查詢，再讀取私人 R2 object；成功 body 使用 `private, no-store` 及 `Cross-Origin-Resource-Policy: same-origin`，避免 browser 在登出或換帳號後沿用快取或被跨來源頁面作為子資源嵌入。真正不存在或跨 workspace 保持 `404`，D1 或 R2 暫時不可讀則回雙語 no-store `503 unavailable`，固定 log 不包含 object key、workspace ID 或原始錯誤；
-- 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；
+- 來源圖上傳向 R2 提供 SHA-256，寫入回傳 checksum 與 D1 canonical digest 必須一致；同一次已驗證 header 讀取所得寬高會寫入 D1，毋須重新解碼 bitmap；
+- 新上傳以同一 D1 atomic batch 寫入 media asset 與 `commercial-use-v1` 確認；migration 前及短暫由舊 Worker 建立的 row 不回填或推斷權利，保持 `unconfirmed`。權利記錄不可 UPDATE；刪除 media asset 時由 foreign key cascade 清理。這個確認只記錄使用者聲明，不等同法律審核或權利轉移；
 - Worker 在讀 multipart body 前要求 canonical upload idempotency key，並把它用作 asset identity。同 workspace 重送只有在 object key、MIME、size 及 SHA-256 完全相同時返回原 `201` asset；同 key 不同內容回固定 `409`，跨 workspace key collision 不會返回或覆寫原 asset。候選私人 object identity 加入內容 digest，因此同 key 不同 payload 的併發寫入互不覆蓋；唯一 D1 row 的敗方只清理已確認未被 row 引用的候選 object；
 - browser upload 每次 attempt 連完整 success body 讀取共用 45 秒 deadline，transport／response stream 中斷／deadline、HTTP `408` 或 `5xx` 最多以同一 key 自動重試一次；兩次均不可用後釋放 uploading UI 並保留本機 preview。`4xx` validation／authorization／conflict、非 canonical success status、錯誤 media type、malformed 或 oversized success body 均不自動重送；
 - R2 驗收後若 D1 insert 拋錯，Worker 會以 request-bound asset ID 重新讀取 workspace-scoped 記錄：完整 canonical row 已提交時返回同一 `201` 並保留 object，明確沒有 row 時才補償刪除 R2；reconciliation 本身不可用時返回不含識別資料的 `503`，不做可能破壞已提交記錄的盲目刪除；
-- Agent plan 在 Durable Object mutation／provider work 前核對來源圖的 workspace ownership 與 D1／R2 digest、大小、MIME、asset kind、workspace metadata；preview、Agent 批准及 Queue 取圖亦再次核對。找不到或失配不改寫既有 Agent revision，並在任何 provider work 前 fail closed；
+- Agent plan 在 Durable Object mutation／provider work 前核對來源圖的 workspace ownership、版本化權利確認與 D1／R2 digest、大小、MIME、asset kind、workspace metadata；Agent 批准、Campaign Pack／單輸出建立、Queue claim 後取圖及 provider 完成前 fence 亦再次核對。缺失或失配不改寫既有 Agent revision、不預留輸出，已排隊工作則在任何 provider／R2 output work 前 terminal fail 並退回 reservation；
 - 確定性 compositor 把已批准原圖位元組嵌入 SVG，不重新繪製商品；
 - 品牌、商品名、價格、優惠、賣點、規格與 CTA 經 XML escaping 後排版；
 - Agent 與確定性 compositor 共用文字 normalization、1:1／4:5／9:16 換行參數及合併明細行數 validator；無空格 SKU／型號 token 會按視覺單位安全拆行並保留原字元；超出任一固定安全區的文字會先停在 `needs-input` 並顯示雙語修正原因，批准及排隊前仍會再次拒絕；
@@ -164,7 +204,7 @@ Queue 完成只會結算 technical output allowance，並把輸出設為私人 `
 - preview 使用 no-store inline response；只有已核准輸出可使用 no-store attachment response 正式下載。
 - DELETE routes 只處理一個經授權的明確 asset／generation ID；browser client 同樣限制一個 bounded safe ID、一條 same-origin route 及空 body，只接受 `204` 或 workspace-scoped `404` absence，且不解析 error payload。這個明確冪等契約使用 15 秒 AbortController deadline：逾時保留本機項目並顯示固定雙語錯誤，再次提交同一 DELETE 可由 `204`／`404` 安全收斂。處理中的 Queue output 不可刪除。任何 R2、Agent 或 D1 mutation 前，必須先成功讀取 workspace-scoped D1 preflight metadata；讀取不可用時回固定雙語 no-store `503`，並完整保留 row、object 與 Agent revision。商品圖先完成私人 R2 delete，才由 workspace-scoped Agent 以 asset identity 原子判斷並重設引用同一來源圖的 plan，最後刪除 D1 asset 記錄；若 R2 delete call 拒絕，Worker 不會繼續改動 D1 或 Agent revision，讓使用者可由保留的 D1 retry anchor 安全重試。商品圖或已完成輸出的最終 D1 DELETE 若回應不確定，只有同 workspace／同 record type 的 row 已確認不存在才回覆冪等 `204`；row 仍在或核對不可用則以雙語 `503` fail closed。若商品圖 row 仍在，已完成的 R2／Agent 清理保持安全，使用者可沿同一 D1 anchor 再次刪除。前端成功後重新讀取 authoritative Agent state，讀取失敗則保留安全降級狀態並清楚提示。
 
-為降低 browser／Worker 解碼記憶體、Worker CPU 及輸出體積，來源圖上限為 4 MB、單邊 8192 px 及 32 MP；尺寸直接從已驗證的 PNG IHDR、JPEG frame 或 WebP VP8X／VP8／VP8L header 讀取，不先解碼圖片。base64 轉換使用 `node:buffer` 的 runtime implementation。
+為降低 browser／Worker 解碼記憶體、Worker CPU 及輸出體積，來源圖上限為 4 MB、單邊 8192 px 及 32 MP；尺寸直接從已驗證的 PNG IHDR、JPEG frame 或 WebP VP8X／VP8／VP8L header 讀取，不先解碼圖片，並以 D1 `width_px`／`height_px` pair 保存。Migration 允許既有 row 保持 `NULL/NULL`，但 column checks 及 insert／update triggers 拒絕半套、非整數、超邊或超像素資料。base64 轉換使用 `node:buffer` 的 runtime implementation。
 
 ## Local and CI verification
 

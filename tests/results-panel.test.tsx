@@ -81,7 +81,35 @@ describe('ResultsPanel human review boundary', () => {
     expect(markup).toContain('已核准')
     expect(markup).toContain('href="/api/generations/synthetic-output/download"')
     expect(markup).toContain('download="aislestage-1x1.svg"')
+    expect(markup).toContain('下載 SVG 原件')
+    expect(markup).toContain('另存本機 PNG')
+    expect(markup).toContain('PNG 只在此瀏覽器從已核准 SVG 建立')
     expect(markup).not.toContain('標記 1:1 商品主圖需要修改')
+  })
+
+  it('does not offer local conversion for an unverified or non-SVG output', () => {
+    const markup = renderResults([{
+      ...completedResult,
+      reviewStatus: 'approved',
+      reviewedAt: '2026-08-10 00:02:00',
+      contentType: 'image/png',
+      downloadUrl: '/api/generations/synthetic-output/download'
+    }, {
+      ...completedResult,
+      id: 'legacy-svg-output',
+      workflowId: 'meta-ad',
+      aspectRatio: '4:5',
+      imageUrl: '/api/generations/legacy-svg-output/image',
+      title: '4:5 · 社交廣告',
+      reviewStatus: 'approved',
+      reviewedAt: '2026-08-10 00:03:00',
+      downloadUrl: '/api/generations/legacy-svg-output/download',
+      provenance: { ...completedResult.provenance!, compositionVersion: 'legacy-composition' }
+    }])
+
+    expect(markup).toContain('下載已核准 PNG')
+    expect(markup).toContain('下載 SVG 原件')
+    expect(markup).not.toContain('另存本機 PNG')
   })
 
   it('keeps review controls unavailable to a member role', () => {

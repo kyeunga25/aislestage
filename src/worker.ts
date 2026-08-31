@@ -2,13 +2,14 @@ import { getAgentByName } from 'agents'
 import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from 'jose'
 import { CampaignAgent } from './agents/CampaignAgent'
 import { accessLoginPath, normalizeAccessFailureReason, type AccessFailureReason } from './lib/access-login'
+import { isSafeBrandColorList } from './lib/brand-color'
 import { bytesToBase64, CAMPAIGN_COMPOSITION_VERSION, CAMPAIGN_OUTPUT_CONTENT_TYPE, composeCampaignSvg, validateCompositionInput } from './lib/campaign-compositor'
 import { campaignBriefLimits, sanitizeCampaignBrief, validateCampaignBrief } from './lib/campaign-agent'
-import { hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, MAX_IMAGE_CONTAINER_CHUNKS, pngImageDimensions } from './lib/image-validation'
+import { hasPrivateImageMetadata, hasPrivatePngMetadata, hasSafeImageDimensions, hasValidPngStructure, hasValidProductImageSignature, hasValidWebpStructure, productImageDimensions } from './lib/image-validation'
 import { OpenAICopyProvider, OpenAIImageProvider } from './lib/providers'
-import { agentMode, generationMode, maxActiveGenerations } from './lib/runtime-policy'
+import { agentMode, assistedExecutionApproved, generationMode, maxActiveGenerations } from './lib/runtime-policy'
 import { workflowById } from './lib/workflows'
-import type { GenerationInput } from './lib/types'
+import type { BrandPack, CampaignAgentState, GenerationInput, Product } from './lib/types'
 
 export { CampaignAgent }
 
@@ -33,10 +34,21 @@ type AccountType = 'standard' | 'beta' | 'test'
 type WorkspaceRole = 'owner' | 'admin' | 'member'
 type ReviewStatus = 'draft' | 'approved' | 'rejected'
 type CompletedGenerationMode = 'deterministic' | 'assisted'
+type WorkspaceActivityEventType = 'product_asset_uploaded' | 'product_asset_deleted' | 'campaign_pack_created' | 'generation_approved' | 'generation_rejected' | 'generation_deleted'
+type OutputUsageEventType = 'reservation' | 'settlement' | 'release'
 type AuthUser = { id: string; email: string; name: string; accountStatus: AccountStatus; accountType: AccountType }
 type Workspace = { id: string; name: string; role: WorkspaceRole; accessStatus: 'active' | 'suspended' | 'closed'; availableOutputs: number; reservedOutputs: number }
 type SessionContext = { user: AuthUser; currentWorkspace: Workspace }
 type AccessIdentity = { subject: string; email: string; name: string }
+type WorkspaceMemberPayload = {
+  id: string
+  name: string
+  email: string
+  role: WorkspaceRole
+  accountStatus: AccountStatus
+  authMode: 'access' | 'password'
+  createdAt: string
+}
 type GenerationRow = {
   id: string
   campaignPackId: string | null
@@ -57,6 +69,8 @@ type StoredGenerationRow = GenerationRow & { outputKey: string | null }
 // One generated output consumes one technical allowance unit for idempotent accounting.
 const OUTPUT_COST = 1
 const SESSION_COOKIE = 'aislestage_session'
+const WORKSPACE_COOKIE = 'aislestage_workspace'
+const WORKSPACE_SELECTION_HEADER = 'x-aislestage-workspace-id'
 const SESSION_DAYS = 60
 const PASSWORD_ITERATIONS = 100_000
 const LOGIN_WINDOW_MINUTES = 15
@@ -68,13 +82,21 @@ const MAX_AUTH_BODY_BYTES = 8_192
 const MAX_GENERATION_BODY_BYTES = 32_768
 const MAX_AGENT_BODY_BYTES = 48_000
 const MAX_REVIEW_BODY_BYTES = 1_024
+const MAX_BRAND_PACK_BODY_BYTES = 1_024
+const MAX_PRODUCT_PROFILE_BODY_BYTES = 1_024
+const MAX_PRODUCT_RIGHTS_BODY_BYTES = 512
+const MAX_WORKSPACE_MEMBER_BODY_BYTES = 2_048
+const MAX_WORKSPACE_SELECTION_BODY_BYTES = 1_024
+const MAX_WORKSPACE_MEMBERS = 50
 const MAX_PRODUCT_IMAGE_BYTES = 4 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_PRODUCT_IMAGE_BYTES + 64 * 1024
+const COMMERCIAL_USE_RIGHTS_ATTESTATION = 'commercial-use-v1'
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const WORKSPACE_SHELL_CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 const WORKSPACE_SHELL_PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()'
 const MAX_AUTH_ATTEMPT_DAYS = 7
 const MAX_USED_INVITE_DAYS = 30
+const MAX_WORKSPACE_ACCESS_EVENT_DAYS = 180
 const RETRYING_GENERATION_MESSAGE = '素材處理暫時未能完成，系統會自動重試。'
 const FAILED_GENERATION_MESSAGE = '素材未能完成，可用輸出數已自動退回。'
 const DUMMY_PASSWORD_SALT = 'YWlzbGVwYWNrLXB1YmxpYy1zYWx0'
@@ -158,6 +180,19 @@ function expiredSessionCookie(request: Request) {
   const hostname = new URL(request.url).hostname
   const secure = hostname === 'localhost' || hostname === '127.0.0.1' ? '' : '; Secure'
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`
+}
+
+function workspaceSelectionCookie(workspaceId: string, request: Request) {
+  const hostname = new URL(request.url).hostname
+  const secure = hostname === 'localhost' || hostname === '127.0.0.1' ? '' : '; Secure'
+  return `${WORKSPACE_COOKIE}=${workspaceId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 24 * 60 * 60}${secure}`
+}
+
+function selectedWorkspaceId(request: Request) {
+  const headerValue = request.headers.get(WORKSPACE_SELECTION_HEADER)
+  if (headerValue && UUID_V4_PATTERN.test(headerValue)) return headerValue
+  const cookieValue = parseCookie(request, WORKSPACE_COOKIE)
+  return cookieValue && UUID_V4_PATTERN.test(cookieValue) ? cookieValue : null
 }
 
 function normalizeEmail(value: unknown) {
@@ -457,6 +492,7 @@ function validInput(value: unknown): value is GenerationInput {
     && boundedString(input.brand?.name, campaignBriefLimits.brand.name)
     && boundedString(input.brand?.tone, campaignBriefLimits.brand.tone, false)
     && boundedStringArray(input.brand?.colors, campaignBriefLimits.brand.colors.items, campaignBriefLimits.brand.colors.itemLength)
+    && isSafeBrandColorList(input.brand?.colors, campaignBriefLimits.brand.colors.items)
     && boundedString(input.brand?.forbiddenWords, campaignBriefLimits.brand.forbiddenWords, false)
     && (input.brand?.locale === 'zh-Hant' || input.brand?.locale === 'en')
     && boundedString(input.brand?.cta, campaignBriefLimits.brand.cta, false)
@@ -506,237 +542,6 @@ function generationInputIdentity(input: GenerationInput) {
 
 const productImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
-function hasValidProductImageSignature(contentType: string, bytes: Uint8Array) {
-  if (contentType === 'image/png') return bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)
-  if (contentType === 'image/jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  if (contentType === 'image/webp') return bytes.length >= 12
-    && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
-    && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
-  return false
-}
-
-function chunkName(bytes: Uint8Array, offset: number) {
-  return String.fromCharCode(...bytes.slice(offset, offset + 4))
-}
-
-function uint32BigEndian(bytes: Uint8Array, offset: number) {
-  return (bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]) >>> 0
-}
-
-function uint32LittleEndian(bytes: Uint8Array, offset: number) {
-  return (bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000 + bytes[offset + 3] * 0x1000000) >>> 0
-}
-
-function uint24LittleEndian(bytes: Uint8Array, offset: number) {
-  return bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000
-}
-
-function webpBitstreamDimensions(bytes: Uint8Array, name: string, dataOffset: number, length: number) {
-  if (name === 'VP8L') {
-    if (length < 5 || bytes[dataOffset] !== 0x2f) return null
-    const header = uint32LittleEndian(bytes, dataOffset + 1)
-    if ((header >>> 29) !== 0) return null
-    return { width: (header & 0x3fff) + 1, height: ((header >>> 14) & 0x3fff) + 1 }
-  }
-  if (name === 'VP8 ') {
-    if (length < 10 || (bytes[dataOffset] & 1) !== 0) return null
-    if (bytes[dataOffset + 3] !== 0x9d || bytes[dataOffset + 4] !== 0x01 || bytes[dataOffset + 5] !== 0x2a) return null
-    const width = (bytes[dataOffset + 6] + bytes[dataOffset + 7] * 0x100) & 0x3fff
-    const height = (bytes[dataOffset + 8] + bytes[dataOffset + 9] * 0x100) & 0x3fff
-    return width > 0 && height > 0 ? { width, height } : null
-  }
-  return null
-}
-
-function hasValidWebpStructure(bytes: Uint8Array) {
-  if (bytes.length < 20 || uint32LittleEndian(bytes, 4) !== bytes.length - 8) return false
-  let offset = 12
-  let chunkCount = 0
-  let extended = false
-  let flags = 0
-  let canvas: { width: number; height: number } | null = null
-  let image: { name: string; width: number; height: number } | null = null
-  let sawIccProfile = false
-  let sawAlpha = false
-
-  while (offset < bytes.length) {
-    chunkCount += 1
-    if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return false
-    if (bytes.length - offset < 8) return false
-    const name = chunkName(bytes, offset)
-    const length = uint32LittleEndian(bytes, offset + 4)
-    const dataOffset = offset + 8
-    if (length > bytes.length - dataOffset) return false
-    const dataEnd = dataOffset + length
-    const paddedEnd = dataEnd + (length % 2)
-    if (paddedEnd > bytes.length || (length % 2 === 1 && bytes[dataEnd] !== 0)) return false
-
-    if (offset === 12 && name === 'VP8X') {
-      if (length !== 10) return false
-      flags = bytes[dataOffset]
-      if ((flags & 0xc1) !== 0 || (flags & 0x0e) !== 0) return false
-      if (bytes[dataOffset + 1] !== 0 || bytes[dataOffset + 2] !== 0 || bytes[dataOffset + 3] !== 0) return false
-      const width = uint24LittleEndian(bytes, dataOffset + 4) + 1
-      const height = uint24LittleEndian(bytes, dataOffset + 7) + 1
-      if (width * height > 0xffffffff) return false
-      canvas = { width, height }
-      extended = true
-    } else if (!extended) {
-      if (offset !== 12 || image) return false
-      const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
-      if (!dimensions || paddedEnd !== bytes.length) return false
-      image = { name, ...dimensions }
-    } else if (name === 'VP8X' || name === 'ANIM' || name === 'ANMF' || name === 'EXIF' || name === 'XMP ') {
-      return false
-    } else if (name === 'ICCP') {
-      if (sawIccProfile || image || length === 0) return false
-      sawIccProfile = true
-    } else if (name === 'ALPH') {
-      if (sawAlpha || image || length === 0 || (bytes[dataOffset] & 0xc0) !== 0) return false
-      sawAlpha = true
-    } else if (name === 'VP8 ' || name === 'VP8L') {
-      if (image || (name === 'VP8L' && sawAlpha)) return false
-      const dimensions = webpBitstreamDimensions(bytes, name, dataOffset, length)
-      if (!dimensions || !canvas || dimensions.width !== canvas.width || dimensions.height !== canvas.height) return false
-      image = { name, ...dimensions }
-    } else {
-      return false
-    }
-
-    offset = paddedEnd
-  }
-
-  if (!image) return false
-  if (!extended) return true
-  if (Boolean(flags & 0x20) !== sawIccProfile) return false
-  if (image.name === 'VP8 ' && Boolean(flags & 0x10) !== sawAlpha) return false
-  return true
-}
-
-function jpegImageDimensions(bytes: Uint8Array) {
-  let offset = 2
-  let markerCount = 0
-  while (offset < bytes.length) {
-    if (bytes[offset] !== 0xff) {
-      offset += 1
-      continue
-    }
-    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1
-    if (offset >= bytes.length) return null
-    const marker = bytes[offset++]
-    if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
-    markerCount += 1
-    if (markerCount > MAX_IMAGE_CONTAINER_CHUNKS || marker === 0xd8 || marker === 0xd9 || offset + 2 > bytes.length) return null
-    const length = (bytes[offset] << 8) | bytes[offset + 1]
-    if (length < 2 || length > bytes.length - offset) return null
-    const isFrameMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
-    if (isFrameMarker) {
-      if (length < 8) return null
-      return {
-        height: (bytes[offset + 3] << 8) | bytes[offset + 4],
-        width: (bytes[offset + 5] << 8) | bytes[offset + 6]
-      }
-    }
-    offset += length
-  }
-  return null
-}
-
-function productImageDimensions(contentType: string, bytes: Uint8Array) {
-  if (contentType === 'image/png') return pngImageDimensions(bytes)
-  if (contentType === 'image/jpeg') return jpegImageDimensions(bytes)
-  if (contentType === 'image/webp') {
-    const name = chunkName(bytes, 12)
-    if (name === 'VP8X') return { width: uint24LittleEndian(bytes, 24) + 1, height: uint24LittleEndian(bytes, 27) + 1 }
-    return webpBitstreamDimensions(bytes, name, 20, uint32LittleEndian(bytes, 16))
-  }
-  return null
-}
-
-function hasSafeProductImageDimensions(contentType: string, bytes: Uint8Array) {
-  const dimensions = productImageDimensions(contentType, bytes)
-  return hasSafeImageDimensions(dimensions)
-}
-
-function hasPrivateImageMetadata(contentType: string, bytes: Uint8Array) {
-  if (contentType === 'image/jpeg') {
-    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return true
-    let offset = 2
-    let inScan = false
-    let sawFrame = false
-    let sawScan = false
-    let markerCount = 0
-    while (offset < bytes.length) {
-      const markerWasInScan: boolean = inScan
-      if (bytes[offset] !== 0xff) {
-        if (!inScan) return true
-        offset += 1
-        continue
-      }
-
-      let fillBytes = 0
-      while (offset < bytes.length && bytes[offset] === 0xff) {
-        fillBytes += 1
-        offset += 1
-      }
-      if (offset >= bytes.length) return true
-      const marker = bytes[offset++]
-
-      if (marker === 0x00) {
-        if (!inScan || fillBytes !== 1) return true
-        continue
-      }
-      if (marker >= 0xd0 && marker <= 0xd7) {
-        if (!inScan) return true
-        continue
-      }
-      if (marker === 0x01) continue
-      markerCount += 1
-      if (markerCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
-      if (marker === 0xe1 || marker === 0xed || marker === 0xfe) return true
-      if (marker === 0xd9) return offset !== bytes.length || !sawFrame || !sawScan
-      if (marker === 0xd8 || marker < 0xc0) return true
-      if (offset + 2 > bytes.length) return true
-
-      const length = (bytes[offset] << 8) | bytes[offset + 1]
-      if (length < 2 || length > bytes.length - offset) return true
-      const isFrameMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
-      if (isFrameMarker) {
-        if (sawFrame || length < 8) return true
-        const componentCount = bytes[offset + 7]
-        if (componentCount < 1 || componentCount > 4 || length !== 8 + componentCount * 3) return true
-        sawFrame = true
-      }
-      if (marker === 0xda) {
-        if (!sawFrame || length < 6) return true
-        const componentCount = bytes[offset + 2]
-        if (componentCount < 1 || componentCount > 4 || length !== 6 + componentCount * 2) return true
-        sawScan = true
-      }
-      if (marker === 0xdc && length !== 4) return true
-      offset += length
-      inScan = marker === 0xda || (markerWasInScan && marker === 0xdc)
-    }
-    return true
-  }
-  if (contentType === 'image/png') {
-    return hasPrivatePngMetadata(bytes)
-  }
-  if (contentType === 'image/webp') {
-    let offset = 12
-    let chunkCount = 0
-    while (offset + 8 <= bytes.length) {
-      chunkCount += 1
-      if (chunkCount > MAX_IMAGE_CONTAINER_CHUNKS) return true
-      const name = chunkName(bytes, offset)
-      if (name === 'EXIF' || name === 'XMP ') return true
-      const length = bytes[offset + 4] + (bytes[offset + 5] << 8) + (bytes[offset + 6] << 16) + ((bytes[offset + 7] << 24) >>> 0)
-      offset += 8 + length + (length % 2)
-    }
-  }
-  return false
-}
-
 function extensionForContentType(contentType: string) {
   if (contentType === 'image/png') return 'png'
   if (contentType === 'image/webp') return 'webp'
@@ -758,6 +563,13 @@ function workspaceListUnavailable() {
   return json({
     code: 'unavailable',
     error: '工作區清單暫時無法讀取。 Workspace list is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function workspaceSelectionUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區暫時無法切換。 Workspace switch is temporarily unavailable.'
   }, { status: 503 })
 }
 
@@ -804,23 +616,58 @@ async function sessionResponse(env: Env, request: Request, userId: string, statu
     await removeUndeliveredSession(env, tokenHash)
     return sessionUnavailable()
   }
-  return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers: { 'set-cookie': sessionCookie(token, request) } })
+  const headers = new Headers()
+  headers.append('set-cookie', sessionCookie(token, request))
+  headers.append('set-cookie', workspaceSelectionCookie(session.currentWorkspace.id, request))
+  return json({ user: session.user, currentWorkspace: session.currentWorkspace }, { status, headers })
 }
 
-async function workspacesForUser(env: Env, userId: string) {
+async function workspacesForUser(env: Env, userId: string, selectedId: string | null = null) {
   const result = await env.DB.prepare(`
     SELECT w.id, w.name, w.access_status AS accessStatus, wm.role, COALESCE(oa.available, 0) AS availableOutputs, COALESCE(oa.reserved, 0) AS reservedOutputs
     FROM workspace_memberships wm
     JOIN workspaces w ON w.id = wm.workspace_id
     LEFT JOIN output_allowances oa ON oa.workspace_id = w.id
     WHERE wm.user_id = ? AND w.access_status = 'active'
-    ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+    ORDER BY CASE WHEN w.id = ? THEN 0 ELSE 1 END,
+      CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
       wm.created_at ASC, w.created_at ASC, w.id ASC
-  `).bind(userId).all<Workspace>()
+    LIMIT 50
+  `).bind(userId, selectedId).all<Workspace>()
   return result.results
 }
 
-async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionContext | null> {
+async function selectCurrentWorkspace(request: Request, env: Env, session: SessionContext) {
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_WORKSPACE_SELECTION_BODY_BYTES)
+  if (parsed.tooLarge) {
+    return json({ error: '工作區切換請求過大。 Workspace switch request is too large.' }, { status: 413 })
+  }
+  if (!hasExactKeys(parsed.body, ['workspaceId'])) {
+    return json({ error: '工作區切換格式無效。 Workspace switch request is invalid.' }, { status: 400 })
+  }
+  const workspaceId = (parsed.body as { workspaceId: unknown }).workspaceId
+  if (typeof workspaceId !== 'string' || !UUID_V4_PATTERN.test(workspaceId)) {
+    return json({ error: '工作區切換格式無效。 Workspace switch request is invalid.' }, { status: 400 })
+  }
+
+  try {
+    const workspaces = await workspacesForUser(env, session.user.id, workspaceId)
+    const selected = workspaces[0]
+    if (!selected || selected.id !== workspaceId) {
+      return json({ error: 'Workspace not found.' }, { status: 404 })
+    }
+    return json(
+      { currentWorkspace: selected },
+      { headers: { 'set-cookie': workspaceSelectionCookie(workspaceId, request) } }
+    )
+  } catch {
+    console.error('workspace-selection-read-failed')
+    return workspaceSelectionUnavailable()
+  }
+}
+
+async function loadSessionByHash(env: Env, tokenHash: string, selectedId: string | null = null): Promise<SessionContext | null> {
   const user = await env.DB.prepare(`
     SELECT u.id, u.email, u.name, u.account_status AS accountStatus, u.account_type AS accountType
     FROM sessions s
@@ -828,7 +675,7 @@ async function loadSessionByHash(env: Env, tokenHash: string): Promise<SessionCo
     WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.account_status = 'active'
   `).bind(tokenHash).first<AuthUser>()
   if (!user) return null
-  const workspaces = await workspacesForUser(env, user.id)
+  const workspaces = await workspacesForUser(env, user.id, selectedId)
   if (!workspaces[0]) return null
   try {
     await env.DB.prepare('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?').bind(tokenHash).run()
@@ -940,7 +787,7 @@ async function accessSession(request: Request, env: Env): Promise<SessionContext
   if (!user) return accessError('membership-required', 403, 'This Access identity has not been invited to an AisleStage workspace.')
   let workspaces: Workspace[]
   try {
-    workspaces = await workspacesForUser(env, user.id)
+    workspaces = await workspacesForUser(env, user.id, selectedWorkspaceId(request))
   } catch {
     console.error('access-workspace-reconciliation-failed')
     return accessError('unavailable', 503, 'Access workspace membership is temporarily unavailable.')
@@ -957,7 +804,11 @@ async function cleanExpiredAuthState(env: Env) {
       DELETE FROM beta_invites
       WHERE (status IN ('pending', 'revoked') AND expires_at <= CURRENT_TIMESTAMP)
         OR (status = 'used' AND used_at IS NOT NULL AND used_at < datetime('now', ?))
-    `).bind(`-${MAX_USED_INVITE_DAYS} days`)
+    `).bind(`-${MAX_USED_INVITE_DAYS} days`),
+    env.DB.prepare(`
+      DELETE FROM workspace_access_events
+      WHERE created_at < datetime('now', ?)
+    `).bind(`-${MAX_WORKSPACE_ACCESS_EVENT_DAYS} days`)
   ])
 }
 
@@ -967,7 +818,7 @@ async function requireSession(request: Request, env: Env): Promise<SessionContex
   if (!token) return json({ error: 'Authentication required.' }, { status: 401 })
   let session: SessionContext | null
   try {
-    session = await loadSessionByHash(env, await sha256(token))
+    session = await loadSessionByHash(env, await sha256(token), selectedWorkspaceId(request))
   } catch {
     console.error('session-authorization-read-failed')
     return sessionAuthorizationUnavailable()
@@ -1020,6 +871,955 @@ async function getWorkspace(env: Env, userId: string, workspaceId: string) {
   `).bind(userId, workspaceId).first<Workspace>()
 }
 
+type WorkspaceMemberRow = WorkspaceMemberPayload & { ownerUserId: string }
+type WorkspaceAccountRow = {
+  id: string
+  email: string
+  name: string
+  accountStatus: AccountStatus
+  accountType: AccountType
+  authMode: 'access' | 'password'
+  accessSubjectHash: string | null
+}
+
+const workspaceMemberSelect = `
+  SELECT u.id, u.name, u.email, wm.role,
+    u.account_status AS accountStatus, u.auth_mode AS authMode,
+    strftime('%Y-%m-%dT%H:%M:%SZ', wm.created_at) AS createdAt,
+    w.owner_user_id AS ownerUserId
+  FROM workspace_memberships wm
+  JOIN users u ON u.id = wm.user_id
+  JOIN workspaces w ON w.id = wm.workspace_id
+`
+
+function workspaceMembersUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區成員暫時無法讀取。 Workspace members are temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function workspaceMemberMutationUnavailable(kind: 'invite' | 'role' | 'remove') {
+  const error = kind === 'invite'
+    ? '成員邀請暫時無法使用。 Workspace member invitation is temporarily unavailable.'
+    : kind === 'role'
+      ? '成員角色更新暫時無法使用。 Workspace member role update is temporarily unavailable.'
+      : '成員移除暫時無法使用。 Workspace member removal is temporarily unavailable.'
+  return json({ code: 'unavailable', error }, { status: 503 })
+}
+
+function workspaceMemberManagerDenied() {
+  return json({
+    error: '只有工作區 owner 或 admin 可以管理成員。 Only workspace owners or admins can manage members.'
+  }, { status: 403 })
+}
+
+function canManageWorkspaceMembers(session: SessionContext) {
+  return session.currentWorkspace.role === 'owner' || session.currentWorkspace.role === 'admin'
+}
+
+function isCanonicalUtcSecond(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value.replace(/Z$/, '.000Z')
+}
+
+function workspaceMemberPayload(row: WorkspaceMemberRow): WorkspaceMemberPayload | null {
+  if (!UUID_V4_PATTERN.test(row.id)
+    || !UUID_V4_PATTERN.test(row.ownerUserId)
+    || !boundedString(row.name, 120)
+    || row.name !== row.name.trim()
+    || normalizeEmail(row.email) !== row.email
+    || !validEmail(row.email)
+    || (row.role !== 'owner' && row.role !== 'admin' && row.role !== 'member')
+    || (row.accountStatus !== 'active' && row.accountStatus !== 'suspended' && row.accountStatus !== 'deactivated')
+    || (row.authMode !== 'access' && row.authMode !== 'password')
+    || !isCanonicalUtcSecond(row.createdAt)) return null
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    accountStatus: row.accountStatus,
+    authMode: row.authMode,
+    createdAt: row.createdAt
+  }
+}
+
+function isCanonicalWorkspaceAccount(row: WorkspaceAccountRow) {
+  return UUID_V4_PATTERN.test(row.id)
+    && boundedString(row.name, 120)
+    && row.name === row.name.trim()
+    && normalizeEmail(row.email) === row.email
+    && validEmail(row.email)
+    && (row.accountStatus === 'active' || row.accountStatus === 'suspended' || row.accountStatus === 'deactivated')
+    && (row.accountType === 'standard' || row.accountType === 'beta' || row.accountType === 'test')
+    && (row.authMode === 'access' || row.authMode === 'password')
+    && (row.accessSubjectHash === null || boundedString(row.accessSubjectHash, 128))
+}
+
+async function workspaceAccountByEmail(env: Env, email: string) {
+  return env.DB.prepare(`
+    SELECT id, email, name, account_status AS accountStatus,
+      account_type AS accountType, auth_mode AS authMode,
+      access_subject_hash AS accessSubjectHash
+    FROM users
+    WHERE email = ?
+  `).bind(email).first<WorkspaceAccountRow>()
+}
+
+async function workspaceMemberById(env: Env, workspaceId: string, memberId: string) {
+  return env.DB.prepare(`${workspaceMemberSelect}
+    WHERE wm.workspace_id = ? AND wm.user_id = ? AND w.access_status = 'active'
+  `).bind(workspaceId, memberId).first<WorkspaceMemberRow>()
+}
+
+async function listWorkspaceMembers(env: Env, session: SessionContext) {
+  if (!canManageWorkspaceMembers(session)) return workspaceMemberManagerDenied()
+  try {
+    const result = await env.DB.prepare(`${workspaceMemberSelect}
+      WHERE wm.workspace_id = ? AND w.access_status = 'active'
+      ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+        wm.created_at ASC, u.id ASC
+      LIMIT ?
+    `).bind(session.currentWorkspace.id, MAX_WORKSPACE_MEMBERS + 1).all<WorkspaceMemberRow>()
+    if (result.results.length < 1 || result.results.length > MAX_WORKSPACE_MEMBERS) {
+      throw new TypeError('Invalid workspace member count')
+    }
+    const members: WorkspaceMemberPayload[] = []
+    for (const row of result.results) {
+      const member = workspaceMemberPayload(row)
+      if (!member) throw new TypeError('Invalid workspace member row')
+      members.push(member)
+    }
+    const ownerUserIds = new Set(result.results.map((row) => row.ownerUserId))
+    const declaredOwnerId = result.results[0]?.ownerUserId
+    if (ownerUserIds.size !== 1
+      || !declaredOwnerId
+      || members.filter((member) => member.role === 'owner').length !== 1
+      || !members.some((member) => member.id === declaredOwnerId && member.role === 'owner')
+      || !members.some((member) => member.id === session.user.id)
+      || new Set(members.map((member) => member.id)).size !== members.length
+      || new Set(members.map((member) => member.email)).size !== members.length) {
+      throw new TypeError('Invalid workspace owner invariant')
+    }
+    return json({ members })
+  } catch {
+    console.error('workspace-member-list-read-failed')
+    return workspaceMembersUnavailable()
+  }
+}
+
+async function inviteWorkspaceMember(request: Request, env: Env, session: SessionContext) {
+  if (!canManageWorkspaceMembers(session)) {
+    await cancelRequestBody(request)
+    return workspaceMemberManagerDenied()
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_WORKSPACE_MEMBER_BODY_BYTES)
+  if (parsed.tooLarge) {
+    return json({ error: '成員邀請請求過大。 Workspace member invitation is too large.' }, { status: 413 })
+  }
+  if (!hasExactKeys(parsed.body, ['email', 'name', 'role'])) {
+    return json({ error: '成員資料格式無效。 Workspace member details are invalid.' }, { status: 400 })
+  }
+  const body = parsed.body as { email: unknown; name: unknown; role: unknown }
+  const email = normalizeEmail(body.email)
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const role = body.role
+  if (typeof body.email !== 'string'
+    || body.email !== email
+    || !validEmail(email)
+    || typeof body.name !== 'string'
+    || body.name !== name
+    || !boundedString(name, 120)
+    || (role !== 'admin' && role !== 'member')) {
+    return json({ error: '成員資料格式無效。 Workspace member details are invalid.' }, { status: 400 })
+  }
+  if (session.currentWorkspace.role === 'admin' && role !== 'member') {
+    return json({ error: '只有 workspace owner 可以加入 admin。 Only the workspace owner can add an admin.' }, { status: 403 })
+  }
+
+  let account: WorkspaceAccountRow | null
+  let existingMember: WorkspaceMemberRow | null = null
+  try {
+    account = await workspaceAccountByEmail(env, email)
+    if (account) existingMember = await workspaceMemberById(env, session.currentWorkspace.id, account.id)
+  } catch {
+    console.error('workspace-member-invite-preflight-failed')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+  if (account && !isCanonicalWorkspaceAccount(account)) {
+    console.error('workspace-member-account-invalid')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+  if (existingMember) {
+    const member = workspaceMemberPayload(existingMember)
+    if (!member) return workspaceMemberMutationUnavailable('invite')
+    if (member.role === role) return json({ member, replayed: true })
+    return json({ error: '這個帳號已有不同工作區角色。 This account already has a different workspace role.' }, { status: 409 })
+  }
+  if (account?.accountStatus !== undefined && account.accountStatus !== 'active') {
+    return json({ error: '這個帳號目前不可加入工作區。 This account cannot currently join the workspace.' }, { status: 409 })
+  }
+  try {
+    const count = await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM workspace_memberships
+      WHERE workspace_id = ?
+    `).bind(session.currentWorkspace.id).first<{ count: number }>()
+    if (!count || !Number.isSafeInteger(count.count)) throw new TypeError('Invalid member count')
+    if (count.count >= MAX_WORKSPACE_MEMBERS) {
+      return json({ error: '工作區成員已達目前上限。 The workspace member limit has been reached.' }, { status: 409 })
+    }
+  } catch {
+    console.error('workspace-member-capacity-read-failed')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+
+  const expectedUserId = account?.id || crypto.randomUUID()
+  let mutationReportedFailure = false
+  try {
+    if (account) {
+      await env.DB.prepare(`
+        INSERT INTO workspace_memberships (
+          workspace_id, user_id, role, changed_by_user_id
+        ) VALUES (?, ?, ?, ?)
+      `).bind(session.currentWorkspace.id, account.id, role, session.user.id).run()
+    } else {
+      await env.DB.batch([
+        env.DB.prepare(`
+          INSERT INTO users (
+            id, email, name, password_hash, password_salt,
+            account_status, account_type, auth_mode
+          ) VALUES (?, ?, ?, ?, ?, 'active', 'beta', 'access')
+        `).bind(
+          expectedUserId,
+          email,
+          name,
+          base64(crypto.getRandomValues(new Uint8Array(32))),
+          base64(crypto.getRandomValues(new Uint8Array(16)))
+        ),
+        env.DB.prepare(`
+          INSERT INTO workspace_memberships (
+            workspace_id, user_id, role, changed_by_user_id
+          ) VALUES (?, ?, ?, ?)
+        `).bind(session.currentWorkspace.id, expectedUserId, role, session.user.id)
+      ])
+    }
+  } catch {
+    mutationReportedFailure = true
+  }
+
+  try {
+    const storedAccount = await workspaceAccountByEmail(env, email)
+    if (!storedAccount || !isCanonicalWorkspaceAccount(storedAccount)) {
+      if (storedAccount) console.error('workspace-member-invite-reconciliation-account-conflict')
+      return mutationReportedFailure
+        ? workspaceMemberMutationUnavailable('invite')
+        : json({ error: '這個帳號未能加入工作區。 This account could not be added to the workspace.' }, { status: 409 })
+    }
+    const storedRow = await workspaceMemberById(env, session.currentWorkspace.id, storedAccount.id)
+    const member = storedRow ? workspaceMemberPayload(storedRow) : null
+    if (!member || member.role !== role) {
+      if (member) console.error('workspace-member-invite-reconciliation-role-conflict')
+      return mutationReportedFailure
+        ? workspaceMemberMutationUnavailable('invite')
+        : json({ error: '這個帳號已有不同工作區角色。 This account already has a different workspace role.' }, { status: 409 })
+    }
+    if (!account && storedAccount.id === expectedUserId
+      && (storedAccount.name !== name
+        || storedAccount.accountStatus !== 'active'
+        || storedAccount.accountType !== 'beta'
+        || storedAccount.authMode !== 'access'
+        || storedAccount.accessSubjectHash !== null)) {
+      console.error('workspace-member-invite-reconciliation-user-conflict')
+      return workspaceMemberMutationUnavailable('invite')
+    }
+    const replayed = storedAccount.id !== expectedUserId
+    return json({ member, replayed }, { status: replayed ? 200 : 201 })
+  } catch {
+    console.error('workspace-member-invite-reconciliation-failed')
+    return workspaceMemberMutationUnavailable('invite')
+  }
+}
+
+async function updateWorkspaceMemberRole(request: Request, env: Env, session: SessionContext, memberId: string) {
+  if (session.currentWorkspace.role !== 'owner') {
+    await cancelRequestBody(request)
+    return json({ error: '只有 workspace owner 可以變更成員角色。 Only the workspace owner can change member roles.' }, { status: 403 })
+  }
+  if (!UUID_V4_PATTERN.test(memberId)) {
+    await cancelRequestBody(request)
+    return json({ error: 'Workspace member not found.' }, { status: 404 })
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_WORKSPACE_MEMBER_BODY_BYTES)
+  if (parsed.tooLarge) return json({ error: '成員角色請求過大。 Workspace member role request is too large.' }, { status: 413 })
+  if (!hasExactKeys(parsed.body, ['role'])) {
+    return json({ error: '成員角色格式無效。 Workspace member role is invalid.' }, { status: 400 })
+  }
+  const role = (parsed.body as { role: unknown }).role
+  if (role !== 'admin' && role !== 'member') {
+    return json({ error: '成員角色格式無效。 Workspace member role is invalid.' }, { status: 400 })
+  }
+  let target: WorkspaceMemberRow | null
+  try {
+    target = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+  } catch {
+    console.error('workspace-member-role-preflight-failed')
+    return workspaceMemberMutationUnavailable('role')
+  }
+  if (!target) return json({ error: 'Workspace member not found.' }, { status: 404 })
+  const current = workspaceMemberPayload(target)
+  if (!current) return workspaceMemberMutationUnavailable('role')
+  if (target.ownerUserId === memberId || current.role === 'owner' || memberId === session.user.id) {
+    return json({ error: 'Workspace owner 或目前帳號角色不可在此變更。 The workspace owner or current account role cannot be changed here.' }, { status: 409 })
+  }
+  if (current.role === role) return json({ member: current, replayed: true })
+
+  let updateChanges = 0
+  let updateReportedFailure = false
+  try {
+    const update = await env.DB.prepare(`
+      UPDATE workspace_memberships
+      SET role = ?, changed_by_user_id = ?
+      WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
+    `).bind(role, session.user.id, session.currentWorkspace.id, memberId).run()
+    updateChanges = update.meta.changes
+  } catch {
+    updateReportedFailure = true
+  }
+  try {
+    const latestRow = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+    if (!latestRow) return json({ error: 'Workspace member not found.' }, { status: 404 })
+    const latest = workspaceMemberPayload(latestRow)
+    if (!latest) return workspaceMemberMutationUnavailable('role')
+    if (latest.role === role) return json({ member: latest, replayed: updateChanges === 0 && !updateReportedFailure })
+    if (updateReportedFailure) return workspaceMemberMutationUnavailable('role')
+    return json({ error: '這個成員角色不可變更。 This workspace member role cannot be changed.' }, { status: 409 })
+  } catch {
+    console.error('workspace-member-role-reconciliation-failed')
+    return workspaceMemberMutationUnavailable('role')
+  }
+}
+
+async function removeWorkspaceMember(request: Request, env: Env, session: SessionContext, memberId: string) {
+  if (!canManageWorkspaceMembers(session)) {
+    await cancelRequestBody(request)
+    return workspaceMemberManagerDenied()
+  }
+  const boundedBody = await readBoundedRequestBytes(request, 0)
+  if (boundedBody.tooLarge) return json({ error: '成員移除請求不可包含 body。 Workspace member removal must not include a body.' }, { status: 413 })
+  if (!boundedBody.bytes) return json({ error: '成員移除請求格式無效。 Workspace member removal request is invalid.' }, { status: 400 })
+  if (!UUID_V4_PATTERN.test(memberId)) return json({ error: 'Workspace member not found.' }, { status: 404 })
+
+  let target: WorkspaceMemberRow | null
+  try {
+    target = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+  } catch {
+    console.error('workspace-member-remove-preflight-failed')
+    return workspaceMemberMutationUnavailable('remove')
+  }
+  if (!target) return json({ error: 'Workspace member not found.' }, { status: 404 })
+  const member = workspaceMemberPayload(target)
+  if (!member) return workspaceMemberMutationUnavailable('remove')
+  if (target.ownerUserId === memberId || member.role === 'owner' || memberId === session.user.id) {
+    return json({ error: 'Workspace owner 或目前帳號不可移除。 The workspace owner or current account cannot be removed.' }, { status: 409 })
+  }
+  if (session.currentWorkspace.role === 'admin' && member.role !== 'member') {
+    return json({ error: 'Workspace admin 只可移除一般成員。 Workspace admins can remove ordinary members only.' }, { status: 403 })
+  }
+
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  const requiredRole = session.currentWorkspace.role === 'admin' ? 'member' : null
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE workspace_memberships
+        SET changed_by_user_id = ?
+        WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
+          AND (? IS NULL OR role = ?)
+      `).bind(session.user.id, session.currentWorkspace.id, memberId, requiredRole, requiredRole),
+      env.DB.prepare(`
+        DELETE FROM workspace_memberships
+        WHERE workspace_id = ? AND user_id = ? AND role <> 'owner'
+          AND (? IS NULL OR role = ?)
+      `).bind(session.currentWorkspace.id, memberId, requiredRole, requiredRole)
+    ])
+    if (results[1]?.meta.changes) return deletedResponse()
+  } catch {
+    // The post-read below distinguishes a committed delete from a retryable failure.
+  }
+  try {
+    const remaining = await workspaceMemberById(env, session.currentWorkspace.id, memberId)
+    if (!remaining) return deletedResponse()
+    const remainingMember = workspaceMemberPayload(remaining)
+    if (!remainingMember) return workspaceMemberMutationUnavailable('remove')
+    if (remaining.ownerUserId === memberId || remainingMember.role === 'owner') {
+      return json({ error: 'Workspace owner 或目前帳號不可移除。 The workspace owner or current account cannot be removed.' }, { status: 409 })
+    }
+    if (session.currentWorkspace.role === 'admin' && remainingMember.role !== 'member') {
+      return json({ error: 'Workspace admin 只可移除一般成員。 Workspace admins can remove ordinary members only.' }, { status: 403 })
+    }
+    console.error('workspace-member-remove-reconciliation-pending')
+  } catch {
+    console.error('workspace-member-remove-reconciliation-failed')
+  }
+  return workspaceMemberMutationUnavailable('remove')
+}
+
+type ProductAssetListRow = {
+  id: string
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp'
+  sizeBytes: number
+  widthPx: number | null
+  heightPx: number | null
+  rightsStatus: 'confirmed' | 'unconfirmed'
+  createdAt: string
+}
+
+function storedProductAssetDimensions(widthPx: unknown, heightPx: unknown) {
+  if (widthPx === null && heightPx === null) return null
+  const dimensions = { width: widthPx as number, height: heightPx as number }
+  return hasSafeImageDimensions(dimensions) ? dimensions : undefined
+}
+
+type BrandPackRow = {
+  id: string
+  name: string
+  tone: string
+  colorsJson: string
+  forbiddenWords: string
+  locale: BrandPack['locale']
+  cta: string
+  ctaEn: string
+  approvedRevision: number
+  snapshotSha256: string
+  createdAt: string
+}
+
+type SavedBrandPackPayload = BrandPack & {
+  id: string
+  approvedRevision: number
+  createdAt: string
+}
+
+function canonicalBrandSnapshot(brand: BrandPack) {
+  return JSON.stringify({
+    name: brand.name,
+    tone: brand.tone,
+    colors: brand.colors,
+    forbiddenWords: brand.forbiddenWords,
+    locale: brand.locale,
+    cta: brand.cta,
+    ctaEn: brand.ctaEn
+  })
+}
+
+async function brandPackPayload(row: BrandPackRow): Promise<SavedBrandPackPayload | null> {
+  let colors: unknown
+  try {
+    colors = JSON.parse(row.colorsJson)
+  } catch {
+    return null
+  }
+  const brand: BrandPack = {
+    name: row.name,
+    tone: row.tone,
+    colors: colors as string[],
+    forbiddenWords: row.forbiddenWords,
+    locale: row.locale,
+    cta: row.cta,
+    ctaEn: row.ctaEn
+  }
+  if (!UUID_V4_PATTERN.test(row.id)
+    || !Number.isSafeInteger(row.approvedRevision)
+    || row.approvedRevision <= 0
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(row.createdAt)
+    || validateCampaignBrief({ brand }).length
+    || !brand.name
+    || !brand.ctaEn
+    || JSON.stringify(sanitizeCampaignBrief({ brand }).brand) !== JSON.stringify(brand)
+    || await sha256(canonicalBrandSnapshot(brand)) !== row.snapshotSha256) return null
+  return {
+    id: row.id,
+    ...brand,
+    approvedRevision: row.approvedRevision,
+    createdAt: row.createdAt
+  }
+}
+
+const brandPackSelect = `
+  SELECT id, name, tone, colors_json AS colorsJson, forbidden_words AS forbiddenWords,
+    locale, default_cta AS cta, default_cta_en AS ctaEn,
+    approved_revision AS approvedRevision, snapshot_sha256 AS snapshotSha256,
+    strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt
+  FROM brand_packs
+`
+
+function brandPackUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人品牌資料暫時無法讀取。 Private brand library is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function brandPackBySnapshot(env: Env, workspaceId: string, snapshotSha256: string) {
+  const row = await env.DB.prepare(`${brandPackSelect}
+    WHERE workspace_id = ? AND snapshot_sha256 = ?
+    LIMIT 1
+  `).bind(workspaceId, snapshotSha256).first<BrandPackRow>()
+  return row ? brandPackPayload(row) : null
+}
+
+async function listBrandPacks(env: Env, session: SessionContext) {
+  try {
+    const result = await env.DB.prepare(`${brandPackSelect}
+      WHERE workspace_id = ? AND snapshot_sha256 IS NOT NULL AND approved_revision > 0
+      ORDER BY created_at DESC, id DESC
+      LIMIT 20
+    `).bind(session.currentWorkspace.id).all<BrandPackRow>()
+    const brandPacks: SavedBrandPackPayload[] = []
+    for (const row of result.results) {
+      const brandPack = await brandPackPayload(row)
+      if (!brandPack) throw new TypeError('Invalid stored brand snapshot')
+      brandPacks.push(brandPack)
+    }
+    return json({ brandPacks })
+  } catch {
+    console.error('brand-pack-list-read-failed')
+    return brandPackUnavailable()
+  }
+}
+
+async function saveBrandPack(request: Request, env: Env, session: SessionContext) {
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const { body, tooLarge } = await readBody(request, MAX_BRAND_PACK_BODY_BYTES)
+  if (tooLarge) return json({ error: '品牌資料請求過大。 Brand snapshot request is too large.' }, { status: 413 })
+  if (!hasExactKeys(body, ['approvedRevision'])) {
+    return json({ error: '品牌資料批准版本格式無效。 Brand approval revision is invalid.' }, { status: 400 })
+  }
+  const approvedRevision = (body as { approvedRevision?: unknown }).approvedRevision
+  if (!Number.isSafeInteger(approvedRevision) || Number(approvedRevision) <= 0) {
+    return json({ error: '品牌資料批准版本格式無效。 Brand approval revision is invalid.' }, { status: 400 })
+  }
+
+  let state: CampaignAgentState
+  try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
+    state = await agent.getPlan()
+  } catch {
+    console.error('brand-pack-agent-read-failed')
+    return json({ error: '品牌資料儲存暫時無法使用。 Saving the brand snapshot is temporarily unavailable.' }, { status: 503 })
+  }
+  if (state.stage !== 'approved' || state.revision !== approvedRevision || !state.brief) {
+    return json({ error: '品牌資料批准版本已改變。 Brand approval changed.' }, { status: 409 })
+  }
+  const canonicalBrief = sanitizeCampaignBrief(state.brief)
+  if (validateCampaignBrief(state.brief).length
+    || JSON.stringify(canonicalBrief) !== JSON.stringify(state.brief)) {
+    console.error('brand-pack-agent-state-invalid')
+    return json({ error: '品牌資料儲存暫時無法使用。 Saving the brand snapshot is temporarily unavailable.' }, { status: 503 })
+  }
+  const brand = canonicalBrief.brand
+  const snapshotSha256 = await sha256(canonicalBrandSnapshot(brand))
+  try {
+    const existing = await brandPackBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (existing) return json({ brandPack: existing, replayed: true })
+  } catch {
+    console.error('brand-pack-preflight-read-failed')
+    return brandPackUnavailable()
+  }
+
+  const id = crypto.randomUUID()
+  let changes = 0
+  try {
+    const inserted = await env.DB.prepare(`
+      INSERT OR IGNORE INTO brand_packs (
+        id, workspace_id, name, tone, colors_json, forbidden_words, locale,
+        default_cta, default_cta_en, approved_revision, snapshot_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      session.currentWorkspace.id,
+      brand.name,
+      brand.tone,
+      JSON.stringify(brand.colors),
+      brand.forbiddenWords,
+      brand.locale,
+      brand.cta,
+      brand.ctaEn,
+      approvedRevision,
+      snapshotSha256
+    ).run()
+    changes = inserted.meta.changes
+  } catch {
+    console.error('brand-pack-insert-response-failed')
+  }
+
+  try {
+    const committed = await brandPackBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (!committed) {
+      console.error('brand-pack-insert-not-confirmed')
+      return brandPackUnavailable()
+    }
+    return json({ brandPack: committed, replayed: changes !== 1 }, { status: changes === 1 ? 201 : 200 })
+  } catch {
+    console.error('brand-pack-insert-reconciliation-failed')
+    return brandPackUnavailable()
+  }
+}
+
+async function deleteBrandPack(env: Env, session: SessionContext, brandPackId: string) {
+  if (!UUID_V4_PATTERN.test(brandPackId)) return json({ error: 'Brand snapshot not found.' }, { status: 404 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  try {
+    const existing = await env.DB.prepare(`
+      SELECT 1 AS present
+      FROM brand_packs
+      WHERE id = ? AND workspace_id = ? AND snapshot_sha256 IS NOT NULL
+      LIMIT 1
+    `).bind(brandPackId, session.currentWorkspace.id).first<{ present: number }>()
+    if (!existing) return json({ error: 'Brand snapshot not found.' }, { status: 404 })
+  } catch {
+    console.error('brand-pack-delete-preflight-read-failed')
+    return json({ error: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.' }, { status: 503 })
+  }
+
+  try {
+    await env.DB.prepare('DELETE FROM brand_packs WHERE id = ? AND workspace_id = ?')
+      .bind(brandPackId, session.currentWorkspace.id)
+      .run()
+    return deletedResponse()
+  } catch {
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM brand_packs
+        WHERE id = ? AND workspace_id = ?
+        LIMIT 1
+      `).bind(brandPackId, session.currentWorkspace.id).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('brand-pack-delete-reconciliation-pending')
+    } catch {
+      console.error('brand-pack-delete-reconciliation-failed')
+    }
+    return json({ error: '品牌快照刪除暫時無法使用。 Brand snapshot deletion is temporarily unavailable.' }, { status: 503 })
+  }
+}
+
+type ProductProfileRow = {
+  id: string
+  name: string
+  nameEn: string
+  category: string
+  benefitsJson: string
+  benefitsEnJson: string
+  specifications: string
+  price: string
+  promotion: string
+  promotionEn: string
+  channelsJson: string
+  approvedRevision: number
+  snapshotSha256: string
+  createdAt: string
+}
+
+type SavedProductProfilePayload = Product & {
+  id: string
+  approvedRevision: number
+  createdAt: string
+}
+
+function canonicalProductSnapshot(product: Product) {
+  return JSON.stringify({
+    name: product.name,
+    nameEn: product.nameEn,
+    category: product.category,
+    benefits: product.benefits,
+    benefitsEn: product.benefitsEn,
+    specifications: product.specifications,
+    price: product.price,
+    promotion: product.promotion,
+    promotionEn: product.promotionEn,
+    channels: product.channels
+  })
+}
+
+function isApprovedProduct(product: Product) {
+  return Boolean(
+    product.name
+    && product.nameEn
+    && product.category
+    && product.price
+    && product.promotion
+    && product.promotionEn
+    && product.benefits.length >= 2
+    && product.benefitsEn.length >= 2
+  )
+}
+
+function isCanonicalProductProfileTime(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value.replace(/Z$/, '.000Z')
+}
+
+async function productProfilePayload(row: ProductProfileRow): Promise<SavedProductProfilePayload | null> {
+  let benefits: unknown
+  let benefitsEn: unknown
+  let channels: unknown
+  try {
+    benefits = JSON.parse(row.benefitsJson)
+    benefitsEn = JSON.parse(row.benefitsEnJson)
+    channels = JSON.parse(row.channelsJson)
+  } catch {
+    return null
+  }
+  const product: Product = {
+    name: row.name,
+    nameEn: row.nameEn,
+    category: row.category,
+    benefits: benefits as string[],
+    benefitsEn: benefitsEn as string[],
+    specifications: row.specifications,
+    price: row.price,
+    promotion: row.promotion,
+    promotionEn: row.promotionEn,
+    channels: channels as string[]
+  }
+  if (!UUID_V4_PATTERN.test(row.id)
+    || !Number.isSafeInteger(row.approvedRevision)
+    || row.approvedRevision <= 0
+    || !isCanonicalProductProfileTime(row.createdAt)
+    || validateCampaignBrief({ product }).length
+    || !isApprovedProduct(product)
+    || JSON.stringify(sanitizeCampaignBrief({ product }).product) !== JSON.stringify(product)
+    || await sha256(canonicalProductSnapshot(product)) !== row.snapshotSha256) return null
+  return {
+    id: row.id,
+    ...product,
+    approvedRevision: row.approvedRevision,
+    createdAt: row.createdAt
+  }
+}
+
+const productProfileSelect = `
+  SELECT id, name, name_en AS nameEn, category, benefits_json AS benefitsJson,
+    benefits_en_json AS benefitsEnJson, specifications, price, promotion,
+    promotion_en AS promotionEn, channels_json AS channelsJson,
+    approved_revision AS approvedRevision, snapshot_sha256 AS snapshotSha256,
+    strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt
+  FROM products
+`
+
+function productProfileUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人商品資料暫時無法讀取。 Private product library is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function productProfileBySnapshot(env: Env, workspaceId: string, snapshotSha256: string) {
+  const row = await env.DB.prepare(`${productProfileSelect}
+    WHERE workspace_id = ? AND snapshot_sha256 = ?
+    LIMIT 1
+  `).bind(workspaceId, snapshotSha256).first<ProductProfileRow>()
+  return row ? productProfilePayload(row) : null
+}
+
+async function listProductProfiles(env: Env, session: SessionContext) {
+  try {
+    const result = await env.DB.prepare(`${productProfileSelect}
+      WHERE workspace_id = ? AND snapshot_sha256 IS NOT NULL AND approved_revision > 0
+      ORDER BY created_at DESC, id DESC
+      LIMIT 20
+    `).bind(session.currentWorkspace.id).all<ProductProfileRow>()
+    const productProfiles: SavedProductProfilePayload[] = []
+    for (const row of result.results) {
+      const productProfile = await productProfilePayload(row)
+      if (!productProfile) throw new TypeError('Invalid stored product profile')
+      productProfiles.push(productProfile)
+    }
+    return json({ productProfiles })
+  } catch {
+    console.error('product-profile-list-read-failed')
+    return productProfileUnavailable()
+  }
+}
+
+async function saveProductProfile(request: Request, env: Env, session: SessionContext) {
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const { body, tooLarge } = await readBody(request, MAX_PRODUCT_PROFILE_BODY_BYTES)
+  if (tooLarge) return json({ error: '商品資料請求過大。 Product profile request is too large.' }, { status: 413 })
+  if (!hasExactKeys(body, ['approvedRevision'])) {
+    return json({ error: '商品資料批准版本格式無效。 Product approval revision is invalid.' }, { status: 400 })
+  }
+  const approvedRevision = (body as { approvedRevision?: unknown }).approvedRevision
+  if (!Number.isSafeInteger(approvedRevision) || Number(approvedRevision) <= 0) {
+    return json({ error: '商品資料批准版本格式無效。 Product approval revision is invalid.' }, { status: 400 })
+  }
+
+  let state: CampaignAgentState
+  try {
+    const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
+    state = await agent.getPlan()
+  } catch {
+    console.error('product-profile-agent-read-failed')
+    return json({ error: '商品資料儲存暫時無法使用。 Saving the product profile is temporarily unavailable.' }, { status: 503 })
+  }
+  if (state.stage !== 'approved' || state.revision !== approvedRevision || !state.brief) {
+    return json({ error: '商品資料批准版本已改變。 Product approval changed.' }, { status: 409 })
+  }
+  const canonicalBrief = sanitizeCampaignBrief(state.brief)
+  if (validateCampaignBrief(state.brief).length
+    || JSON.stringify(canonicalBrief) !== JSON.stringify(state.brief)
+    || !isApprovedProduct(canonicalBrief.product)) {
+    console.error('product-profile-agent-state-invalid')
+    return json({ error: '商品資料儲存暫時無法使用。 Saving the product profile is temporarily unavailable.' }, { status: 503 })
+  }
+  const product = canonicalBrief.product
+  const snapshotSha256 = await sha256(canonicalProductSnapshot(product))
+  try {
+    const existing = await productProfileBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (existing) return json({ productProfile: existing, replayed: true })
+  } catch {
+    console.error('product-profile-preflight-read-failed')
+    return productProfileUnavailable()
+  }
+
+  const id = crypto.randomUUID()
+  let changes = 0
+  try {
+    const inserted = await env.DB.prepare(`
+      INSERT OR IGNORE INTO products (
+        id, workspace_id, name, name_en, category, benefits_json, benefits_en_json,
+        specifications, price, promotion, promotion_en, channels_json,
+        approved_revision, snapshot_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      session.currentWorkspace.id,
+      product.name,
+      product.nameEn,
+      product.category,
+      JSON.stringify(product.benefits),
+      JSON.stringify(product.benefitsEn),
+      product.specifications,
+      product.price,
+      product.promotion,
+      product.promotionEn,
+      JSON.stringify(product.channels),
+      approvedRevision,
+      snapshotSha256
+    ).run()
+    changes = inserted.meta.changes
+  } catch {
+    console.error('product-profile-insert-response-failed')
+  }
+
+  try {
+    const committed = await productProfileBySnapshot(env, session.currentWorkspace.id, snapshotSha256)
+    if (!committed) {
+      console.error('product-profile-insert-not-confirmed')
+      return productProfileUnavailable()
+    }
+    return json({ productProfile: committed, replayed: changes !== 1 }, { status: changes === 1 ? 201 : 200 })
+  } catch {
+    console.error('product-profile-insert-reconciliation-failed')
+    return productProfileUnavailable()
+  }
+}
+
+async function deleteProductProfile(env: Env, session: SessionContext, productProfileId: string) {
+  if (!UUID_V4_PATTERN.test(productProfileId)) return json({ error: 'Product profile not found.' }, { status: 404 })
+  const deletedResponse = () => new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+  try {
+    const existing = await env.DB.prepare(`
+      SELECT 1 AS present
+      FROM products
+      WHERE id = ? AND workspace_id = ? AND snapshot_sha256 IS NOT NULL AND approved_revision > 0
+      LIMIT 1
+    `).bind(productProfileId, session.currentWorkspace.id).first<{ present: number }>()
+    if (!existing) return json({ error: 'Product profile not found.' }, { status: 404 })
+  } catch {
+    console.error('product-profile-delete-preflight-read-failed')
+    return json({ error: '商品資料快照刪除暫時無法使用。 Product profile deletion is temporarily unavailable.' }, { status: 503 })
+  }
+
+  try {
+    await env.DB.prepare('DELETE FROM products WHERE id = ? AND workspace_id = ?')
+      .bind(productProfileId, session.currentWorkspace.id)
+      .run()
+    return deletedResponse()
+  } catch {
+    try {
+      const remaining = await env.DB.prepare(`
+        SELECT 1 AS present
+        FROM products
+        WHERE id = ? AND workspace_id = ?
+        LIMIT 1
+      `).bind(productProfileId, session.currentWorkspace.id).first<{ present: number }>()
+      if (!remaining) return deletedResponse()
+      console.error('product-profile-delete-reconciliation-pending')
+    } catch {
+      console.error('product-profile-delete-reconciliation-failed')
+    }
+    return json({ error: '商品資料快照刪除暫時無法使用。 Product profile deletion is temporarily unavailable.' }, { status: 503 })
+  }
+}
+
+function productAssetListUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '私人商品來源圖暫時無法讀取。 Private product sources are temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function listProductAssets(env: Env, session: SessionContext) {
+  try {
+    const result = await env.DB.prepare(`
+      SELECT a.id, a.content_type AS contentType, a.size_bytes AS sizeBytes,
+        a.width_px AS widthPx, a.height_px AS heightPx,
+        CASE WHEN r.asset_id IS NULL THEN 'unconfirmed' ELSE 'confirmed' END AS rightsStatus,
+        strftime('%Y-%m-%dT%H:%M:%SZ', a.created_at) AS createdAt
+      FROM media_assets a
+      LEFT JOIN product_asset_rights_attestations r
+        ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
+        AND r.attestation_version = ?
+      WHERE a.workspace_id = ? AND a.kind = 'product-source'
+        AND a.content_sha256 IS NOT NULL AND a.size_bytes <= ?
+      ORDER BY a.created_at DESC, a.id DESC
+      LIMIT 20
+    `).bind(
+      COMMERCIAL_USE_RIGHTS_ATTESTATION,
+      session.currentWorkspace.id,
+      MAX_PRODUCT_IMAGE_BYTES
+    ).all<ProductAssetListRow>()
+    return json({
+      assets: result.results.map((asset) => {
+        const dimensions = storedProductAssetDimensions(asset.widthPx, asset.heightPx)
+        if (dimensions === undefined) throw new TypeError('Invalid stored product asset dimensions.')
+        return {
+          id: asset.id,
+          name: `product-image.${extensionForContentType(asset.contentType)}`,
+          contentType: asset.contentType,
+          sizeBytes: asset.sizeBytes,
+          widthPx: dimensions?.width ?? null,
+          heightPx: dimensions?.height ?? null,
+          rightsStatus: asset.rightsStatus,
+          previewUrl: `/api/assets/${asset.id}`,
+          createdAt: asset.createdAt
+        }
+      })
+    })
+  } catch {
+    console.error('product-asset-list-read-failed')
+    return productAssetListUnavailable()
+  }
+}
+
 async function uploadProductAsset(request: Request, env: Env, session: SessionContext) {
   if (!hasMediaType(request, 'multipart/form-data')) return unsupportedMediaType(request, 'multipart/form-data')
   const assetId = request.headers.get('idempotency-key')?.trim().toLowerCase() || ''
@@ -1034,6 +1834,18 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   const headers = new Headers({ 'content-type': request.headers.get('content-type')! })
   const boundedRequest = new Request(request.url, { method: 'POST', headers, body: bounded.bytes as BodyInit })
   const form = await boundedRequest.formData().catch(() => null)
+  const formEntries = form ? [...form.entries()] : []
+  const rightsValues = form?.getAll('rightsAttestation') || []
+  const hasExactUploadFields = formEntries.length === 2
+    && formEntries.every(([key]) => key === 'file' || key === 'rightsAttestation')
+    && (form?.getAll('file').length || 0) === 1
+    && rightsValues.length === 1
+    && rightsValues[0] === COMMERCIAL_USE_RIGHTS_ATTESTATION
+  if (!hasExactUploadFields) {
+    return json({
+      error: '請先確認你有權將商品圖片用於商業素材。 Confirm commercial-use rights before uploading.'
+    }, { status: 400 })
+  }
   const value = form?.get('file')
   if (!(value instanceof File)) return json({ error: '請選擇商品圖片。' }, { status: 400 })
   if (!productImageTypes.has(value.type)) return json({ error: '只支援 PNG、JPEG 或靜態 WebP 圖片。' }, { status: 415 })
@@ -1047,7 +1859,8 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   if ((value.type === 'image/png' && !hasValidPngStructure(bytes)) || (value.type === 'image/webp' && !hasValidWebpStructure(bytes))) {
     return json({ error: '圖片檔案結構無效，請重新匯出後再上傳。 Invalid image structure; export the image again.' }, { status: 400 })
   }
-  if (!hasSafeProductImageDimensions(value.type, bytes)) {
+  const dimensions = productImageDimensions(value.type, bytes)
+  if (!dimensions || !hasSafeImageDimensions(dimensions)) {
     return json({ error: '圖片尺寸不可超過 8192 px 單邊或 3,200 萬像素。 Image dimensions must not exceed 8192 px per side or 32 megapixels.' }, { status: 413 })
   }
 
@@ -1061,6 +1874,9 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
       name: storedFilename,
       contentType: value.type,
       sizeBytes: value.size,
+      widthPx: dimensions.width,
+      heightPx: dimensions.height,
+      rightsStatus: 'confirmed',
       previewUrl: `/api/assets/${assetId}`
     }
   }, { status: 201 })
@@ -1079,7 +1895,12 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
     if (!matchesProductAssetUpload(existing, objectKey, value.type, value.size, contentSha256)) return conflictResponse()
     try {
       const stored = await env.MEDIA_BUCKET.head(existing.objectKey)
-      if (stored && hasCanonicalProductAssetMetadata(existing, stored)) return createdResponse()
+      if (stored && hasCanonicalProductAssetMetadata(existing, stored)) {
+        if (!hasConfirmedProductAssetRights(existing)) {
+          await confirmProductAssetRightsRecord(env, session.currentWorkspace.id, assetId, session.user.id)
+        }
+        return createdResponse()
+      }
     } catch {
       console.error('product-asset-upload-replay-read-failed')
       return json({ error: '未能核對商品圖片記錄。 Unable to reconcile the product image record.' }, { status: 503 })
@@ -1104,18 +1925,47 @@ async function uploadProductAsset(request: Request, env: Env, session: SessionCo
   }
 
   try {
-    await env.DB.prepare(`
-      INSERT INTO media_assets (
-        id, workspace_id, created_by_user_id, kind, object_key,
-        original_filename, content_type, size_bytes, content_sha256
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO media_assets (
+          id, workspace_id, created_by_user_id, kind, object_key,
+          original_filename, content_type, size_bytes, content_sha256,
+          width_px, height_px
+        )
+        VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        assetId,
+        session.currentWorkspace.id,
+        session.user.id,
+        objectKey,
+        storedFilename,
+        value.type,
+        value.size,
+        contentSha256,
+        dimensions.width,
+        dimensions.height
+      ),
+      env.DB.prepare(`
+        INSERT INTO product_asset_rights_attestations (
+          asset_id, workspace_id, confirmed_by_user_id, attestation_version
+        ) VALUES (?, ?, ?, ?)
+      `).bind(
+        assetId,
+        session.currentWorkspace.id,
+        session.user.id,
+        COMMERCIAL_USE_RIGHTS_ATTESTATION
       )
-      VALUES (?, ?, ?, 'product-source', ?, ?, ?, ?, ?)
-    `).bind(assetId, session.currentWorkspace.id, session.user.id, objectKey, storedFilename, value.type, value.size, contentSha256).run()
+    ])
   } catch {
     try {
       const committed = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
       if (committed) {
-        if (matchesProductAssetUpload(committed, objectKey, value.type, value.size, contentSha256)) return createdResponse()
+        if (matchesProductAssetUpload(committed, objectKey, value.type, value.size, contentSha256)) {
+          if (!hasConfirmedProductAssetRights(committed)) {
+            await confirmProductAssetRightsRecord(env, session.currentWorkspace.id, assetId, session.user.id)
+          }
+          return createdResponse()
+        }
         if (committed.objectKey !== objectKey) await env.MEDIA_BUCKET.delete(objectKey).catch(() => null)
         return conflictResponse()
       }
@@ -1136,18 +1986,57 @@ type StoredProductAsset = {
   contentType: 'image/png' | 'image/jpeg' | 'image/webp'
   sizeBytes: number
   contentSha256: string | null
+  rightsAttestationVersion: string | null
 }
 
 async function productAssetForWorkspace(env: Env, workspaceId: string, assetId: string) {
   return env.DB.prepare(`
     SELECT a.object_key AS objectKey, a.workspace_id AS workspaceId,
       a.content_type AS contentType, a.size_bytes AS sizeBytes,
-      a.content_sha256 AS contentSha256
+      a.content_sha256 AS contentSha256,
+      r.attestation_version AS rightsAttestationVersion
     FROM media_assets a
     JOIN workspaces w ON w.id = a.workspace_id
+    LEFT JOIN product_asset_rights_attestations r
+      ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
     WHERE a.id = ? AND a.workspace_id = ? AND a.kind = 'product-source'
       AND w.access_status = 'active'
   `).bind(assetId, workspaceId).first<StoredProductAsset>()
+}
+
+function hasConfirmedProductAssetRights(asset: StoredProductAsset) {
+  return asset.rightsAttestationVersion === COMMERCIAL_USE_RIGHTS_ATTESTATION
+}
+
+async function productAssetRightsVersion(env: Env, workspaceId: string, assetId: string) {
+  return env.DB.prepare(`
+    SELECT attestation_version AS attestationVersion
+    FROM product_asset_rights_attestations
+    WHERE asset_id = ? AND workspace_id = ?
+  `).bind(assetId, workspaceId).first<{ attestationVersion: string }>()
+}
+
+async function confirmProductAssetRightsRecord(
+  env: Env,
+  workspaceId: string,
+  assetId: string,
+  userId: string
+): Promise<'created' | 'replayed'> {
+  const existing = await productAssetRightsVersion(env, workspaceId, assetId)
+  if (existing?.attestationVersion === COMMERCIAL_USE_RIGHTS_ATTESTATION) return 'replayed'
+  if (existing) throw new TypeError('Unsupported stored product asset rights version.')
+  try {
+    await env.DB.prepare(`
+      INSERT INTO product_asset_rights_attestations (
+        asset_id, workspace_id, confirmed_by_user_id, attestation_version
+      ) VALUES (?, ?, ?, ?)
+    `).bind(assetId, workspaceId, userId, COMMERCIAL_USE_RIGHTS_ATTESTATION).run()
+    return 'created'
+  } catch (error) {
+    const committed = await productAssetRightsVersion(env, workspaceId, assetId)
+    if (committed?.attestationVersion === COMMERCIAL_USE_RIGHTS_ATTESTATION) return 'replayed'
+    throw error
+  }
 }
 
 function matchesProductAssetUpload(
@@ -1182,6 +2071,12 @@ function productAssetNotFound() {
   return json({ error: '找不到這張商品圖片。 Product asset not found.' }, { status: 404 })
 }
 
+function productAssetRightsRequired() {
+  return json({
+    error: '請先確認這張商品圖片的商業使用權。 Confirm commercial-use rights for this product image first.'
+  }, { status: 409 })
+}
+
 function productAssetUnavailable() {
   return json({
     code: 'unavailable',
@@ -1211,6 +2106,63 @@ async function productAsset(request: Request, env: Env, session: SessionContext,
     return invalidProductAsset()
   }
   return new Response(object.body, { headers: { 'content-type': asset.contentType, 'cache-control': 'private, no-store', 'cross-origin-resource-policy': 'same-origin', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' } })
+}
+
+async function confirmProductAssetRights(
+  request: Request,
+  env: Env,
+  session: SessionContext,
+  assetId: string
+) {
+  if (!UUID_V4_PATTERN.test(assetId)) {
+    await cancelRequestBody(request)
+    return json({ error: '商品圖片識別資料無效。 Product asset identifier is invalid.' }, { status: 400 })
+  }
+  if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
+  const parsed = await readBody(request, MAX_PRODUCT_RIGHTS_BODY_BYTES)
+  if (parsed.tooLarge) {
+    return json({ error: '商品圖片使用權確認內容過大。 Product image rights payload is too large.' }, { status: 413 })
+  }
+  const body = parsed.body && typeof parsed.body === 'object' && !Array.isArray(parsed.body)
+    ? parsed.body as Record<string, unknown>
+    : null
+  const keys = body ? Object.keys(body) : []
+  if (!body
+    || keys.length !== 1
+    || keys[0] !== 'attestation'
+    || body.attestation !== COMMERCIAL_USE_RIGHTS_ATTESTATION) {
+    return json({
+      error: '商品圖片使用權確認格式無效。 Product image rights confirmation is invalid.'
+    }, { status: 400 })
+  }
+
+  let asset: StoredProductAsset | null
+  try {
+    asset = await productAssetForWorkspace(env, session.currentWorkspace.id, assetId)
+  } catch {
+    console.error('product-asset-rights-preflight-read-failed')
+    return json({ error: '商品圖片使用權確認暫時無法使用。 Product image rights confirmation is temporarily unavailable.' }, { status: 503 })
+  }
+  if (!asset) return productAssetNotFound()
+  if (typeof asset.contentSha256 !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(asset.contentSha256)) {
+    return invalidProductAsset()
+  }
+
+  try {
+    const result = await confirmProductAssetRightsRecord(
+      env,
+      session.currentWorkspace.id,
+      assetId,
+      session.user.id
+    )
+    return json({
+      asset: { id: assetId, rightsStatus: 'confirmed' },
+      replayed: result === 'replayed'
+    })
+  } catch {
+    console.error('product-asset-rights-confirmation-failed')
+    return json({ error: '商品圖片使用權確認暫時無法使用。 Product image rights confirmation is temporarily unavailable.' }, { status: 503 })
+  }
 }
 
 async function deleteProductAsset(env: Env, session: SessionContext, assetId: string) {
@@ -1255,7 +2207,16 @@ async function deleteProductAsset(env: Env, session: SessionContext, assetId: st
 async function campaignAgentRequest(request: Request, env: Env, session: SessionContext, action: 'state' | 'plan' | 'approve') {
   try {
     const agent = await getAgentByName(env.CAMPAIGN_AGENT, session.currentWorkspace.id)
-    if (request.method === 'GET' && action === 'state') return json({ state: await agent.getPlan() })
+    if (request.method === 'GET' && action === 'state') {
+      const state = await agent.getPlan()
+      if (state.brief?.assetId) {
+        const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
+        if (!asset || !hasConfirmedProductAssetRights(asset)) {
+          return json({ state: await agent.resetPlanForAsset(state.brief.assetId) })
+        }
+      }
+      return json({ state })
+    }
     if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, { status: 405 })
     if (!hasJsonContent(request)) return unsupportedMediaType(request, 'application/json')
     const parsed = await readBody(request, MAX_AGENT_BODY_BYTES)
@@ -1273,6 +2234,7 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
       if (brief.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, brief.assetId)
         if (!asset) return productAssetNotFound()
+        if (!hasConfirmedProductAssetRights(asset)) return productAssetRightsRequired()
         const object = await env.MEDIA_BUCKET.head(asset.objectKey)
         if (!object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
       }
@@ -1285,8 +2247,9 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
         return json({ error: '批准版本格式無效。 Approval revision must be a positive integer.' }, { status: 400 })
       }
       const state = await agent.getPlan()
-      if (state.stage === 'awaiting-approval' && state.brief?.assetId) {
+      if ((state.stage === 'awaiting-approval' || state.stage === 'approved') && state.brief?.assetId) {
         const asset = await productAssetForWorkspace(env, session.currentWorkspace.id, state.brief.assetId)
+        if (asset && !hasConfirmedProductAssetRights(asset)) return productAssetRightsRequired()
         const object = asset ? await env.MEDIA_BUCKET.head(asset.objectKey) : null
         if (!asset || !object || !hasCanonicalProductAssetMetadata(asset, object)) return invalidProductAsset()
       }
@@ -1300,13 +2263,26 @@ async function campaignAgentRequest(request: Request, env: Env, session: Session
   }
 }
 
-async function referenceAssetsBelongToWorkspace(env: Env, workspaceId: string, assetIds: string[]) {
-  if (!assetIds.length) return true
+async function referenceAssetReadiness(
+  env: Env,
+  workspaceId: string,
+  assetIds: string[]
+): Promise<'ready' | 'missing' | 'rights-unconfirmed'> {
+  if (!assetIds.length) return 'ready'
   const placeholders = assetIds.map(() => '?').join(',')
-  const result = await env.DB.prepare(`SELECT COUNT(*) AS count FROM media_assets WHERE workspace_id = ? AND id IN (${placeholders}) AND kind = 'product-source'`)
-    .bind(workspaceId, ...assetIds)
-    .first<{ count: number }>()
-  return result?.count === new Set(assetIds).size
+  const result = await env.DB.prepare(`
+    SELECT COUNT(*) AS count, COUNT(r.asset_id) AS rightsCount
+    FROM media_assets a
+    LEFT JOIN product_asset_rights_attestations r
+      ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
+      AND r.attestation_version = ?
+    WHERE a.workspace_id = ? AND a.id IN (${placeholders}) AND a.kind = 'product-source'
+  `)
+    .bind(COMMERCIAL_USE_RIGHTS_ATTESTATION, workspaceId, ...assetIds)
+    .first<{ count: number; rightsCount: number }>()
+  const expected = new Set(assetIds).size
+  if (result?.count !== expected) return 'missing'
+  return result.rightsCount === expected ? 'ready' : 'rights-unconfirmed'
 }
 
 async function approvedGenerationInput(env: Env, input: GenerationInput) {
@@ -1335,11 +2311,20 @@ async function requireCurrentGenerationExecution(
     FROM generations g
     JOIN workspaces w ON w.id = g.workspace_id
     JOIN media_assets a ON a.workspace_id = w.id
+    JOIN product_asset_rights_attestations r
+      ON r.asset_id = a.id AND r.workspace_id = a.workspace_id
     WHERE g.id = ? AND g.workspace_id = ?
       AND g.status = 'processing' AND g.processing_attempt = ?
       AND w.access_status = 'active'
       AND a.id = ? AND a.kind = 'product-source'
-  `).bind(generationId, input.workspaceId, processingAttempt, input.referenceAssetIds[0]).first<{ current: number }>()
+      AND r.attestation_version = ?
+  `).bind(
+    generationId,
+    input.workspaceId,
+    processingAttempt,
+    input.referenceAssetIds[0],
+    COMMERCIAL_USE_RIGHTS_ATTESTATION
+  ).first<{ current: number }>()
   if (!current || !await approvedGenerationInput(env, input)) {
     throw new TerminalGenerationError('Generation execution approval is stale.')
   }
@@ -1348,6 +2333,9 @@ async function requireCurrentGenerationExecution(
 async function generationSourceAsset(env: Env, input: GenerationInput) {
   const asset = await productAssetForWorkspace(env, input.workspaceId, input.referenceAssetIds[0])
   if (!asset) throw new TerminalGenerationError('Approved product asset is unavailable.')
+  if (!hasConfirmedProductAssetRights(asset)) {
+    throw new TerminalGenerationError('Approved product asset rights are unavailable.')
+  }
   const object = await env.MEDIA_BUCKET.get(asset.objectKey)
   if (!object) throw new TerminalGenerationError('Approved product asset is unavailable.')
   if (!hasCanonicalProductAssetMetadata(asset, object)) {
@@ -2139,14 +3127,15 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
     if (issues.length) return json({ error: issues[0], issues }, { status: 422 })
     if (!workflowById(input.workflowId).ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   }
-  let ownsReferenceAssets: boolean
+  let referenceAssets: Awaited<ReturnType<typeof referenceAssetReadiness>>
   try {
-    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, inputs[0].referenceAssetIds)
+    referenceAssets = await referenceAssetReadiness(env, workspace.id, inputs[0].referenceAssetIds)
   } catch {
     console.error('campaign-pack-asset-preflight-read-failed')
     return generationPreflightUnavailable()
   }
-  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'missing') return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'rights-unconfirmed') return productAssetRightsRequired()
   try {
     if (!await approvedCampaignPackInputs(env, inputs)) return json({ error: 'Campaign plan approval is missing, stale, or does not match this pack.' }, { status: 409 })
   } catch {
@@ -2166,9 +3155,11 @@ async function createCampaignPack(request: Request, env: Env, session: SessionCo
         WHERE workspace_id = ? AND available >= ? AND reserved + ? <= ?
       `).bind(outputCount, outputCount, workspace.id, outputCount, outputCount, activeLimit),
       env.DB.prepare(`
-        INSERT INTO campaign_packs (id, workspace_id, idempotency_key, approved_revision)
-        SELECT ?, ?, ?, ? WHERE changes() = 1
-      `).bind(campaignPackId, workspace.id, parsedPack.request.idempotencyKey, parsedPack.request.approvedRevision)
+        INSERT INTO campaign_packs (
+          id, workspace_id, idempotency_key, approved_revision, created_by_user_id
+        )
+        SELECT ?, ?, ?, ?, ? WHERE changes() = 1
+      `).bind(campaignPackId, workspace.id, parsedPack.request.idempotencyKey, parsedPack.request.approvedRevision, session.user.id)
     ]
     for (const item of queued) {
       statements.push(env.DB.prepare(`
@@ -2305,14 +3296,15 @@ async function createGeneration(request: Request, env: Env, session: SessionCont
   const safeInput: GenerationInput = { ...input, workspaceId: workspace.id, intent: brief.intent, brand: brief.brand, product: brief.product, referenceImageUrls: [], referenceAssetIds: [input.referenceAssetIds[0]] }
   const compositionIssues = validateCompositionInput(safeInput)
   if (compositionIssues.length) return json({ error: compositionIssues[0], issues: compositionIssues }, { status: 422 })
-  let ownsReferenceAssets: boolean
+  let referenceAssets: Awaited<ReturnType<typeof referenceAssetReadiness>>
   try {
-    ownsReferenceAssets = await referenceAssetsBelongToWorkspace(env, workspace.id, safeInput.referenceAssetIds)
+    referenceAssets = await referenceAssetReadiness(env, workspace.id, safeInput.referenceAssetIds)
   } catch {
     console.error('generation-asset-preflight-read-failed')
     return generationPreflightUnavailable()
   }
-  if (!ownsReferenceAssets) return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'missing') return json({ error: 'Product asset not found.' }, { status: 400 })
+  if (referenceAssets === 'rights-unconfirmed') return productAssetRightsRequired()
   const workflow = workflowById(input.workflowId)
   if (!workflow.ratios.includes(input.aspectRatio)) return json({ error: 'The selected ratio is not available for this workflow.' }, { status: 400 })
   try {
@@ -2404,6 +3396,192 @@ async function listGenerations(request: Request, env: Env, session: SessionConte
     console.error('generation-list-read-failed')
     return generationListUnavailable()
   }
+}
+
+function workspaceActivityUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區活動暫時無法讀取。 Workspace activity is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+async function listWorkspaceActivity(env: Env, session: SessionContext) {
+  if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
+    return json({
+      error: '只有工作區 owner 或 admin 可以查看活動記錄。 Only workspace owners or admins can view activity.'
+    }, { status: 403 })
+  }
+  try {
+    const result = await env.DB.prepare(`
+      SELECT e.id, e.event_type AS type, u.name AS actorName,
+        strftime('%Y-%m-%dT%H:%M:%SZ', e.created_at) AS createdAt
+      FROM workspace_activity_events e
+      LEFT JOIN users u ON u.id = e.actor_user_id
+      WHERE e.workspace_id = ?
+      ORDER BY e.created_at DESC, e.id DESC
+      LIMIT 50
+    `).bind(session.currentWorkspace.id).all<{
+      id: string
+      type: WorkspaceActivityEventType
+      actorName: string | null
+      createdAt: string
+    }>()
+    return json({ activity: result.results })
+  } catch {
+    console.error('workspace-activity-read-failed')
+    return workspaceActivityUnavailable()
+  }
+}
+
+type OutputUsageEventRow = {
+  type: OutputUsageEventType
+  amount: number
+  createdAt: string
+}
+
+const outputUsageAmounts: Record<OutputUsageEventType, number> = {
+  reservation: -OUTPUT_COST,
+  settlement: 0,
+  release: OUTPUT_COST
+}
+
+function outputUsageUnavailable() {
+  return json({
+    code: 'unavailable',
+    error: '工作區用量暫時無法讀取。 Workspace usage is temporarily unavailable.'
+  }, { status: 503 })
+}
+
+function canonicalUtcSecond(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value.replace(/Z$/, '.000Z')
+}
+
+function canonicalOutputUsageEvent(row: OutputUsageEventRow) {
+  return (row.type === 'reservation' || row.type === 'settlement' || row.type === 'release')
+    && row.amount === outputUsageAmounts[row.type]
+    && canonicalUtcSecond(row.createdAt)
+}
+
+async function listOutputUsage(env: Env, session: SessionContext) {
+  try {
+    const [allowanceResult, summaryResult, eventResult] = await env.DB.batch([
+      env.DB.prepare(`
+        SELECT available AS availableOutputs, reserved AS reservedOutputs,
+          strftime('%Y-%m-%dT%H:%M:%SZ', updated_at) AS updatedAt
+        FROM output_allowances
+        WHERE workspace_id = ?
+        LIMIT 1
+      `).bind(session.currentWorkspace.id),
+      env.DB.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN event_type = 'settlement' AND amount = 0 THEN 1 ELSE 0 END), 0) AS completedOutputs,
+          COALESCE(SUM(CASE WHEN event_type = 'release' AND amount = ? THEN 1 ELSE 0 END), 0) AS releasedOutputs,
+          COALESCE(SUM(CASE
+            WHEN event_type = 'reservation' AND amount <> ? THEN 1
+            WHEN event_type = 'settlement' AND amount <> 0 THEN 1
+            WHEN event_type = 'release' AND amount <> ? THEN 1
+            ELSE 0
+          END), 0) AS invalidEvents
+        FROM output_ledger
+        WHERE workspace_id = ?
+      `).bind(OUTPUT_COST, -OUTPUT_COST, OUTPUT_COST, session.currentWorkspace.id),
+      env.DB.prepare(`
+        SELECT event_type AS type, amount,
+          strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS createdAt
+        FROM output_ledger
+        WHERE workspace_id = ?
+          AND event_type IN ('reservation', 'settlement', 'release')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 50
+      `).bind(session.currentWorkspace.id)
+    ])
+    const allowance = allowanceResult.results[0] as {
+      availableOutputs: number
+      reservedOutputs: number
+      updatedAt: string
+    } | undefined
+    if (!allowance
+      || !Number.isSafeInteger(allowance.availableOutputs)
+      || allowance.availableOutputs < 0
+      || !Number.isSafeInteger(allowance.reservedOutputs)
+      || allowance.reservedOutputs < 0
+      || !canonicalUtcSecond(allowance.updatedAt)) throw new TypeError('Invalid allowance snapshot')
+
+    const summary = summaryResult.results[0] as {
+      completedOutputs: number
+      releasedOutputs: number
+      invalidEvents: number
+    } | undefined
+    if (!summary
+      || !Number.isSafeInteger(summary.completedOutputs)
+      || summary.completedOutputs < 0
+      || !Number.isSafeInteger(summary.releasedOutputs)
+      || summary.releasedOutputs < 0
+      || summary.invalidEvents !== 0) throw new TypeError('Invalid usage summary')
+
+    const events = eventResult.results as unknown as OutputUsageEventRow[]
+    if (!events.every(canonicalOutputUsageEvent)) throw new TypeError('Invalid usage event')
+    return json({
+      allowance,
+      summary: {
+        completedOutputs: summary.completedOutputs,
+        releasedOutputs: summary.releasedOutputs
+      },
+      events
+    })
+  } catch {
+    console.error('output-usage-read-failed')
+    return outputUsageUnavailable()
+  }
+}
+
+function integrationReadiness(env: Env, session: SessionContext) {
+  if (session.currentWorkspace.role !== 'owner' && session.currentWorkspace.role !== 'admin') {
+    return json({
+      error: '只有工作區 owner 或 admin 可以查看整合就緒度。 Only workspace owners or admins can view integration readiness.'
+    }, { status: 403 })
+  }
+  const requestedGeneration = env.GENERATION_MODE === 'deterministic'
+    ? 'deterministic'
+    : env.GENERATION_MODE === 'assisted' ? 'assisted' : 'disabled'
+  const requestedAgent = env.AGENT_MODE === 'assisted' ? 'assisted' : 'deterministic'
+  const effectiveGeneration = generationMode(env)
+  const effectiveAgent = agentMode(env)
+  const activeAuthMode = authMode(env)
+  const gates = {
+    providerAllowlisted: env.ASSISTED_PROVIDER === 'openai',
+    dataPolicyApproved: env.ASSISTED_DATA_POLICY === 'approved',
+    evaluationApproved: env.ASSISTED_EVALUATION === 'approved',
+    budgetApproved: env.ASSISTED_BUDGET_MODE === 'approved',
+    credentialConfigured: Boolean(env.OPENAI_API_KEY?.trim())
+  }
+  return json({
+    contractVersion: 'integration-readiness-v1',
+    access: {
+      authMode: activeAuthMode,
+      registrationMode: activeAuthMode === 'access' ? 'closed' : registrationMode(env)
+    },
+    generation: {
+      requestedMode: requestedGeneration,
+      effectiveMode: effectiveGeneration,
+      enabled: effectiveGeneration !== 'disabled',
+      maxActivePerWorkspace: maxActiveGenerations(env)
+    },
+    agent: { requestedMode: requestedAgent, effectiveMode: effectiveAgent },
+    assisted: {
+      requested: requestedGeneration === 'assisted' || requestedAgent === 'assisted',
+      executionApproved: assistedExecutionApproved(env),
+      gates
+    },
+    payment: {
+      enabled: false,
+      checkoutAvailable: false,
+      subscriptionAvailable: false,
+      approvalRequired: true
+    }
+  })
 }
 
 type CanonicalOutputResult =
@@ -2731,16 +3909,114 @@ export default {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
       try {
-        return json({ workspaces: await workspacesForUser(env, session.user.id), currentWorkspace: session.currentWorkspace })
+        const workspaces = await workspacesForUser(env, session.user.id, session.currentWorkspace.id)
+        if (!workspaces[0]) throw new TypeError('Active workspace list is empty')
+        return json({ workspaces, currentWorkspace: workspaces[0] })
       } catch {
         console.error('workspace-list-read-failed')
         return workspaceListUnavailable()
       }
     }
-    if (url.pathname === '/api/assets/product' && request.method === 'POST') {
+    if (url.pathname === '/api/workspaces/current') {
       const session = await requireSession(request, env)
       if (session instanceof Response) return session
-      return uploadProductAsset(request, env, session)
+      if (request.method !== 'PUT') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'PUT' } })
+      }
+      return selectCurrentWorkspace(request, env, session)
+    }
+    if (url.pathname === '/api/workspace-members') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listWorkspaceMembers(env, session)
+      if (request.method === 'POST') return inviteWorkspaceMember(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const workspaceMemberMatch = url.pathname.match(/^\/api\/workspace-members\/([^/]+)$/)
+    if (workspaceMemberMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'PATCH') return updateWorkspaceMemberRole(request, env, session, workspaceMemberMatch[1])
+      if (request.method === 'DELETE') return removeWorkspaceMember(request, env, session, workspaceMemberMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'PATCH, DELETE' } })
+    }
+    if (url.pathname === '/api/workspace-activity') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'GET') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
+      }
+      return listWorkspaceActivity(env, session)
+    }
+    if (url.pathname === '/api/output-usage') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'GET') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
+      }
+      return listOutputUsage(env, session)
+    }
+    if (url.pathname === '/api/integration-readiness') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method !== 'GET') {
+        await cancelRequestBody(request)
+        return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET' } })
+      }
+      return integrationReadiness(env, session)
+    }
+    if (url.pathname === '/api/brand-packs') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listBrandPacks(env, session)
+      if (request.method === 'POST') return saveBrandPack(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const brandPackMatch = url.pathname.match(/^\/api\/brand-packs\/([^/]+)$/)
+    if (brandPackMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'DELETE') return deleteBrandPack(env, session, brandPackMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'DELETE' } })
+    }
+    if (url.pathname === '/api/product-profiles') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listProductProfiles(env, session)
+      if (request.method === 'POST') return saveProductProfile(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const productProfileMatch = url.pathname.match(/^\/api\/product-profiles\/([^/]+)$/)
+    if (productProfileMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'DELETE') return deleteProductProfile(env, session, productProfileMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'DELETE' } })
+    }
+    if (url.pathname === '/api/assets/product') {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'GET') return listProductAssets(env, session)
+      if (request.method === 'POST') return uploadProductAsset(request, env, session)
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'GET, POST' } })
+    }
+    const assetRightsMatch = url.pathname.match(/^\/api\/assets\/([^/]+)\/rights$/)
+    if (assetRightsMatch) {
+      const session = await requireSession(request, env)
+      if (session instanceof Response) return session
+      if (request.method === 'POST') return confirmProductAssetRights(request, env, session, assetRightsMatch[1])
+      await cancelRequestBody(request)
+      return json({ error: 'Method not allowed.' }, { status: 405, headers: { allow: 'POST' } })
     }
     const assetMatch = url.pathname.match(/^\/api\/assets\/([^/]+)$/)
     if (assetMatch && request.method === 'GET') {

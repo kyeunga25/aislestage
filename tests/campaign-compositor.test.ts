@@ -45,6 +45,34 @@ describe('deterministic Campaign Pack composition', () => {
     expect(validateCompositionInput(unsafe)).toEqual(expect.arrayContaining([expect.stringContaining('CTA 超出素材安全區。')]))
   })
 
+  it('rejects unsafe brand colors and keeps them out of composed SVG attributes', () => {
+    const unsafe = input({ brand: { ...input().brand, colors: ['url(//example.test/color)'] } })
+    expect(validateCompositionInput(unsafe)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/品牌顏色.*#RRGGBB|brand color.*#RRGGBB/i)
+    ]))
+    const svg = composeCampaignSvg({ input: unsafe, source: { base64: 'iVBORw0KGgo=', contentType: 'image/png' } })
+    expect(svg).not.toContain('example.test')
+    expect(svg).toContain('#155eef')
+  })
+
+  it('blocks configured forbidden terms across Chinese and English commercial copy', () => {
+    const chinese = input({
+      brand: { ...input().brand, forbiddenWords: '最平、保證' },
+      product: { ...input().product, promotion: '保證耐用' }
+    })
+    const english = input({
+      brand: { ...input().brand, forbiddenWords: 'guaranteed; risk-free' },
+      product: { ...input().product, promotionEn: 'Guaranteed delivery' }
+    })
+    const issue = /限制字詞.*商業文案|forbidden words.*commercial copy/i
+
+    expect(validateCompositionInput(chinese)).toEqual(expect.arrayContaining([expect.stringMatching(issue)]))
+    expect(validateCompositionInput(english)).toEqual(expect.arrayContaining([expect.stringMatching(issue)]))
+    expect(validateCompositionInput(input({ brand: { ...input().brand, forbiddenWords: '保證' } }))).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(issue)])
+    )
+  })
+
   it('rejects fragmented detail copy that exceeds one ratio line budget', () => {
     const fragmented = input({
       workflowId: 'promo-poster',

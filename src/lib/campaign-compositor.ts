@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { brandColorForDisplay, isSafeBrandColorList } from './brand-color'
 import { campaignDetailLines, campaignTextLayouts, normalizeCampaignText, validateCampaignCopy, wrapCampaignText } from './campaign-copy'
 import type { AspectRatio, GenerationInput } from './types'
 
@@ -85,10 +86,6 @@ function escapeXml(value: string) {
     .replaceAll("'", '&apos;')
 }
 
-function safeColor(value: string | undefined) {
-  return value && /^#[0-9a-f]{6}$/i.test(value) ? value : '#155eef'
-}
-
 function textLines(lines: string[], x: number, y: number, lineHeight: number, anchor: Layout['align'] = 'start') {
   return lines.map((line, index) => `<tspan x="${x}" y="${y + index * lineHeight}" text-anchor="${anchor}">${escapeXml(line)}</tspan>`).join('')
 }
@@ -107,6 +104,7 @@ export function validateCompositionInput(input: GenerationInput) {
   const issues: string[] = []
   if (input.referenceAssetIds.length !== 1) issues.push('每個輸出必須使用一張已批准的商品圖片。')
   if (!['1:1', '4:5', '9:16'].includes(input.aspectRatio)) issues.push('這個輸出比例尚未支援確定性合成。')
+  if (!isSafeBrandColorList(input.brand.colors, 8)) issues.push('品牌顏色必須包含 1 至 8 個 #RRGGBB 十六進位色值。 Brand colors must contain 1 to 8 #RRGGBB hex values.')
   issues.push(...validateCampaignCopy(input.brand, input.product))
   return issues
 }
@@ -120,7 +118,7 @@ export function composeCampaignSvg({ input, source, background }: CompositionOpt
   const layout = layouts[ratio]
   if (!layout) throw new Error('Unsupported deterministic composition ratio.')
   const copy = campaignCopy(input)
-  const accent = safeColor(input.brand.colors[0])
+  const accent = brandColorForDisplay(input.brand.colors[0])
   const textLayout = campaignTextLayouts[ratio]
   const productHref = `data:${source.contentType};base64,${source.base64}`
   const backgroundImage = background

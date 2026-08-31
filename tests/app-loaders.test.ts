@@ -232,6 +232,41 @@ describe('Campaign Agent state loading', () => {
     )
   })
 
+  it('rejects an Agent state containing a non-canonical brand color', async () => {
+    const state = buildCampaignPlan({
+      assetId: 'asset-loader-color-test',
+      intent: '限時優惠',
+      brand: {
+        name: 'Test Brand',
+        tone: '可信',
+        colors: ['#155eef'],
+        forbiddenWords: '',
+        locale: 'zh-Hant',
+        cta: '立即選購',
+        ctaEn: 'Shop now'
+      },
+      product: {
+        name: '測試商品',
+        nameEn: 'Test product',
+        category: '電子產品',
+        benefits: ['已核實賣點一', '已核實賣點二'],
+        benefitsEn: ['Verified benefit one', 'Verified benefit two'],
+        specifications: '已核實規格',
+        price: 'HK$399',
+        promotion: '限時免運費',
+        promotionEn: 'Free delivery for a limited time',
+        channels: ['Web']
+      }
+    }, 1)
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      state: { ...state, brief: { ...state.brief!, brand: { ...state.brief!.brand, colors: ['url(//example.test/color)'] } } }
+    })))
+
+    await expect(loadCampaignAgentState()).rejects.toThrow(
+      'Campaign Agent 計劃暫時無法讀取。 Campaign Agent plan is temporarily unavailable.'
+    )
+  })
+
   it('rejects an expanded Agent-state envelope', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({
       state: initialCampaignAgentState(),

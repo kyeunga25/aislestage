@@ -28,6 +28,22 @@ describe('private resource delete client', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/generations/${resourceId}`)
   })
 
+  it('deletes one saved brand pack through the exact same-origin route', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deletePrivateResource('brand-pack', resourceId)).resolves.toBeUndefined()
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/brand-packs/${resourceId}`)
+  })
+
+  it('deletes one saved product profile through the exact same-origin route', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deletePrivateResource('product-profile', resourceId)).resolves.toBeUndefined()
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/product-profiles/${resourceId}`)
+  })
+
   it('treats an authoritative not-found response as already absent', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'synthetic detail' }, { status: 404 })))
 
