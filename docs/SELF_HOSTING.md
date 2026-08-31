@@ -8,7 +8,7 @@ Self-hosting creates a separate environment in your own Cloudflare account. It d
 
 本文件只使用通用 binding、合成名稱及 placeholder。不要把實際帳戶、資源、網域、Access audience、身份、資料或 secret 加回本文件、repository、issue、PR、CI log 或截圖。
 
-Repository 可公開讀取不代表已取得軟件、媒體、品牌或商標授權。本指南只說明技術流程；部署者必須另行確認適用的授權、第三方條款及司法管轄區要求。
+Repository 採用[專有原始碼評估授權](../LICENSE)，不是開源軟件。以下技術流程只可在該授權容許的私人、非生產評估範圍內使用；正式部署、服務營運、再發佈或商用須另取得書面許可。媒體、品牌、商標、模型及平台服務仍須另外確認適用權利、第三方條款與司法管轄區要求。
 
 ## 1. 部署結果與非目標
 
@@ -46,13 +46,13 @@ Cloudflare 方案、用量、地區及限制會變動。建立資源前先查看
 
 ## 3. 公開與受保護資料邊界
 
-| 類別 | 可追蹤 | 不可追蹤／公開 |
-| --- | --- | --- |
-| Wrangler | `wrangler.jsonc` placeholder、generic bindings | `wrangler.local.jsonc`、generated CI config、實際 resource mapping |
-| Secrets | 空白名稱示例、使用方法 | API key、token、cookie、JWT、Access audience、team domain |
-| 資料 | 合成 fixture、資料處理原則 | 真實 row、完整 schema、dump、query result、object key、queue message、provider payload |
-| 營運 | 通用驗收步驟 | 帳戶、deployment URL、dashboard inventory、受邀電郵、內部 incident data |
-| 文件／媒體 | 公開產品說明、合成截圖 | 客戶素材、真實 brief、私人路徑、含 identifier 的 dashboard 截圖 |
+| 類別       | 可追蹤                                         | 不可追蹤／公開                                                                         |
+| ---------- | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Wrangler   | `wrangler.jsonc` placeholder、generic bindings | `wrangler.local.jsonc`、generated CI config、實際 resource mapping                     |
+| Secrets    | 空白名稱示例、使用方法                         | API key、token、cookie、JWT、Access audience、team domain                              |
+| 資料       | 合成 fixture、資料處理原則                     | 真實 row、完整 schema、dump、query result、object key、queue message、provider payload |
+| 營運       | 通用驗收步驟                                   | 帳戶、deployment URL、dashboard inventory、受邀電郵、內部 incident data                |
+| 文件／媒體 | 公開產品說明、合成截圖                         | 客戶素材、真實 brief、私人路徑、含 identifier 的 dashboard 截圖                        |
 
 受保護值不要經 shell history、命令參數、剪貼簿分享、螢幕錄影或 CI echo 傳遞。CLI 輸出可能含 database ID、account 資料或 deployment URL；只在受控終端查看，不要貼到公開討論。
 
@@ -122,16 +122,16 @@ git check-ignore -v wrangler.local.jsonc
 
 只在 `wrangler.local.jsonc` 完成下列映射：
 
-| 設定位置 | 內容 |
-| --- | --- |
-| Worker `name` | 你自己的獨立 Worker 名稱 |
-| D1 `database_name`、`database_id` | 第 6 步建立的 database |
-| R2 `bucket_name` | 第 6 步建立的 private bucket |
-| Queue producer／consumer name | 第 6 步建立的 generation Queue |
-| `dead_letter_queue` | 第 6 步建立的 dead-letter Queue |
-| `APP_ORIGIN` | 你控制的 exact HTTPS origin，不含 path |
-| `ACCESS_TEAM_DOMAIN` | 你自己的 exact Cloudflare Access team HTTPS origin |
-| `ACCESS_AUD` | 你自己的 self-hosted application audience |
+| 設定位置                          | 內容                                               |
+| --------------------------------- | -------------------------------------------------- |
+| Worker `name`                     | 你自己的獨立 Worker 名稱                           |
+| D1 `database_name`、`database_id` | 第 6 步建立的 database                             |
+| R2 `bucket_name`                  | 第 6 步建立的 private bucket                       |
+| Queue producer／consumer name     | 第 6 步建立的 generation Queue                     |
+| `dead_letter_queue`               | 第 6 步建立的 dead-letter Queue                    |
+| `APP_ORIGIN`                      | 你控制的 exact HTTPS origin，不含 path             |
+| `ACCESS_TEAM_DOMAIN`              | 你自己的 exact Cloudflare Access team HTTPS origin |
+| `ACCESS_AUD`                      | 你自己的 self-hosted application audience          |
 
 不要改動程式依賴的通用 bindings：`DB`、`MEDIA_BUCKET`、`GENERATION_QUEUE`、`CAMPAIGN_AGENT`、`ASSETS`。
 
@@ -227,12 +227,12 @@ npm run cf:deploy
 
 操作指令必須明確選擇一個 target：
 
-| 選項 / Option | 合約 / Contract |
-| --- | --- |
-| `--local` | 只使用受保護 config 的本機 D1 / select local D1 explicitly |
-| `--remote` | 明確選擇受保護 config 對應的 remote D1 / select remote D1 explicitly |
-| `--dry-run` | 只核對 target 與輸入格式；必須配合 `--local` 或 `--remote`，不接觸 D1 / validate target and input shape without D1 access |
-| `--self-test` | 無網絡自測，只可單獨使用 / offline self-test only |
+| 選項 / Option | 合約 / Contract                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `--local`     | 只使用受保護 config 的本機 D1 / select local D1 explicitly                                                                |
+| `--remote`    | 明確選擇受保護 config 對應的 remote D1 / select remote D1 explicitly                                                      |
+| `--dry-run`   | 只核對 target 與輸入格式；必須配合 `--local` 或 `--remote`，不接觸 D1 / validate target and input shape without D1 access |
+| `--self-test` | 無網絡自測，只可單獨使用 / offline self-test only                                                                         |
 
 ```bash
 npm run cf:onboard-owner:check
@@ -271,21 +271,21 @@ owner 可在私人工作區「存取管理」加入 admin／member、調整非 o
 
 使用合成資料完成以下檢查。不要在截圖、console、network export 或 bug report 中留下 cookie、JWT、電郵、object key、brief 或 resource identifier。
 
-| 檢查 | 預期結果 |
-| --- | --- |
-| 匿名 `/` | 公開主頁可讀，沒有真實 workspace／客戶資料 |
-| 匿名 `/app` | 由 Access 攔截；不能直接取得私人 SPA shell |
-| 匿名 `/app/campaign-packs` | 與 `/app` 一樣受保護，不能因 SPA fallback 而匿名 200 |
-| 匿名受保護 API | Access 或 Worker 拒絕，不返回資料庫／資源細節 |
-| 已受邀 `/api/session` | JWT 與 active membership 都通過後才成功 |
-| owner／admin `/api/workspace-members` | 只返回目前 workspace 的 bounded canonical 清單；member 被拒絕，新增 membership 不會改動 Access policy |
-| 多 workspace 帳戶 | 選單只列 active memberships；切換後 session、私人圖片、用量及管理 route 都指向同一 workspace，其他分頁會同步 reload |
-| 已受邀 `/api/output-usage` | 只返回目前 workspace 的技術 allowance／事件摘要；沒有 identity、note、provider 或付款資料 |
+| 檢查                                      | 預期結果                                                                                                                                                                     |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 匿名 `/`                                  | 公開主頁可讀，沒有真實 workspace／客戶資料                                                                                                                                   |
+| 匿名 `/app`                               | 由 Access 攔截；不能直接取得私人 SPA shell                                                                                                                                   |
+| 匿名 `/app/campaign-packs`                | 與 `/app` 一樣受保護，不能因 SPA fallback 而匿名 200                                                                                                                         |
+| 匿名受保護 API                            | Access 或 Worker 拒絕，不返回資料庫／資源細節                                                                                                                                |
+| 已受邀 `/api/session`                     | JWT 與 active membership 都通過後才成功                                                                                                                                      |
+| owner／admin `/api/workspace-members`     | 只返回目前 workspace 的 bounded canonical 清單；member 被拒絕，新增 membership 不會改動 Access policy                                                                        |
+| 多 workspace 帳戶                         | 選單只列 active memberships；切換後 session、私人圖片、用量及管理 route 都指向同一 workspace，其他分頁會同步 reload                                                          |
+| 已受邀 `/api/output-usage`                | 只返回目前 workspace 的技術 allowance／事件摘要；沒有 identity、note、provider 或付款資料                                                                                    |
 | owner／admin `/api/integration-readiness` | 只返回 requested／effective mode、五個 gate、credential 是否存在及固定 disabled payment boundary；member 被拒絕，回應沒有 secret、provider、workspace 或 deployment identity |
-| 私人 R2 內容 | 只經授權 Worker route 返回，帶 private／no-store 等 headers |
-| Generation | 初次部署保持 disabled；不能排隊或扣用量 |
-| Static assets | 公開 hashed assets 可讀，私人 workspace shell 保持 Worker-first |
-| Logging | 沒有 prompt、response、brief、商品圖、身份、object key 或 mapping |
+| 私人 R2 內容                              | 只經授權 Worker route 返回，帶 private／no-store 等 headers                                                                                                                  |
+| Generation                                | 初次部署保持 disabled；不能排隊或扣用量                                                                                                                                      |
+| Static assets                             | 公開 hashed assets 可讀，私人 workspace shell 保持 Worker-first                                                                                                              |
+| Logging                                   | 沒有 prompt、response、brief、商品圖、身份、object key 或 mapping                                                                                                            |
 
 完成後再執行：
 
@@ -342,18 +342,18 @@ Wrangler secret 更新會建立並部署新的 Worker version，應在維護時�
 
 ## 15. 常見失敗
 
-| 現象 | 優先檢查 |
-| --- | --- |
-| `/app` 匿名可直接讀取 | Access 是否同時保護 `/app` 與 `/app/*`；Static Assets 是否對兩者 Worker-first |
-| Access 登入後仍 401 | Team domain、audience、JWT issuer／expiry 及 request header |
-| Access 登入後 403 | Auto-provision 是否已停用且 identity 尚無 active membership；不要開 broad policy 繞過 |
+| 現象                         | 優先檢查                                                                                        |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `/app` 匿名可直接讀取        | Access 是否同時保護 `/app` 與 `/app/*`；Static Assets 是否對兩者 Worker-first                   |
+| Access 登入後仍 401          | Team domain、audience、JWT issuer／expiry 及 request header                                     |
+| Access 登入後 403            | Auto-provision 是否已停用且 identity 尚無 active membership；不要開 broad policy 繞過           |
 | 已加入 membership 仍無法進入 | Cloudflare Access Allow policy 是否另行允許同一 identity；不要把 D1 membership 當作 edge policy |
-| 存取管理顯示 403 | 目前 D1 role 是否為 owner／admin；admin 不可新增 admin 或變更角色 |
-| D1 migration 找不到目標 | Private config 是否有正確 database name／ID 及 `DB` binding |
-| Queue deployment 失敗 | Producer、consumer 與 dead-letter Queue 是否已建立且名稱一致 |
-| Private asset 404 | 先核對 identity、workspace membership 及 object ownership；不要改成 public bucket |
-| Generation 被拒絕 | 新部署預期保持 disabled；不要以加入 key 單獨繞過多重 gate |
-| Release scan 失敗 | 只查看 path 與類別，移除／rotate 受影響資料；不要把疑似 secret 貼到 issue |
+| 存取管理顯示 403             | 目前 D1 role 是否為 owner／admin；admin 不可新增 admin 或變更角色                               |
+| D1 migration 找不到目標      | Private config 是否有正確 database name／ID 及 `DB` binding                                     |
+| Queue deployment 失敗        | Producer、consumer 與 dead-letter Queue 是否已建立且名稱一致                                    |
+| Private asset 404            | 先核對 identity、workspace membership 及 object ownership；不要改成 public bucket               |
+| Generation 被拒絕            | 新部署預期保持 disabled；不要以加入 key 單獨繞過多重 gate                                       |
+| Release scan 失敗            | 只查看 path 與類別，移除／rotate 受影響資料；不要把疑似 secret 貼到 issue                       |
 
 如問題需要分享證據，只提供最小合成 reproduction，並遮蔽 hostname、account／database／object identifier、電郵、cookie、JWT、secret、prompt、response 及商業資料。
 
